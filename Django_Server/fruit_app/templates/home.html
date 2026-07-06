@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>百香果資料蒐集系統</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            background: #eef2f5;
+            color: #1f2933;
+            font-family: Arial, "Noto Sans TC", sans-serif;
+        }
+
+        main {
+            width: min(92vw, 520px);
+            padding: 24px;
+            border: 1px solid #d8e0e6;
+            border-radius: 8px;
+            background: #ffffff;
+        }
+
+        h1 {
+            margin: 0 0 10px;
+            font-size: 24px;
+            letter-spacing: 0;
+        }
+
+        p {
+            margin: 0 0 18px;
+            color: #52616d;
+            line-height: 1.6;
+        }
+
+        .actions {
+            display: grid;
+            gap: 10px;
+        }
+
+        a {
+            display: block;
+            min-height: 46px;
+            padding: 13px 16px;
+            border-radius: 6px;
+            background: #2269a8;
+            color: #ffffff;
+            font-size: 16px;
+            font-weight: 700;
+            text-align: center;
+            text-decoration: none;
+        }
+
+        a.secondary {
+            background: #216e4e;
+        }
+    </style>
+</head>
+<body>
+<main>
+    <h1>百香果資料蒐集系統</h1>
+    <p>電腦端請進入 dashboard 操作分類與拍攝；手機端請進入 camera 開啟鏡頭。</p>
+    <div class="actions">
+        <a href="/dashboard/">電腦 Dashboard</a>
+        <a href="/camera/" class="secondary">手機 Camera</a>
+    </div>
+</main>
+</body>
+</html>

@@ -1,0 +1,82 @@
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Python / Conda / virtual environments
+.venv/
+venv/
+env/
+ENV/
+.conda/
+conda/
+anaconda*/
+miniconda*/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets.*
+!*.example.*
+firmware/**/secrets.h
+
+# Django local runtime files
+Django_Server/db.sqlite3
+Django_Server/*.sqlite3
+Django_Server/media/
+Django_Server/staticfiles/
+Django_Server/dataset/
+
+# Project folders not tracked for now
+Necessary_library/
+model_training/
+
+# Dataset and raw media
+**/dataset/
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tif
+*.tiff
+*.mp4
+*.mov
+*.avi
+!hardware_notes/*.png
+
+# YOLO / ML training outputs and model weights
+model_training/**/runs/
+**/runs/
+*.pt
+*.pth
+*.onnx
+*.weights
+*.engine
+
+# Arduino / embedded build artifacts
+build/
+.arduino/
+.cache/
+*.bin
+*.elf
+*.hex
+*.map
+*.uf2
+
+# Local editor, agent, and Drive temp state
+.vscode/
+.codex/
+.agents/
+.tmp.drive*/
+
+# Local backups and archives
+Django_Server_backup_*/
+Necessary_library/*.zip

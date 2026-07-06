@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>資料蒐集 Dashboard｜百香果</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            background: #eef2f5;
+            color: #1f2933;
+            font-family: Arial, "Noto Sans TC", sans-serif;
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 14px 22px;
+            border-bottom: 1px solid #d8e0e6;
+            background: #ffffff;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 22px;
+            letter-spacing: 0;
+        }
+
+        .camera-link {
+            color: #52616d;
+            font-size: 14px;
+            word-break: break-all;
+        }
+
+        main {
+            display: grid;
+            grid-template-columns: minmax(360px, 1.35fr) minmax(320px, 0.65fr);
+            gap: 18px;
+            padding: 18px;
+        }
+
+        section {
+            border: 1px solid #d8e0e6;
+            border-radius: 8px;
+            background: #ffffff;
+            overflow: hidden;
+        }
+
+        section h2 {
+            margin: 0;
+            padding: 12px 14px;
+            border-bottom: 1px solid #d8e0e6;
+            background: #f8fafb;
+            font-size: 16px;
+            letter-spacing: 0;
+        }
+
+        .section-body {
+            padding: 14px;
+        }
+
+        .remote-video-wrap {
+            background: #000;
+            aspect-ratio: 16 / 9;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            background: #000;
+        }
+
+        .grid {
+            display: grid;
+            gap: 12px;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 8px;
+        }
+
+        input,
+        textarea {
+            width: 100%;
+            border: 1px solid #c7d1d9;
+            border-radius: 6px;
+            padding: 10px 11px;
+            background: #ffffff;
+            color: #1f2933;
+            font-size: 15px;
+        }
+
+        textarea {
+            min-height: 84px;
+            resize: vertical;
+        }
+
+        button {
+            min-height: 42px;
+            border: 0;
+            border-radius: 6px;
+            padding: 0 14px;
+            background: #2269a8;
+            color: #ffffff;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        button.secondary {
+            background: #5f6f7a;
+        }
+
+        button.danger {
+            background: #b42318;
+        }
+
+        button.warning {
+            background: #b76e00;
+        }
+
+        button.label {
+            background: #216e4e;
+        }
+
+        button:disabled {
+            cursor: not-allowed;
+            background: #9aa8b2;
+        }
+
+        .button-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+        }
+
+        .status-list {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+
+        .status-list div {
+            min-height: 54px;
+            border: 1px solid #d8e0e6;
+            border-radius: 6px;
+            padding: 9px 10px;
+            background: #f8fafb;
+        }
+
+        .status-list span {
+            display: block;
+            margin-bottom: 4px;
+            color: #60707c;
+            font-size: 13px;
+        }
+
+        .thumb-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .thumb {
+            border: 1px solid #d8e0e6;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #f8fafb;
+        }
+
+        .thumb img {
+            display: block;
+            width: 100%;
+            aspect-ratio: 4 / 3;
+            object-fit: cover;
+            background: #d8e0e6;
+        }
+
+        .thumb span {
+            display: block;
+            padding: 7px 8px;
+            color: #52616d;
+            font-size: 13px;
+        }
+
+        .empty {
+            display: grid;
+            min-height: 190px;
+            place-items: center;
+            border: 1px dashed #b8c5ce;
+            border-radius: 8px;
+            color: #60707c;
+            text-align: center;
+        }
+
+        .message {
+            min-height: 22px;
+            color: #31424f;
+            font-size: 14px;
+            line-height: 1.45;
+        }
+
+        .timing-list {
+            display: grid;
+            gap: 6px;
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            color: #52616d;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        @media (max-width: 900px) {
+            header {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            main {
+                grid-template-columns: 1fr;
+                padding: 12px;
+            }
+
+            .button-row {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+<header>
+    <h1>百香果手機相機資料蒐集</h1>
+    <div class="camera-link">手機請開啟：<span id="camera-url"></span>，不要開啟 /dashboard/。</div>
+</header>
+
+<main>
+    <div class="grid">
+        <section>
+            <h2>手機即時畫面</h2>
+            <div class="remote-video-wrap">
+                <video id="remote-video" autoplay playsinline muted></video>
+            </div>
+            <div class="section-body grid">
+                <div id="stream-status" class="message">正在建立 WebRTC offer，等待手機端連線。</div>
+                <button id="btn-reconnect" type="button" class="secondary">重新連線串流</button>
+            </div>
+        </section>
+
+        <section>
+            <h2>六張照片預覽</h2>
+            <div class="section-body">
+                <div id="thumbnail-grid" class="thumb-grid"></div>
+                <div id="thumbnail-empty" class="empty">尚未拍攝。按下手動拍攝後，手機會連拍 6 張並上傳。</div>
+            </div>
+        </section>
+    </div>
+
+    <div class="grid">
+        <section>
+            <h2>拍攝控制</h2>
+            <div class="section-body grid">
+                <div class="status-list">
+                    <div><span>目前資料</span><strong id="active-fruit">等待中</strong></div>
+                    <div><span>下一筆 ID</span><strong id="next-fruit">fruit_001</strong></div>
+                    <div><span>流程狀態</span><strong id="state-label">idle</strong></div>
+                    <div><span>照片數量</span><strong id="image-count">0 / 6</strong></div>
+                </div>
+                <div class="controls">
+                    <input id="counter-input" type="number" min="1" inputmode="numeric" placeholder="輸入起始 ID，例如 120">
+                    <button id="btn-set-counter" type="button" class="secondary">設定起始 ID</button>
+                </div>
+                <div class="controls">
+                    <input id="capture-interval-input" type="number" min="0" max="3000" inputmode="numeric" value="220" placeholder="連拍間隔 ms">
+                    <button id="btn-apply-interval" type="button" class="secondary">套用間隔</button>
+                </div>
+                <button id="btn-manual-capture" type="button">手動拍攝</button>
+                <button id="btn-recapture" type="button" class="warning">重新拍攝目前 fruit</button>
+                <button id="btn-open-folder" type="button" class="secondary">開啟資料夾</button>
+                <button id="btn-reset-dataset" type="button" class="danger">重置 dataset</button>
+                <div id="message" class="message"></div>
+            </div>
+        </section>
+
+        <section>
+            <h2>拍攝計時</h2>
+            <div class="section-body">
+                <ul class="timing-list">
+                    <li>命令到手機開始：<strong id="timing-command-delay">尚無資料</strong></li>
+                    <li>設定連拍間隔：<strong id="timing-configured-interval">220 ms</strong></li>
+                    <li>實測連拍間隔：<strong id="timing-actual-intervals">尚無資料</strong></li>
+                </ul>
+            </div>
+        </section>
+
+        <section>
+            <h2>人工分類</h2>
+            <div class="section-body grid">
+                <textarea id="note" placeholder="note，可留空"></textarea>
+                <div class="button-row">
+                    <button type="button" class="label classify-button" data-label="上中等">上中等</button>
+                    <button type="button" class="label classify-button" data-label="下等">下等</button>
+                    <button type="button" class="label classify-button" data-label="廢棄">廢棄</button>
+                    <button type="button" class="label classify-button" data-label="加工">加工</button>
+                </div>
+                <button id="btn-discard" type="button" class="danger">跳過 / 刪除</button>
+            </div>
+        </section>
+    </div>
+</main>
+
+<script>
+    const remoteVideo = document.getElementById('remote-video');
+    const streamStatus = document.getElementById('stream-status');
+    const messageEl = document.getElementById('message');
+    const activeFruitEl = document.getElementById('active-fruit');
+    const nextFruitEl = document.getElementById('next-fruit');
+    const stateLabelEl = document.getElementById('state-label');
+    const imageCountEl = document.getElementById('image-count');
+    const thumbnailGrid = document.getElementById('thumbnail-grid');
+    const thumbnailEmpty = document.getElementById('thumbnail-empty');
+    const counterInput = document.getElementById('counter-input');
+    const captureIntervalInput = document.getElementById('capture-interval-input');
+    const noteInput = document.getElementById('note');
+    const classifyButtons = Array.from(document.querySelectorAll('.classify-button'));
+    const manualCaptureButton = document.getElementById('btn-manual-capture');
+    const recaptureButton = document.getElementById('btn-recapture');
+    const discardButton = document.getElementById('btn-discard');
+    const resetDatasetButton = document.getElementById('btn-reset-dataset');
+    const timingCommandDelay = document.getElementById('timing-command-delay');
+    const timingConfiguredInterval = document.getElementById('timing-configured-interval');
+    const timingActualIntervals = document.getElementById('timing-actual-intervals');
+
+    let peerConnection = null;
+    let answerApplied = false;
+    let cameraIceIndex = 0;
+    let lastState = null;
+    let configuredCaptureIntervalMs = 220;
+
+    document.getElementById('camera-url').textContent = `${window.location.origin}/camera/`;
+
+    function setMessage(message) {
+        messageEl.textContent = message || '';
+    }
+
+    function setStreamStatus(message) {
+        streamStatus.textContent = message;
+    }
+
+    async function postJson(url, data = {}) {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            const error = new Error(payload.message || `HTTP ${response.status}`);
+            error.payload = payload;
+            throw error;
+        }
+        return payload;
+    }
+
+    async function startWebRTC() {
+        if (peerConnection) {
+            peerConnection.close();
+        }
+        answerApplied = false;
+        cameraIceIndex = 0;
+        remoteVideo.srcObject = null;
+        peerConnection = new RTCPeerConnection();
+        peerConnection.addTransceiver('video', { direction: 'recvonly' });
+
+        peerConnection.ontrack = (event) => {
+            const [stream] = event.streams;
+            if (stream) {
+                remoteVideo.srcObject = stream;
+                setStreamStatus('手機即時畫面已連線。');
+            }
+        };
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+                postJson('/api/webrtc/ice', {
+                    role: 'dashboard',
+                    candidate: event.candidate.toJSON(),
+                }).catch((error) => console.warn('ICE candidate 上傳失敗', error));
+            }
+        };
+        peerConnection.onconnectionstatechange = () => {
+            setStreamStatus(`WebRTC 狀態：${peerConnection.connectionState}`);
+        };
+
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        await postJson('/api/webrtc/offer', { offer: peerConnection.localDescription });
+        setStreamStatus('已送出 WebRTC offer，請確認手機頁正在開啟。');
+    }
+
+    async function pollWebRTCState() {
+        if (!peerConnection) {
+            return;
+        }
+        try {
+            const response = await fetch('/api/webrtc/state');
+            const data = await response.json();
+            if (data.answer && !answerApplied) {
+                await peerConnection.setRemoteDescription(data.answer);
+                answerApplied = true;
+            }
+
+            const cameraIce = data.camera_ice || [];
+            while (cameraIceIndex < cameraIce.length) {
+                const candidate = cameraIce[cameraIceIndex];
+                cameraIceIndex += 1;
+                try {
+                    await peerConnection.addIceCandidate(candidate);
+                } catch (error) {
+                    console.warn('加入 camera ICE candidate 失敗', error);
+                }
+            }
+        } catch (error) {
+            console.warn('WebRTC signaling 同步失敗', error);
+        }
+    }
+
+    async function refreshState() {
+        try {
+            const response = await fetch('/api/state/');
+            const data = await response.json();
+            lastState = data;
+            renderState(data);
+        } catch (error) {
+            setMessage(`狀態同步失敗：${error.message}`);
+        }
+    }
+
+    function renderState(data) {
+        const images = data.latest_images || [];
+        activeFruitEl.textContent = data.active_fruit_id || '無暫存資料';
+        nextFruitEl.textContent = data.next_fruit_id || 'fruit_001';
+        stateLabelEl.textContent = data.status || 'idle';
+        imageCountEl.textContent = `${data.image_total ?? images.length} / ${data.image_count || 6}`;
+        setMessage(data.message || '');
+        renderThumbnails(images);
+        renderTiming(data.timing || {}, data.active_fruit_id ? data.capture_interval_ms : configuredCaptureIntervalMs);
+
+        classifyButtons.forEach((button) => {
+            button.disabled = !data.can_classify;
+        });
+        discardButton.disabled = !data.can_discard;
+        manualCaptureButton.disabled = !data.can_manual_capture;
+        recaptureButton.disabled = !data.can_recapture;
+
+        if (data.active_fruit_id && typeof data.capture_interval_ms === 'number' && document.activeElement !== captureIntervalInput) {
+            configuredCaptureIntervalMs = data.capture_interval_ms;
+            captureIntervalInput.value = data.capture_interval_ms;
+        }
+    }
+
+    function renderThumbnails(images) {
+        thumbnailGrid.innerHTML = '';
+        thumbnailEmpty.style.display = images.length ? 'none' : 'grid';
+        images.forEach((image) => {
+            const item = document.createElement('div');
+            item.className = 'thumb';
+
+            const img = document.createElement('img');
+            img.src = image.url;
+            img.alt = image.filename;
+
+            const label = document.createElement('span');
+            label.textContent = image.filename;
+
+            item.appendChild(img);
+            item.appendChild(label);
+            thumbnailGrid.appendChild(item);
+        });
+    }
+
+    function releaseThumbnailFileHandles() {
+        thumbnailGrid.querySelectorAll('img').forEach((img) => {
+            img.removeAttribute('src');
+            img.src = '';
+        });
+        thumbnailGrid.innerHTML = '';
+        thumbnailEmpty.style.display = 'grid';
+    }
+
+    function sleep(ms) {
+        return new Promise((resolve) => window.setTimeout(resolve, ms));
+    }
+
+    async function releaseThumbnailsBeforeFileOperation() {
+        releaseThumbnailFileHandles();
+        await sleep(120);
+    }
+
+    function warningText(payload) {
+        const warnings = (payload && payload.delete_warnings) || [];
+        return warnings.length ? `；注意：部分舊資料已移到 _delete_pending 或標記忽略：${warnings.join('；')}` : '';
+    }
+
+    function renderTiming(timing, captureIntervalMs) {
+        const delay = timing.command_to_phone_start_ms;
+        const configuredInterval = timing.capture_interval_ms ?? captureIntervalMs ?? getCaptureIntervalMs();
+        const intervals = timing.phone_capture_intervals_ms || [];
+        timingCommandDelay.textContent = typeof delay === 'number' ? `${delay} ms` : '尚無資料';
+        timingConfiguredInterval.textContent = `${configuredInterval} ms`;
+        timingActualIntervals.textContent = intervals.length ? intervals.map((value) => `${value} ms`).join(' / ') : '尚無資料';
+    }
+
+    function getCaptureIntervalMs() {
+        const rawValue = Number.parseInt(captureIntervalInput.value, 10);
+        if (Number.isNaN(rawValue)) {
+            return configuredCaptureIntervalMs;
+        }
+        return Math.max(0, Math.min(3000, rawValue));
+    }
+
+    function normalizeCaptureIntervalInput() {
+        configuredCaptureIntervalMs = getCaptureIntervalMs();
+        captureIntervalInput.value = String(configuredCaptureIntervalMs);
+        renderTiming((lastState && lastState.timing) || {}, configuredCaptureIntervalMs);
+    }
+
+    async function setCounter() {
+        const value = counterInput.value.trim();
+        if (!value) {
+            setMessage('請先輸入起始 ID。');
+            return;
+        }
+        try {
+            const payload = await postJson('/api/set_counter/', { start_id: value });
+            counterInput.value = '';
+            setMessage(`起始 ID 已設定，下一筆為 ${payload.next_fruit_id}。`);
+            await refreshState();
+        } catch (error) {
+            setMessage(`設定失敗：${error.message}`);
+        }
+    }
+
+    async function manualCapture() {
+        try {
+            normalizeCaptureIntervalInput();
+            const payload = await postJson('/api/manual_capture/', {
+                capture_interval_ms: configuredCaptureIntervalMs,
+            });
+            setMessage(`已建立 ${payload.fruit_id}，等待手機連拍。`);
+            await refreshState();
+        } catch (error) {
+            setMessage(`拍攝命令失敗：${error.message}`);
+        }
+    }
+
+    async function recaptureCurrent() {
+        if (!lastState || !lastState.active_fruit_id) {
+            return;
+        }
+        try {
+            normalizeCaptureIntervalInput();
+            const payload = await postJson('/api/recapture/', {
+                capture_interval_ms: configuredCaptureIntervalMs,
+            });
+            lastState = payload;
+            renderState(payload);
+            setMessage(`已重新觸發 ${payload.active_fruit_id || '目前 fruit'} 拍攝。`);
+            await refreshState();
+        } catch (error) {
+            setMessage(`重新拍攝失敗：${error.message}`);
+        }
+    }
+
+    async function classify(label) {
+        try {
+            await releaseThumbnailsBeforeFileOperation();
+            const payload = await postJson('/api/classify/', {
+                label,
+                note: noteInput.value.trim(),
+            });
+            noteInput.value = '';
+            setMessage(`${payload.fruit_id} 已分類到 ${payload.path}。${warningText(payload)}`);
+            await refreshState();
+        } catch (error) {
+            if (error.payload) {
+                lastState = error.payload;
+                renderState(error.payload);
+            }
+            setMessage(`分類失敗：${error.message}`);
+        }
+    }
+
+    async function discardCurrent() {
+        if (!lastState || !lastState.active_fruit_id) {
+            return;
+        }
+        if (!confirm(`確定刪除 ${lastState.active_fruit_id} 的暫存照片嗎？`)) {
+            return;
+        }
+        try {
+            await releaseThumbnailsBeforeFileOperation();
+            const payload = await postJson('/api/discard/');
+            lastState = payload;
+            renderState(payload);
+            setMessage(`${payload.discarded_fruit_id || '目前資料'} 已刪除。${warningText(payload)}`);
+            await refreshState();
+        } catch (error) {
+            if (error.payload) {
+                lastState = error.payload;
+                renderState(error.payload);
+            }
+            setMessage(`刪除失敗：${error.message}`);
+        }
+    }
+
+    async function resetDataset() {
+        if (!confirm('確定要重置整個 dataset 嗎？這會刪除 temp 與所有分類資料夾內的照片，並清空 metadata.csv。')) {
+            return;
+        }
+        if (!confirm('再次確認：此動作無法復原，下一筆 ID 會回到 fruit_001。')) {
+            return;
+        }
+        try {
+            await releaseThumbnailsBeforeFileOperation();
+            const payload = await postJson('/api/reset_dataset/');
+            lastState = payload;
+            renderState(payload);
+            setMessage(`dataset 已重置，下一筆資料將從 fruit_001 開始。${warningText(payload)}`);
+            await refreshState();
+        } catch (error) {
+            if (error.payload) {
+                lastState = error.payload;
+                renderState(error.payload);
+            }
+            setMessage(`重置 dataset 失敗：${error.message}`);
+        }
+    }
+
+    async function openDatasetFolder() {
+        try {
+            const response = await fetch('/api/open_dataset_folder/');
+            const payload = await response.json();
+            if (payload.opened) {
+                setMessage(`已開啟資料夾：${payload.path}`);
+            } else {
+                setMessage(`資料夾位置：${payload.path}`);
+            }
+        } catch (error) {
+            setMessage(`開啟資料夾失敗：${error.message}`);
+        }
+    }
+
+    document.getElementById('btn-set-counter').addEventListener('click', setCounter);
+    document.getElementById('btn-apply-interval').addEventListener('click', normalizeCaptureIntervalInput);
+    manualCaptureButton.addEventListener('click', manualCapture);
+    recaptureButton.addEventListener('click', recaptureCurrent);
+    document.getElementById('btn-open-folder').addEventListener('click', openDatasetFolder);
+    discardButton.addEventListener('click', discardCurrent);
+    resetDatasetButton.addEventListener('click', resetDataset);
+    document.getElementById('btn-reconnect').addEventListener('click', () => {
+        startWebRTC().catch((error) => setStreamStatus(`串流重連失敗：${error.message}`));
+    });
+    classifyButtons.forEach((button) => {
+        button.addEventListener('click', () => classify(button.dataset.label));
+    });
+
+    startWebRTC().catch((error) => setStreamStatus(`WebRTC 初始化失敗：${error.message}`));
+    refreshState();
+    setInterval(refreshState, 700);
+    setInterval(pollWebRTCState, 500);
+</script>
+</body>
+</html>
