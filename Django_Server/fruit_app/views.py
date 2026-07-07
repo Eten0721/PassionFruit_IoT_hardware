@@ -35,8 +35,10 @@ MIN_CAPTURE_INTERVAL_MS = 0
 MAX_CAPTURE_INTERVAL_MS = 3000
 HOME_ANGLE = 0
 RELEASE_ANGLE = 60
-SERVO_SETTLE_MS = 700
-FRUIT_SETTLE_MS = 700
+# High-speed data collection test values. If SG90 movement or fruit settling is
+# unstable in hardware tests, tune these back to 250, 300, or 500 ms.
+SERVO_SETTLE_MS = 150
+FRUIT_SETTLE_MS = 150
 ESP32_ONLINE_WINDOW_SECONDS = 20
 ESP32_START_TIMEOUT_SECONDS = 10
 HARDWARE_STEP_TIMEOUT_SECONDS = 20
@@ -1098,6 +1100,12 @@ def _auto_trigger_enabled():
 
 
 def _auto_trigger_disabled_reason():
+    motor_command = APP_STATE.get('motor_command') or {}
+    if (
+        APP_STATE.get('status') == 'waiting_esp32_start'
+        and motor_command.get('command') == 'start_sequence'
+    ):
+        return 'duplicate_trigger_waiting_start_sequence'
     if APP_STATE.get('active_fruit_id'):
         return 'active_fruit_exists'
     if APP_STATE.get('motor_command'):

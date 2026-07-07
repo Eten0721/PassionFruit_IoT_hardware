@@ -29,13 +29,11 @@
 
 Ultrasonic ultrasonic(26, 27);
 
-Servo gate1Servo;
-Servo gate2Servo;
-Servo gate3Servo;
+const int GATE_COUNT = 3;
 
-const int gate1Pin = 18;
-const int gate2Pin = 19;
-const int gate3Pin = 21;
+Servo gateServos[GATE_COUNT];
+
+const int gatePins[GATE_COUNT] = {18, 19, 21};
 
 const int HOME_ANGLE = 0;
 const int RELEASE_ANGLE = 60;
@@ -45,16 +43,21 @@ const float rearmDistanceCM = 8.0;
 
 const unsigned long sensorReadIntervalMS = 50;
 const unsigned long commandPollIntervalMS = 5000;
-const unsigned long activeCommandPollIntervalMS = 1000;
+const unsigned long startSequenceCommandPollIntervalMS = 100;
+const unsigned long activeCommandPollIntervalMS = 120;
 const unsigned long distancePrintIntervalMS = 500;
 const unsigned long triggerDebugIntervalMS = 1000;
 const unsigned long cooldownMS = 3000;
-const unsigned long servoSettleMS = 700;
-const unsigned long fruitSettleMS = 700;
+// High-speed data collection test values. If SG90 movement or fruit settling is
+// unstable in hardware tests, tune these back to 250, 300, or 500 ms.
+const unsigned long servoSettleMS = 150;
+const unsigned long fruitSettleMS = 150;
 const unsigned long reportRetryIntervalMS = 1000;
 const unsigned long autoTriggerReportRetryIntervalMS = 1000;
 const unsigned long wifiConnectTimeoutMS = 15000;
-const unsigned long httpTimeoutMS = 5000;
+const unsigned long commandHttpTimeoutMS = 1500;
+const unsigned long reportHttpTimeoutMS = 5000;
+const unsigned long startSequenceWaitLimitMS = 10000;
 const unsigned long commandFailureBackoffMinMS = 1500;
 const unsigned long commandFailureBackoffMaxMS = 10000;
 
@@ -71,8 +74,12 @@ bool triggerArmed = true;
 bool sequenceActive = false;
 bool lastReportIgnored = false;
 bool autoTriggerEnabled = false;
+bool waitingStartSequenceCommand = false;
+bool suspectedTriggerAccepted = false;
+bool gatesAtHome = false;
 int lastConfirmedCommandId = 0;
 String lastServerStatus = "";
+String lastReportResponse = "";
 
 bool pendingReport = false;
 String pendingEvent = "";
@@ -82,6 +89,7 @@ String pendingMessage = "";
 
 bool autoTriggerReportPending = false;
 unsigned long lastAutoTriggerReportMS = 0;
+unsigned long waitingStartSequenceStartedMS = 0;
 
 struct MotorCommand {
   String command;
@@ -101,6 +109,8 @@ float readDistanceCM();
 void handleSensor(unsigned long currentTime);
 void pollCommand();
 void handleCommand(const MotorCommand& command);
+void handleStartSequence(const MotorCommand& command);
+void handleReleaseGate(const MotorCommand& command);
 void setAutoTriggerEnabled(bool enabled, const String& serverStatus);
 unsigned long currentCommandPollInterval();
 void registerCommandFailure(int httpCode);
@@ -108,13 +118,22 @@ void resetCommandFailures();
 const char* httpErrorName(int httpCode);
 MotorCommand parseCommand(const String& body);
 String readValue(const String& body, const String& key);
+void beginSecureHttp(HTTPClient& http, WiFiClientSecure& client, const char* url, unsigned long timeoutMS);
 bool postReport(const String& event, int stationIndex, int commandId, const String& message);
+void allowImmediateCommandPoll(unsigned long currentTime);
 void queueReport(const String& event, int stationIndex, int commandId, const String& message);
 void flushPendingReport(unsigned long currentTime);
 void queueAutoTriggerReport();
 void flushAutoTriggerReport(unsigned long currentTime);
 void clearAutoTriggerReportPending(const String& reason);
+void enableFastStartSequencePolling(unsigned long currentTime, const String& reason);
+void clearStartSequenceWaitState(const String& reason);
+void checkStartSequenceWaitTimeout(unsigned long currentTime);
+bool reportSuggestsStartSequenceWaiting();
+bool shouldQueueAutoTrigger(float distanceCM, unsigned long currentTime, String& reason);
 void printTriggerDebug(const String& reason, float distanceCM, unsigned long currentTime, bool force);
+void printTiming(const String& eventName);
+void printReportSuccessTiming(const String& eventName);
 void moveGate(int stationIndex, int angle);
 void moveAllGates(int angle);
 Servo* servoForStation(int stationIndex);
@@ -123,11 +142,12 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  gate1Servo.attach(gate1Pin);
-  gate2Servo.attach(gate2Pin);
-  gate3Servo.attach(gate3Pin);
+  for (int index = 0; index < GATE_COUNT; index += 1) {
+    gateServos[index].attach(gatePins[index]);
+  }
   moveAllGates(HOME_ANGLE);
   delay(servoSettleMS);
+  gatesAtHome = true;
 
   Serial.println();
   Serial.println("=== Three Gate Data Collection Firmware ===");
@@ -158,6 +178,7 @@ void loop() {
   }
 
   flushAutoTriggerReport(currentTime);
+  checkStartSequenceWaitTimeout(currentTime);
 
   const unsigned long pollInterval = currentCommandPollInterval();
   if (
@@ -224,27 +245,11 @@ void handleSensor(unsigned long currentTime) {
     Serial.println("Sensor area cleared. Trigger rearmed.");
   }
 
-  if (distanceCM <= 0 || distanceCM > triggerDistanceCM) {
-    return;
-  }
-
-  if (autoTriggerReportPending) {
-    printTriggerDebug("pending_hcsr04_trigger_retry", distanceCM, currentTime, false);
-    return;
-  }
-
-  if (sequenceActive) {
-    printTriggerDebug("blocked_by_sequence_active", distanceCM, currentTime, false);
-    return;
-  }
-
-  if (!triggerArmed) {
-    printTriggerDebug("blocked_by_trigger_not_armed", distanceCM, currentTime, false);
-    return;
-  }
-
-  if (currentTime - lastTriggerTimeMS < cooldownMS) {
-    printTriggerDebug("blocked_by_cooldown", distanceCM, currentTime, false);
+  String blockedReason = "";
+  if (!shouldQueueAutoTrigger(distanceCM, currentTime, blockedReason)) {
+    if (blockedReason.length() > 0) {
+      printTriggerDebug(blockedReason, distanceCM, currentTime, false);
+    }
     return;
   }
 
@@ -253,7 +258,32 @@ void handleSensor(unsigned long currentTime) {
   triggerArmed = false;
   setAutoTriggerEnabled(false, "local_hcsr04_trigger");
   queueAutoTriggerReport();
+  printTiming("hcsr04_trigger_queued");
   printTriggerDebug("queued_hcsr04_trigger", distanceCM, currentTime, true);
+}
+
+bool shouldQueueAutoTrigger(float distanceCM, unsigned long currentTime, String& reason) {
+  reason = "";
+  if (distanceCM <= 0 || distanceCM > triggerDistanceCM) {
+    return false;
+  }
+  if (autoTriggerReportPending) {
+    reason = "pending_hcsr04_trigger_retry";
+    return false;
+  }
+  if (sequenceActive) {
+    reason = "blocked_by_sequence_active";
+    return false;
+  }
+  if (!triggerArmed) {
+    reason = "blocked_by_trigger_not_armed";
+    return false;
+  }
+  if (currentTime - lastTriggerTimeMS < cooldownMS) {
+    reason = "blocked_by_cooldown";
+    return false;
+  }
+  return true;
 }
 
 void pollCommand() {
@@ -263,12 +293,8 @@ void pollCommand() {
   }
 
   WiFiClientSecure requestClient;
-  requestClient.setInsecure();
-
   HTTPClient http;
-  http.begin(requestClient, commandUrl);
-  http.setReuse(false);
-  http.setTimeout(httpTimeoutMS);
+  beginSecureHttp(http, requestClient, commandUrl, commandHttpTimeoutMS);
 
   int httpCode = http.GET();
   if (httpCode <= 0) {
@@ -276,6 +302,17 @@ void pollCommand() {
     Serial.println(httpCode);
     Serial.print("Command GET error: ");
     Serial.println(httpErrorName(httpCode));
+    if (waitingStartSequenceCommand) {
+      Serial.print("TIMING command_get_timeout_while_waiting_start_sequence ms=");
+      Serial.print(millis());
+      Serial.print(" error=");
+      Serial.println(httpErrorName(httpCode));
+    } else {
+      Serial.print("TIMING command_get_failed ms=");
+      Serial.print(millis());
+      Serial.print(" error=");
+      Serial.println(httpErrorName(httpCode));
+    }
     registerCommandFailure(httpCode);
     http.end();
     requestClient.stop();
@@ -316,47 +353,68 @@ void handleCommand(const MotorCommand& command) {
   Serial.println(command.stationIndex);
 
   if (command.command == "start_sequence") {
-    if (autoTriggerReportPending) {
-      clearAutoTriggerReportPending("start_sequence_command_received");
-    }
-    setAutoTriggerEnabled(false, "sequence_active");
-    sequenceActive = true;
-    moveAllGates(command.homeAngle);
-    delay(command.servoSettleMs);
-    delay(command.fruitSettleMs);
-    queueReport("station_1_ready", 1, command.commandId, "start_sequence_station_1_ready");
+    handleStartSequence(command);
     return;
   }
 
   if (command.command == "release_gate") {
-    if (command.stationIndex < 1 || command.stationIndex > 3) {
-      queueReport("motor_error", command.stationIndex, command.commandId, "invalid_station_index");
-      return;
-    }
-
-    moveGate(command.stationIndex, command.releaseAngle);
-    delay(command.servoSettleMs);
-
-    if (command.stationIndex < 3) {
-      delay(command.fruitSettleMs);
-      queueReport(
-        String("station_") + String(command.stationIndex + 1) + String("_ready"),
-        command.stationIndex + 1,
-        command.commandId,
-        "next_station_ready"
-      );
-      return;
-    }
-
-    delay(command.fruitSettleMs);
-    moveAllGates(command.homeAngle);
-    delay(command.servoSettleMs);
-    sequenceActive = false;
-    queueReport("capture_sequence_finished", 0, command.commandId, "sequence_finished");
+    handleReleaseGate(command);
     return;
   }
 
+  clearStartSequenceWaitState("unknown_command");
+  gatesAtHome = false;
   queueReport("motor_error", command.stationIndex, command.commandId, "unknown_command");
+}
+
+void handleStartSequence(const MotorCommand& command) {
+  printTiming("start_sequence_received");
+  clearStartSequenceWaitState("start_sequence_command_received");
+  if (autoTriggerReportPending) {
+    clearAutoTriggerReportPending("start_sequence_command_received");
+  }
+  setAutoTriggerEnabled(false, "sequence_active");
+  sequenceActive = true;
+  if (!gatesAtHome) {
+    moveAllGates(command.homeAngle);
+    delay(command.servoSettleMs);
+    gatesAtHome = true;
+  }
+  delay(command.fruitSettleMs);
+  queueReport("station_1_ready", 1, command.commandId, "start_sequence_station_1_ready");
+}
+
+void handleReleaseGate(const MotorCommand& command) {
+  if (command.stationIndex < 1 || command.stationIndex > GATE_COUNT) {
+    clearStartSequenceWaitState("invalid_release_gate");
+    gatesAtHome = false;
+    queueReport("motor_error", command.stationIndex, command.commandId, "invalid_station_index");
+    return;
+  }
+
+  printTiming(String("release_gate_") + String(command.stationIndex) + String("_received"));
+  moveGate(command.stationIndex, command.releaseAngle);
+  gatesAtHome = false;
+  delay(command.servoSettleMs);
+
+  if (command.stationIndex < GATE_COUNT) {
+    delay(command.fruitSettleMs);
+    queueReport(
+      String("station_") + String(command.stationIndex + 1) + String("_ready"),
+      command.stationIndex + 1,
+      command.commandId,
+      "next_station_ready"
+    );
+    return;
+  }
+
+  delay(command.fruitSettleMs);
+  moveAllGates(command.homeAngle);
+  delay(command.servoSettleMs);
+  gatesAtHome = true;
+  sequenceActive = false;
+  clearStartSequenceWaitState("sequence_finished");
+  queueReport("capture_sequence_finished", 0, command.commandId, "sequence_finished");
 }
 
 void setAutoTriggerEnabled(bool enabled, const String& serverStatus) {
@@ -378,6 +436,9 @@ void setAutoTriggerEnabled(bool enabled, const String& serverStatus) {
 }
 
 unsigned long currentCommandPollInterval() {
+  if (waitingStartSequenceCommand) {
+    return startSequenceCommandPollIntervalMS;
+  }
   if (sequenceActive || pendingReport || autoTriggerReportPending) {
     return activeCommandPollIntervalMS;
   }
@@ -387,7 +448,9 @@ unsigned long currentCommandPollInterval() {
 void registerCommandFailure(int httpCode) {
   consecutiveCommandFailures += 1;
   unsigned long backoffMS = commandFailureBackoffMinMS;
-  if (consecutiveCommandFailures >= 2) {
+  if (waitingStartSequenceCommand || sequenceActive) {
+    backoffMS = activeCommandPollIntervalMS;
+  } else if (consecutiveCommandFailures >= 2) {
     backoffMS = commandFailureBackoffMaxMS;
   }
   commandBackoffUntilMS = millis() + backoffMS;
@@ -436,20 +499,25 @@ const char* httpErrorName(int httpCode) {
 MotorCommand parseCommand(const String& body) {
   MotorCommand command;
   const String autoTriggerValue = readValue(body, "auto_trigger_enabled");
+  const String homeAngleValue = readValue(body, "home_angle");
+  const String releaseAngleValue = readValue(body, "release_angle");
+  const String servoSettleValue = readValue(body, "servo_settle_ms");
+  const String fruitSettleValue = readValue(body, "fruit_settle_ms");
+
   command.command = readValue(body, "command");
   command.commandId = readValue(body, "command_id").toInt();
   command.stationIndex = readValue(body, "station_index").toInt();
-  command.homeAngle = readValue(body, "home_angle").toInt();
-  command.releaseAngle = readValue(body, "release_angle").toInt();
-  command.servoSettleMs = readValue(body, "servo_settle_ms").toInt();
-  command.fruitSettleMs = readValue(body, "fruit_settle_ms").toInt();
+  command.homeAngle = homeAngleValue.toInt();
+  command.releaseAngle = releaseAngleValue.toInt();
+  command.servoSettleMs = servoSettleValue.toInt();
+  command.fruitSettleMs = fruitSettleValue.toInt();
   command.autoTriggerEnabled = autoTriggerValue == "1" || autoTriggerValue == "true";
   command.serverStatus = readValue(body, "server_status");
 
-  if (command.homeAngle == 0 && readValue(body, "home_angle") == "") {
+  if (command.homeAngle == 0 && homeAngleValue == "") {
     command.homeAngle = HOME_ANGLE;
   }
-  if (command.releaseAngle == 0 && readValue(body, "release_angle") == "") {
+  if (command.releaseAngle == 0 && releaseAngleValue == "") {
     command.releaseAngle = RELEASE_ANGLE;
   }
   if (command.servoSettleMs <= 0) {
@@ -477,21 +545,25 @@ String readValue(const String& body, const String& key) {
   return value;
 }
 
+void beginSecureHttp(HTTPClient& http, WiFiClientSecure& client, const char* url, unsigned long timeoutMS) {
+  client.setInsecure();
+  http.begin(client, url);
+  http.setReuse(false);
+  http.setTimeout(timeoutMS);
+}
+
 bool postReport(const String& event, int stationIndex, int commandId, const String& message) {
   lastReportIgnored = false;
+  lastReportResponse = "";
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Report skipped: Wi-Fi is not connected.");
     return false;
   }
 
   WiFiClientSecure requestClient;
-  requestClient.setInsecure();
-
   HTTPClient http;
-  http.begin(requestClient, reportUrl);
-  http.setReuse(false);
+  beginSecureHttp(http, requestClient, reportUrl, reportHttpTimeoutMS);
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-  http.setTimeout(httpTimeoutMS);
 
   String body = "event=" + event;
   body += "&station_index=" + String(stationIndex);
@@ -503,6 +575,7 @@ bool postReport(const String& event, int stationIndex, int commandId, const Stri
   if (httpCode > 0) {
     response = http.getString();
     response.trim();
+    lastReportResponse = response;
   }
   http.end();
   requestClient.stop();
@@ -517,6 +590,12 @@ bool postReport(const String& event, int stationIndex, int commandId, const Stri
   lastReportIgnored = response.indexOf("\"ignored\": true") >= 0 || response.indexOf("\"ignored\":true") >= 0;
 
   return httpCode >= 200 && httpCode < 300;
+}
+
+void allowImmediateCommandPoll(unsigned long currentTime) {
+  commandBackoffUntilMS = 0;
+  const unsigned long pollInterval = currentCommandPollInterval();
+  lastCommandPollMS = currentTime - pollInterval;
 }
 
 void queueReport(const String& event, int stationIndex, int commandId, const String& message) {
@@ -544,6 +623,7 @@ void flushPendingReport(unsigned long currentTime) {
   if (pendingCommandId > 0) {
     lastConfirmedCommandId = pendingCommandId;
   }
+  printReportSuccessTiming(pendingEvent);
   pendingReport = false;
   pendingEvent = "";
   pendingStationIndex = 0;
@@ -566,16 +646,29 @@ void flushAutoTriggerReport(unsigned long currentTime) {
 
   lastAutoTriggerReportMS = currentTime;
   if (!postReport("hcsr04_trigger", 0, 0, "distance_trigger")) {
+    printTiming("hcsr04_trigger_post_timeout");
+    enableFastStartSequencePolling(currentTime, "hcsr04_trigger_post_timeout");
     Serial.println("Auto trigger report failed. It will be retried.");
     return;
   }
+  printTiming("hcsr04_trigger_post_success");
 
   if (lastReportIgnored) {
+    if (reportSuggestsStartSequenceWaiting()) {
+      printTiming("duplicate_trigger_waiting_start_sequence");
+      enableFastStartSequencePolling(currentTime, "duplicate_trigger_waiting_start_sequence");
+      clearAutoTriggerReportPending("server_has_existing_start_sequence");
+      Serial.println("Auto trigger duplicate confirmed. Waiting for start_sequence command.");
+      return;
+    }
+
+    clearStartSequenceWaitState("server_ignored_trigger");
     clearAutoTriggerReportPending("server_ignored_trigger");
     Serial.println("Auto trigger was ignored by server. Waiting for sensor area to clear.");
     return;
   }
 
+  enableFastStartSequencePolling(currentTime, "server_accepted_trigger");
   clearAutoTriggerReportPending("server_accepted_trigger");
   Serial.println("Auto trigger accepted. Waiting for start_sequence command.");
 }
@@ -588,6 +681,48 @@ void clearAutoTriggerReportPending(const String& reason) {
   lastAutoTriggerReportMS = 0;
   Serial.print("Auto trigger pending cleared: ");
   Serial.println(reason);
+}
+
+void enableFastStartSequencePolling(unsigned long currentTime, const String& reason) {
+  waitingStartSequenceCommand = true;
+  suspectedTriggerAccepted = true;
+  if (waitingStartSequenceStartedMS == 0) {
+    waitingStartSequenceStartedMS = currentTime;
+  }
+  consecutiveCommandFailures = 0;
+  allowImmediateCommandPoll(currentTime);
+  Serial.print("Fast start_sequence polling enabled: ");
+  Serial.println(reason);
+  printTiming("fast_poll_start_sequence_enabled");
+}
+
+void clearStartSequenceWaitState(const String& reason) {
+  if (!waitingStartSequenceCommand && !suspectedTriggerAccepted && waitingStartSequenceStartedMS == 0) {
+    return;
+  }
+  waitingStartSequenceCommand = false;
+  suspectedTriggerAccepted = false;
+  waitingStartSequenceStartedMS = 0;
+  Serial.print("Start sequence wait cleared: ");
+  Serial.println(reason);
+}
+
+void checkStartSequenceWaitTimeout(unsigned long currentTime) {
+  if (!waitingStartSequenceCommand || waitingStartSequenceStartedMS == 0) {
+    return;
+  }
+  if (currentTime - waitingStartSequenceStartedMS <= startSequenceWaitLimitMS) {
+    return;
+  }
+  printTiming("start_sequence_wait_timeout");
+  clearStartSequenceWaitState("start_sequence_wait_timeout");
+}
+
+bool reportSuggestsStartSequenceWaiting() {
+  const bool waitingStartStatus = lastReportResponse.indexOf("waiting_esp32_start") >= 0;
+  const bool startSequenceCommand = lastReportResponse.indexOf("start_sequence") >= 0;
+  const bool duplicateReason = lastReportResponse.indexOf("duplicate_trigger_waiting_start_sequence") >= 0;
+  return duplicateReason || (waitingStartStatus && startSequenceCommand);
 }
 
 void printTriggerDebug(const String& reason, float distanceCM, unsigned long currentTime, bool force) {
@@ -616,6 +751,31 @@ void printTriggerDebug(const String& reason, float distanceCM, unsigned long cur
   Serial.println(autoTriggerReportPending ? "1" : "0");
 }
 
+void printTiming(const String& eventName) {
+  Serial.print("TIMING ");
+  Serial.print(eventName);
+  Serial.print(" ms=");
+  Serial.println(millis());
+}
+
+void printReportSuccessTiming(const String& eventName) {
+  if (eventName == "station_1_ready") {
+    printTiming("station_1_ready_report_success");
+    return;
+  }
+  if (eventName == "station_2_ready") {
+    printTiming("station_2_ready_report_success");
+    return;
+  }
+  if (eventName == "station_3_ready") {
+    printTiming("station_3_ready_report_success");
+    return;
+  }
+  if (eventName == "capture_sequence_finished") {
+    printTiming("capture_sequence_finished_report_success");
+  }
+}
+
 void moveGate(int stationIndex, int angle) {
   Servo* servo = servoForStation(stationIndex);
   if (servo == nullptr) {
@@ -631,20 +791,14 @@ void moveGate(int stationIndex, int angle) {
 }
 
 void moveAllGates(int angle) {
-  gate1Servo.write(angle);
-  gate2Servo.write(angle);
-  gate3Servo.write(angle);
+  for (int index = 0; index < GATE_COUNT; index += 1) {
+    gateServos[index].write(angle);
+  }
 }
 
 Servo* servoForStation(int stationIndex) {
-  if (stationIndex == 1) {
-    return &gate1Servo;
+  if (stationIndex < 1 || stationIndex > GATE_COUNT) {
+    return nullptr;
   }
-  if (stationIndex == 2) {
-    return &gate2Servo;
-  }
-  if (stationIndex == 3) {
-    return &gate3Servo;
-  }
-  return nullptr;
+  return &gateServos[stationIndex - 1];
 }

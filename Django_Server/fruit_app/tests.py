@@ -42,6 +42,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         command = self._esp32_command()
         self.assertEqual(command['command'], 'start_sequence')
         self.assertEqual(command['station_index'], 1)
+        self.assertEqual(command['servo_settle_ms'], 150)
+        self.assertEqual(command['fruit_settle_ms'], 150)
 
         station_1 = self._report('station_1_ready', station_index=1, command_id=command['command_id']).json()
         self.assertTrue(station_1['capture_requested'])
@@ -126,6 +128,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(command['command'], 'start_sequence')
         self.assertEqual(command['station_index'], 1)
         self.assertEqual(command['fruit_id'], 'fruit_042')
+        self.assertEqual(command['servo_settle_ms'], 150)
+        self.assertEqual(command['fruit_settle_ms'], 150)
 
     def test_hcsr04_trigger_is_ignored_when_active_fruit_exists(self):
         first_response = self._report('hcsr04_trigger')
@@ -139,11 +143,30 @@ class DataCollectionFlowTests(SimpleTestCase):
         second_payload = second_response.json()
         self.assertTrue(second_payload['ok'])
         self.assertTrue(second_payload['ignored'])
-        self.assertEqual(second_payload['reason'], 'active_fruit_exists')
+        self.assertEqual(second_payload['reason'], 'duplicate_trigger_waiting_start_sequence')
+        self.assertEqual(second_payload['motor_command']['command'], 'start_sequence')
+        self.assertEqual(second_payload['motor_command']['command_id'], first_command['command_id'])
         self.assertFalse((self.dataset_root / 'temp' / 'fruit_002').exists())
         second_command = self._esp32_command()
         self.assertEqual(second_command['command_id'], first_command['command_id'])
         self.assertEqual(second_command['fruit_id'], 'fruit_001')
+
+    def test_hcsr04_trigger_is_ordinary_ignored_after_start_sequence_consumed(self):
+        first_response = self._report('hcsr04_trigger')
+        self.assertEqual(first_response.status_code, 200)
+        command = self._esp32_command()
+        self.assertEqual(command['command'], 'start_sequence')
+
+        ready_response = self._report('station_1_ready', station_index=1, command_id=command['command_id'])
+        self.assertEqual(ready_response.status_code, 200)
+
+        second_response = self._report('hcsr04_trigger')
+        self.assertEqual(second_response.status_code, 200)
+        second_payload = second_response.json()
+        self.assertTrue(second_payload['ok'])
+        self.assertTrue(second_payload['ignored'])
+        self.assertEqual(second_payload['reason'], 'active_fruit_exists')
+        self.assertFalse((self.dataset_root / 'temp' / 'fruit_002').exists())
 
     def test_command_text_disables_auto_trigger_while_temp_fruit_exists(self):
         command = self._esp32_command_text()
@@ -158,6 +181,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(command['auto_trigger_enabled'], '0')
         self.assertEqual(command['server_status'], 'waiting_esp32_start')
         self.assertEqual(command['command'], 'start_sequence')
+        self.assertEqual(command['servo_settle_ms'], '150')
+        self.assertEqual(command['fruit_settle_ms'], '150')
 
     def test_hcsr04_trigger_is_ignored_when_temp_fruit_exists(self):
         fruit_dir = self.dataset_root / 'temp' / 'fruit_001'
