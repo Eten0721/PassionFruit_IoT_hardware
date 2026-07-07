@@ -258,10 +258,10 @@
         </section>
 
         <section>
-            <h2>六張照片預覽</h2>
+            <h2>三站照片預覽</h2>
             <div class="section-body">
                 <div id="thumbnail-grid" class="thumb-grid"></div>
-                <div id="thumbnail-empty" class="empty">尚未拍攝。按下手動拍攝後，手機會連拍 6 張並上傳。</div>
+                <div id="thumbnail-empty" class="empty">尚未拍攝。按下手動拍攝後，ESP32 會啟動三閘門流程，手機每站上傳 1 張照片。</div>
             </div>
         </section>
     </div>
@@ -274,15 +274,17 @@
                     <div><span>目前資料</span><strong id="active-fruit">等待中</strong></div>
                     <div><span>下一筆 ID</span><strong id="next-fruit">fruit_001</strong></div>
                     <div><span>流程狀態</span><strong id="state-label">idle</strong></div>
-                    <div><span>照片數量</span><strong id="image-count">0 / 6</strong></div>
+                    <div><span>照片數量</span><strong id="image-count">0 / 3</strong></div>
+                    <div><span>ESP32</span><strong id="esp32-status">離線</strong></div>
+                    <div><span>馬達命令</span><strong id="motor-command">none</strong></div>
+                    <div><span>第 1 站</span><strong id="station-1-status">pending</strong></div>
+                    <div><span>第 2 站</span><strong id="station-2-status">pending</strong></div>
+                    <div><span>第 3 站</span><strong id="station-3-status">pending</strong></div>
+                    <div><span>錯誤原因</span><strong id="error-reason">無</strong></div>
                 </div>
                 <div class="controls">
                     <input id="counter-input" type="number" min="1" inputmode="numeric" placeholder="輸入起始 ID，例如 120">
                     <button id="btn-set-counter" type="button" class="secondary">設定起始 ID</button>
-                </div>
-                <div class="controls">
-                    <input id="capture-interval-input" type="number" min="0" max="3000" inputmode="numeric" value="220" placeholder="連拍間隔 ms">
-                    <button id="btn-apply-interval" type="button" class="secondary">套用間隔</button>
                 </div>
                 <button id="btn-manual-capture" type="button">手動拍攝</button>
                 <button id="btn-recapture" type="button" class="warning">重新拍攝目前 fruit</button>
@@ -293,12 +295,12 @@
         </section>
 
         <section>
-            <h2>拍攝計時</h2>
+            <h2>流程時間</h2>
             <div class="section-body">
                 <ul class="timing-list">
                     <li>命令到手機開始：<strong id="timing-command-delay">尚無資料</strong></li>
-                    <li>設定連拍間隔：<strong id="timing-configured-interval">220 ms</strong></li>
-                    <li>實測連拍間隔：<strong id="timing-actual-intervals">尚無資料</strong></li>
+                    <li>目前等待開始：<strong id="timing-wait-started">尚無資料</strong></li>
+                    <li>上次照片上傳：<strong id="timing-upload-received">尚無資料</strong></li>
                 </ul>
             </div>
         </section>
@@ -327,10 +329,17 @@
     const nextFruitEl = document.getElementById('next-fruit');
     const stateLabelEl = document.getElementById('state-label');
     const imageCountEl = document.getElementById('image-count');
+    const esp32StatusEl = document.getElementById('esp32-status');
+    const motorCommandEl = document.getElementById('motor-command');
+    const stationStatusEls = [
+        document.getElementById('station-1-status'),
+        document.getElementById('station-2-status'),
+        document.getElementById('station-3-status'),
+    ];
+    const errorReasonEl = document.getElementById('error-reason');
     const thumbnailGrid = document.getElementById('thumbnail-grid');
     const thumbnailEmpty = document.getElementById('thumbnail-empty');
     const counterInput = document.getElementById('counter-input');
-    const captureIntervalInput = document.getElementById('capture-interval-input');
     const noteInput = document.getElementById('note');
     const classifyButtons = Array.from(document.querySelectorAll('.classify-button'));
     const manualCaptureButton = document.getElementById('btn-manual-capture');
@@ -338,14 +347,23 @@
     const discardButton = document.getElementById('btn-discard');
     const resetDatasetButton = document.getElementById('btn-reset-dataset');
     const timingCommandDelay = document.getElementById('timing-command-delay');
-    const timingConfiguredInterval = document.getElementById('timing-configured-interval');
-    const timingActualIntervals = document.getElementById('timing-actual-intervals');
+    const timingWaitStarted = document.getElementById('timing-wait-started');
+    const timingUploadReceived = document.getElementById('timing-upload-received');
 
     let peerConnection = null;
     let answerApplied = false;
     let cameraIceIndex = 0;
+    let currentOfferId = 0;
+    let knownAnswerId = 0;
+    let statePollTimer = null;
+    let webrtcPollTimer = null;
     let lastState = null;
-    let configuredCaptureIntervalMs = 220;
+    const stateIdlePollMs = 1000;
+    const stateActivePollMs = 500;
+    const webrtcPollMs = 1000;
+    const RTC_CONFIG = {
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    };
 
     document.getElementById('camera-url').textContent = `${window.location.origin}/camera/`;
 
@@ -378,8 +396,10 @@
         }
         answerApplied = false;
         cameraIceIndex = 0;
+        currentOfferId = 0;
+        knownAnswerId = 0;
         remoteVideo.srcObject = null;
-        peerConnection = new RTCPeerConnection();
+        peerConnection = new RTCPeerConnection(RTC_CONFIG);
         peerConnection.addTransceiver('video', { direction: 'recvonly' });
 
         peerConnection.ontrack = (event) => {
@@ -398,13 +418,18 @@
             }
         };
         peerConnection.onconnectionstatechange = () => {
-            setStreamStatus(`WebRTC 狀態：${peerConnection.connectionState}`);
+            renderWebRTCStatus();
+        };
+        peerConnection.oniceconnectionstatechange = () => {
+            renderWebRTCStatus();
         };
 
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
-        await postJson('/api/webrtc/offer', { offer: peerConnection.localDescription });
+        const offerPayload = await postJson('/api/webrtc/offer', { offer: peerConnection.localDescription });
+        currentOfferId = Number(offerPayload.offer_id || 0);
         setStreamStatus('已送出 WebRTC offer，請確認手機頁正在開啟。');
+        restartWebRTCPolling(0);
     }
 
     async function pollWebRTCState() {
@@ -412,26 +437,51 @@
             return;
         }
         try {
-            const response = await fetch('/api/webrtc/state');
+            const params = new URLSearchParams({
+                camera_ice_from: String(cameraIceIndex),
+                known_offer_id: String(currentOfferId),
+                known_answer_id: String(knownAnswerId),
+            });
+            const response = await fetch(`/api/webrtc/state?${params.toString()}`, { cache: 'no-store' });
             const data = await response.json();
             if (data.answer && !answerApplied) {
                 await peerConnection.setRemoteDescription(data.answer);
                 answerApplied = true;
+                knownAnswerId = Number(data.answer_id || knownAnswerId);
+            } else if (typeof data.answer_id === 'number') {
+                knownAnswerId = data.answer_id;
             }
 
             const cameraIce = data.camera_ice || [];
-            while (cameraIceIndex < cameraIce.length) {
-                const candidate = cameraIce[cameraIceIndex];
-                cameraIceIndex += 1;
+            for (const candidate of cameraIce) {
                 try {
                     await peerConnection.addIceCandidate(candidate);
                 } catch (error) {
                     console.warn('加入 camera ICE candidate 失敗', error);
                 }
             }
+            cameraIceIndex = typeof data.camera_ice_total === 'number'
+                ? data.camera_ice_total
+                : cameraIceIndex + cameraIce.length;
+            renderWebRTCStatus(data);
+            return data;
         } catch (error) {
             console.warn('WebRTC signaling 同步失敗', error);
+            return null;
         }
+    }
+
+    function renderWebRTCStatus(data = null) {
+        if (!peerConnection) {
+            return;
+        }
+        const debug = data
+            ? `，offer:${data.offer_present ? '有' : '無'} #${data.offer_id || 0} answer:${data.answer_present ? '有' : '無'} #${data.answer_id || 0} ICE:${data.dashboard_ice_total || 0}/${data.camera_ice_total || 0}`
+            : '';
+        const failedHint = peerConnection.connectionState === 'failed' || peerConnection.iceConnectionState === 'failed'
+            ? '，請按重新連線串流'
+            : '';
+        setStreamStatus(`WebRTC 狀態：${peerConnection.connectionState} / ICE：${peerConnection.iceConnectionState}${debug}${failedHint}`);
     }
 
     async function refreshState() {
@@ -440,20 +490,84 @@
             const data = await response.json();
             lastState = data;
             renderState(data);
+            return data;
         } catch (error) {
             setMessage(`狀態同步失敗：${error.message}`);
+            return null;
         }
     }
+
+    function statePollDelay(data) {
+        if (data && data.active_fruit_id) {
+            return stateActivePollMs;
+        }
+        return stateIdlePollMs;
+    }
+
+    function restartStatePolling(delayMs = 0) {
+        if (statePollTimer !== null) {
+            window.clearTimeout(statePollTimer);
+        }
+        statePollTimer = window.setTimeout(runStatePollLoop, delayMs);
+    }
+
+    async function runStatePollLoop() {
+        statePollTimer = null;
+        if (document.hidden) {
+            return;
+        }
+        const data = await refreshState();
+        restartStatePolling(statePollDelay(data));
+    }
+
+    function restartWebRTCPolling(delayMs = 0) {
+        if (webrtcPollTimer !== null) {
+            window.clearTimeout(webrtcPollTimer);
+        }
+        webrtcPollTimer = window.setTimeout(runWebRTCPollLoop, delayMs);
+    }
+
+    async function runWebRTCPollLoop() {
+        webrtcPollTimer = null;
+        if (document.hidden) {
+            return;
+        }
+        await pollWebRTCState();
+        restartWebRTCPolling(webrtcPollMs);
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            if (statePollTimer !== null) {
+                window.clearTimeout(statePollTimer);
+                statePollTimer = null;
+            }
+            if (webrtcPollTimer !== null) {
+                window.clearTimeout(webrtcPollTimer);
+                webrtcPollTimer = null;
+            }
+            return;
+        }
+        restartStatePolling(0);
+        restartWebRTCPolling(0);
+    });
 
     function renderState(data) {
         const images = data.latest_images || [];
         activeFruitEl.textContent = data.active_fruit_id || '無暫存資料';
         nextFruitEl.textContent = data.next_fruit_id || 'fruit_001';
         stateLabelEl.textContent = data.status || 'idle';
-        imageCountEl.textContent = `${data.image_total ?? images.length} / ${data.image_count || 6}`;
+        imageCountEl.textContent = `${data.image_total ?? images.length} / ${data.image_count || 3}`;
+        esp32StatusEl.textContent = data.esp32_online ? '在線' : '離線';
+        const motorCommand = data.motor_command || {};
+        motorCommandEl.textContent = motorCommand.command && motorCommand.command !== 'none'
+            ? `${motorCommand.command} #${motorCommand.command_id || 0}`
+            : 'none';
+        renderStationStatuses(data.station_statuses || {});
+        errorReasonEl.textContent = data.last_error_reason || '無';
         setMessage(data.message || '');
         renderThumbnails(images);
-        renderTiming(data.timing || {}, data.active_fruit_id ? data.capture_interval_ms : configuredCaptureIntervalMs);
+        renderTiming(data.timing || {});
 
         classifyButtons.forEach((button) => {
             button.disabled = !data.can_classify;
@@ -461,11 +575,12 @@
         discardButton.disabled = !data.can_discard;
         manualCaptureButton.disabled = !data.can_manual_capture;
         recaptureButton.disabled = !data.can_recapture;
+    }
 
-        if (data.active_fruit_id && typeof data.capture_interval_ms === 'number' && document.activeElement !== captureIntervalInput) {
-            configuredCaptureIntervalMs = data.capture_interval_ms;
-            captureIntervalInput.value = data.capture_interval_ms;
-        }
+    function renderStationStatuses(stationStatuses) {
+        stationStatusEls.forEach((element, index) => {
+            element.textContent = stationStatuses[String(index + 1)] || 'pending';
+        });
     }
 
     function renderThumbnails(images) {
@@ -511,27 +626,11 @@
         return warnings.length ? `；注意：部分舊資料已移到 _delete_pending 或標記忽略：${warnings.join('；')}` : '';
     }
 
-    function renderTiming(timing, captureIntervalMs) {
+    function renderTiming(timing) {
         const delay = timing.command_to_phone_start_ms;
-        const configuredInterval = timing.capture_interval_ms ?? captureIntervalMs ?? getCaptureIntervalMs();
-        const intervals = timing.phone_capture_intervals_ms || [];
         timingCommandDelay.textContent = typeof delay === 'number' ? `${delay} ms` : '尚無資料';
-        timingConfiguredInterval.textContent = `${configuredInterval} ms`;
-        timingActualIntervals.textContent = intervals.length ? intervals.map((value) => `${value} ms`).join(' / ') : '尚無資料';
-    }
-
-    function getCaptureIntervalMs() {
-        const rawValue = Number.parseInt(captureIntervalInput.value, 10);
-        if (Number.isNaN(rawValue)) {
-            return configuredCaptureIntervalMs;
-        }
-        return Math.max(0, Math.min(3000, rawValue));
-    }
-
-    function normalizeCaptureIntervalInput() {
-        configuredCaptureIntervalMs = getCaptureIntervalMs();
-        captureIntervalInput.value = String(configuredCaptureIntervalMs);
-        renderTiming((lastState && lastState.timing) || {}, configuredCaptureIntervalMs);
+        timingWaitStarted.textContent = timing.wait_started_at || '尚無資料';
+        timingUploadReceived.textContent = timing.upload_received_at || '尚無資料';
     }
 
     async function setCounter() {
@@ -552,11 +651,8 @@
 
     async function manualCapture() {
         try {
-            normalizeCaptureIntervalInput();
-            const payload = await postJson('/api/manual_capture/', {
-                capture_interval_ms: configuredCaptureIntervalMs,
-            });
-            setMessage(`已建立 ${payload.fruit_id}，等待手機連拍。`);
+            const payload = await postJson('/api/manual_capture/');
+            setMessage(`已建立 ${payload.fruit_id}，等待 ESP32 啟動三站流程。`);
             await refreshState();
         } catch (error) {
             setMessage(`拍攝命令失敗：${error.message}`);
@@ -568,13 +664,10 @@
             return;
         }
         try {
-            normalizeCaptureIntervalInput();
-            const payload = await postJson('/api/recapture/', {
-                capture_interval_ms: configuredCaptureIntervalMs,
-            });
+            const payload = await postJson('/api/recapture/');
             lastState = payload;
             renderState(payload);
-            setMessage(`已重新觸發 ${payload.active_fruit_id || '目前 fruit'} 拍攝。`);
+            setMessage(`已重新啟動 ${payload.active_fruit_id || '目前 fruit'} 三站流程。`);
             await refreshState();
         } catch (error) {
             setMessage(`重新拍攝失敗：${error.message}`);
@@ -661,7 +754,6 @@
     }
 
     document.getElementById('btn-set-counter').addEventListener('click', setCounter);
-    document.getElementById('btn-apply-interval').addEventListener('click', normalizeCaptureIntervalInput);
     manualCaptureButton.addEventListener('click', manualCapture);
     recaptureButton.addEventListener('click', recaptureCurrent);
     document.getElementById('btn-open-folder').addEventListener('click', openDatasetFolder);
@@ -675,9 +767,8 @@
     });
 
     startWebRTC().catch((error) => setStreamStatus(`WebRTC 初始化失敗：${error.message}`));
-    refreshState();
-    setInterval(refreshState, 700);
-    setInterval(pollWebRTCState, 500);
+    restartStatePolling(0);
+    restartWebRTCPolling(0);
 </script>
 </body>
 </html>

@@ -116,13 +116,23 @@
 
     let localStream = null;
     let peerConnection = null;
-    let currentOfferSdp = null;
+    let currentOfferId = 0;
+    let knownAnswerId = 0;
     let dashboardIceIndex = 0;
-    let lastCaptureToken = 0;
-    let lastFailedCaptureToken = 0;
+    let lastCaptureRequestKey = '';
+    let lastFailedCaptureRequestKey = '';
     let lastCaptureFailureTime = 0;
     let isCapturing = false;
+    let capturePollTimer = null;
+    let webrtcPollTimer = null;
     const captureRetryDelayMs = 2000;
+    const captureIdlePollMs = 800;
+    const captureActivePollMs = 200;
+    const captureBusyPollMs = 1000;
+    const webrtcPollMs = 1000;
+    const RTC_CONFIG = {
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    };
 
     function setStatus(message) {
         statusEl.textContent = message;
@@ -148,9 +158,22 @@
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
-            throw new Error(payload.message || `HTTP ${response.status}`);
+            throwHttpError(payload, response.status);
         }
         return payload;
+    }
+
+    function throwHttpError(payload, status) {
+        const reason = payload.reason ? ` (${payload.reason})` : '';
+        const error = new Error(`${payload.message || `HTTP ${status}`}${reason}`);
+        error.payload = payload;
+        error.status = status;
+        throw error;
+    }
+
+    async function fetchCaptureState() {
+        const response = await fetch('/api/state/', { cache: 'no-store' });
+        return response.json();
     }
 
     async function startCamera() {
@@ -189,7 +212,9 @@
             localVideo.srcObject = localStream;
             startPanel.classList.add('hidden');
             setStatus('相機已開啟，等待 dashboard 連線與拍攝命令。');
-            currentOfferSdp = null;
+            currentOfferId = 0;
+            knownAnswerId = 0;
+            restartWebrtcPolling(0);
         } catch (error) {
             setStatus(`相機開啟失敗：${error.name || 'Error'}，${error.message || '請檢查瀏覽器權限設定。'}`);
             startButton.disabled = false;
@@ -201,7 +226,7 @@
             peerConnection.close();
         }
         dashboardIceIndex = 0;
-        peerConnection = new RTCPeerConnection();
+        peerConnection = new RTCPeerConnection(RTC_CONFIG);
         localStream.getTracks().forEach((track) => {
             peerConnection.addTrack(track, localStream);
         });
@@ -214,63 +239,107 @@
             }
         };
         peerConnection.onconnectionstatechange = () => {
-            setStatus(`串流狀態：${peerConnection.connectionState}`);
+            renderWebRTCStatus();
+        };
+        peerConnection.oniceconnectionstatechange = () => {
+            renderWebRTCStatus();
         };
     }
 
     async function handleWebrtcState(data) {
-        if (!localStream || !data.offer) {
+        const offerId = Number(data.offer_id || 0);
+        if (!localStream) {
+            if (data.offer_present) {
+                setStatus('dashboard 已送出即時畫面請求，請先開啟相機以回覆 WebRTC answer。');
+            }
             return;
         }
 
-        if (data.offer.sdp !== currentOfferSdp) {
-            currentOfferSdp = data.offer.sdp;
+        if (data.offer) {
+            currentOfferId = offerId;
+            knownAnswerId = Number(data.answer_id || 0);
             createPeerConnection();
             await peerConnection.setRemoteDescription(data.offer);
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
-            await postJson('/api/webrtc/answer', {
+            const answerPayload = await postJson('/api/webrtc/answer', {
                 answer: {
                     type: peerConnection.localDescription.type,
                     sdp: peerConnection.localDescription.sdp,
                 },
             });
+            knownAnswerId = Number(answerPayload.answer_id || knownAnswerId);
             setStatus('已連線 dashboard 即時畫面。');
+        } else if (offerId && offerId !== currentOfferId) {
+            currentOfferId = 0;
+            restartWebrtcPolling(0);
+            return;
         }
 
         const dashboardIce = data.dashboard_ice || [];
-        while (dashboardIceIndex < dashboardIce.length && peerConnection) {
-            const candidate = dashboardIce[dashboardIceIndex];
-            dashboardIceIndex += 1;
+        for (const candidate of dashboardIce) {
+            if (!peerConnection) {
+                break;
+            }
             try {
                 await peerConnection.addIceCandidate(candidate);
             } catch (error) {
                 console.warn('加入 dashboard ICE candidate 失敗', error);
             }
         }
+        dashboardIceIndex = typeof data.dashboard_ice_total === 'number'
+            ? data.dashboard_ice_total
+            : dashboardIceIndex + dashboardIce.length;
+        renderWebRTCStatus(data);
     }
 
     async function pollWebrtcState() {
         try {
-            const response = await fetch('/api/webrtc/state');
+            const params = new URLSearchParams({
+                dashboard_ice_from: String(dashboardIceIndex),
+                known_offer_id: String(currentOfferId),
+                known_answer_id: String(knownAnswerId),
+            });
+            const response = await fetch(`/api/webrtc/state?${params.toString()}`, { cache: 'no-store' });
             const data = await response.json();
             await handleWebrtcState(data);
+            return data;
         } catch (error) {
             console.warn('WebRTC signaling 同步失敗', error);
+            return null;
         }
+    }
+
+    function renderWebRTCStatus(data = null) {
+        if (!peerConnection) {
+            return;
+        }
+        const debug = data
+            ? `，offer:${data.offer_present ? '有' : '無'} #${data.offer_id || 0} answer:${data.answer_present ? '有' : '無'} #${data.answer_id || 0} ICE:${data.dashboard_ice_total || 0}/${data.camera_ice_total || 0}`
+            : '';
+        const failedHint = peerConnection.connectionState === 'failed' || peerConnection.iceConnectionState === 'failed'
+            ? '，請回 dashboard 按重新連線串流'
+            : '';
+        setStatus(`串流狀態：${peerConnection.connectionState} / ICE：${peerConnection.iceConnectionState}${debug}${failedHint}`);
     }
 
     async function pollCaptureState() {
         try {
-            const response = await fetch('/api/state/');
-            const data = await response.json();
+            const data = await fetchCaptureState();
+            if (data.status === 'error') {
+                setStatus(data.message || 'Django 拍攝流程發生錯誤。');
+                return data;
+            }
+            const stationIndex = Number(data.station_index || data.active_station_index || 0);
+            const requestKey = `${data.active_fruit_id || ''}:${data.capture_token || 0}:${stationIndex}`;
             if (
-                data.pending_capture &&
-                data.capture_token !== lastCaptureToken &&
+                data.capture_requested &&
+                stationIndex > 0 &&
+                requestKey !== lastCaptureRequestKey &&
                 !isCapturing
             ) {
                 if (
-                    data.capture_token === lastFailedCaptureToken &&
+                    requestKey === lastFailedCaptureRequestKey &&
                     Date.now() - lastCaptureFailureTime < captureRetryDelayMs
                 ) {
                     return;
@@ -278,61 +347,108 @@
                 const completed = await captureAndUpload(
                     data.active_fruit_id,
                     data.capture_token,
-                    data.capture_interval_ms || 220
+                    stationIndex
                 );
                 if (completed) {
-                    lastCaptureToken = data.capture_token;
-                    lastFailedCaptureToken = 0;
+                    lastCaptureRequestKey = requestKey;
+                    lastFailedCaptureRequestKey = '';
                     lastCaptureFailureTime = 0;
                 } else {
-                    lastFailedCaptureToken = data.capture_token;
+                    lastFailedCaptureRequestKey = requestKey;
                     lastCaptureFailureTime = Date.now();
                 }
             }
+            return data;
         } catch (error) {
             console.warn('拍攝狀態同步失敗', error);
+            return null;
         }
     }
 
-    async function captureAndUpload(fruitId, captureToken, captureIntervalMs) {
+    function capturePollDelay(data) {
+        if (isCapturing) {
+            return captureBusyPollMs;
+        }
+        if (data && (data.capture_requested || data.active_fruit_id)) {
+            return captureActivePollMs;
+        }
+        return captureIdlePollMs;
+    }
+
+    function restartCapturePolling(delayMs = 0) {
+        if (capturePollTimer !== null) {
+            window.clearTimeout(capturePollTimer);
+        }
+        capturePollTimer = window.setTimeout(runCapturePollLoop, delayMs);
+    }
+
+    async function runCapturePollLoop() {
+        capturePollTimer = null;
+        if (document.hidden) {
+            return;
+        }
+        const data = await pollCaptureState();
+        restartCapturePolling(capturePollDelay(data));
+    }
+
+    function restartWebrtcPolling(delayMs = 0) {
+        if (webrtcPollTimer !== null) {
+            window.clearTimeout(webrtcPollTimer);
+        }
+        webrtcPollTimer = window.setTimeout(runWebrtcPollLoop, delayMs);
+    }
+
+    async function runWebrtcPollLoop() {
+        webrtcPollTimer = null;
+        if (document.hidden) {
+            return;
+        }
+        await pollWebrtcState();
+        restartWebrtcPolling(webrtcPollMs);
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            if (capturePollTimer !== null) {
+                window.clearTimeout(capturePollTimer);
+                capturePollTimer = null;
+            }
+            if (webrtcPollTimer !== null) {
+                window.clearTimeout(webrtcPollTimer);
+                webrtcPollTimer = null;
+            }
+            return;
+        }
+        restartCapturePolling(0);
+        restartWebrtcPolling(0);
+    });
+
+    async function captureAndUpload(fruitId, captureToken, stationIndex) {
         if (!localStream) {
             setStatus('尚未開啟相機，無法拍攝。');
             return false;
         }
         isCapturing = true;
-        setStatus(`收到 ${fruitId} 拍攝命令，開始連拍 6 張。`);
+        setStatus(`收到 ${fruitId} 第 ${stationIndex} 站拍攝請求，準備拍攝單張照片。`);
 
         try {
             await waitForVideoReady();
-            await postJson('/api/capture_started/', {
-                fruit_id: fruitId,
-                capture_token: captureToken,
-            });
+            await notifyCaptureStarted(fruitId, captureToken, stationIndex);
 
             const formData = new FormData();
             formData.append('fruit_id', fruitId);
             formData.append('capture_token', captureToken);
-            const captureTimestamps = [];
+            formData.append('station_index', stationIndex);
+            const capturedAt = performance.now();
+            const blob = await captureFrameBlob();
+            formData.append('image', blob, `img_${String(stationIndex).padStart(2, '0')}.jpg`);
+            setStatus(`${fruitId} 第 ${stationIndex} 站照片已拍攝，正在上傳。`);
 
-            for (let index = 1; index <= 6; index += 1) {
-                captureTimestamps.push(performance.now());
-                const blob = await captureFrameBlob();
-                formData.append('images', blob, `img_${String(index).padStart(2, '0')}.jpg`);
-                setStatus(`${fruitId} 已拍攝 ${index}/6 張。`);
-                if (index < 6 && captureIntervalMs > 0) {
-                    await sleep(captureIntervalMs);
-                }
-            }
-
-            const captureIntervals = [];
-            for (let index = 1; index < captureTimestamps.length; index += 1) {
-                captureIntervals.push(Number((captureTimestamps[index] - captureTimestamps[index - 1]).toFixed(1)));
-            }
             formData.append('capture_meta', JSON.stringify({
                 capture_token: captureToken,
-                configured_interval_ms: captureIntervalMs,
-                timestamps_ms: captureTimestamps.map((value) => Number(value.toFixed(1))),
-                intervals_ms: captureIntervals,
+                station_index: stationIndex,
+                timestamps_ms: [Number(capturedAt.toFixed(1))],
+                intervals_ms: [],
             }));
 
             const response = await fetch('/api/upload_images/', {
@@ -341,15 +457,40 @@
             });
             if (!response.ok) {
                 const payload = await response.json().catch(() => ({}));
-                throw new Error(payload.message || `HTTP ${response.status}`);
+                throwHttpError(payload, response.status);
             }
-            setStatus(`${fruitId} 六張照片已上傳完成。`);
+            setStatus(`${fruitId} 第 ${stationIndex} 站照片已上傳完成。`);
             return true;
         } catch (error) {
             setStatus(`拍攝或上傳失敗：${error.message}`);
             return false;
         } finally {
             isCapturing = false;
+        }
+    }
+
+    async function notifyCaptureStarted(fruitId, captureToken, stationIndex) {
+        try {
+            await postJson('/api/capture_started/', {
+                fruit_id: fruitId,
+                capture_token: captureToken,
+                station_index: stationIndex,
+            });
+            return;
+        } catch (error) {
+            const data = await fetchCaptureState();
+            const currentStation = Number(data.station_index || data.active_station_index || 0);
+            const sameCaptureRequest = (
+                data.capture_requested &&
+                data.active_fruit_id === fruitId &&
+                Number(data.capture_token) === Number(captureToken) &&
+                currentStation === Number(stationIndex)
+            );
+            if (sameCaptureRequest) {
+                setStatus(`開始拍攝回報失敗但同站請求仍有效，繼續上傳：${error.message}`);
+                return;
+            }
+            throw error;
         }
     }
 
@@ -378,14 +519,10 @@
         });
     }
 
-    function sleep(ms) {
-        return new Promise((resolve) => setTimeout(resolve, ms));
-    }
-
     updateDiagnostic();
     startButton.addEventListener('click', startCamera);
-    setInterval(pollWebrtcState, 500);
-    setInterval(pollCaptureState, 150);
+    restartWebrtcPolling(0);
+    restartCapturePolling(0);
 </script>
 </body>
 </html>
