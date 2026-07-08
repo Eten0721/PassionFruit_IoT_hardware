@@ -60,11 +60,12 @@ const unsigned long reportRetryIntervalMS = 1000;
 const unsigned long autoTriggerReportRetryIntervalMS = 1000;
 const unsigned long wifiConnectTimeoutMS = 15000;
 const unsigned long commandHttpTimeoutMS = 1500;
-const unsigned long autoTriggerReportTimeoutMS = 1500;
+const unsigned long autoTriggerReportTimeoutMS = 1000;
 const unsigned long reportHttpTimeoutMS = 5000;
 const unsigned long startSequenceWaitLimitMS = 10000;
 const unsigned long commandFailureBackoffMinMS = 1500;
 const unsigned long commandFailureBackoffMaxMS = 10000;
+const bool verboseHttpResponseLog = false;
 
 unsigned long lastSensorReadMS = 0;
 unsigned long lastCommandPollMS = 0;
@@ -130,12 +131,20 @@ void allowImmediateCommandPoll(unsigned long currentTime);
 void queueReport(const String& event, int stationIndex, int commandId, const String& message);
 void flushPendingReport(unsigned long currentTime);
 void queueAutoTriggerReport();
-void flushAutoTriggerReport(unsigned long currentTime);
+bool flushAutoTriggerReport(unsigned long currentTime);
 void clearAutoTriggerReportPending(const String& reason);
 void enableFastStartSequencePolling(unsigned long currentTime, const String& reason);
 void clearStartSequenceWaitState(const String& reason);
 void checkStartSequenceWaitTimeout(unsigned long currentTime);
 bool reportSuggestsStartSequenceWaiting();
+bool handleStartSequenceFromReportResponse(unsigned long currentTime, const String& reason);
+bool parseStartSequenceCommandFromReportResponse(MotorCommand& command);
+String extractJsonObject(const String& body, const String& objectKey);
+String readJsonString(const String& body, const String& key);
+int readJsonInt(const String& body, const String& key, int defaultValue);
+bool responseHasIgnored(const String& response);
+bool responseHasStartSequence(const String& response);
+void printReportHttpSummary(const String& event, int httpCode, const String& response);
 bool shouldQueueAutoTrigger(float distanceCM, unsigned long currentTime, String& reason);
 void printTriggerDebug(const String& reason, float distanceCM, unsigned long currentTime, bool force);
 void printTiming(const String& eventName);
@@ -183,7 +192,9 @@ void loop() {
     handleSensor(currentTime);
   }
 
-  flushAutoTriggerReport(currentTime);
+  if (flushAutoTriggerReport(currentTime)) {
+    return;
+  }
   checkStartSequenceWaitTimeout(currentTime);
 
   const unsigned long pollInterval = currentCommandPollInterval();
@@ -591,14 +602,8 @@ bool postReportWithTimeout(const String& event, int stationIndex, int commandId,
   http.end();
   requestClient.stop();
 
-  Serial.print("Report ");
-  Serial.print(event);
-  Serial.print(" HTTP ");
-  Serial.println(httpCode);
-  if (response.length() > 0) {
-    Serial.println(response);
-  }
-  lastReportIgnored = response.indexOf("\"ignored\": true") >= 0 || response.indexOf("\"ignored\":true") >= 0;
+  lastReportIgnored = responseHasIgnored(response);
+  printReportHttpSummary(event, httpCode, response);
 
   return httpCode >= 200 && httpCode < 300;
 }
@@ -647,41 +652,52 @@ void queueAutoTriggerReport() {
   lastAutoTriggerReportMS = 0;
 }
 
-void flushAutoTriggerReport(unsigned long currentTime) {
+bool flushAutoTriggerReport(unsigned long currentTime) {
   if (!autoTriggerReportPending) {
-    return;
+    return false;
   }
   if (lastAutoTriggerReportMS != 0 && currentTime - lastAutoTriggerReportMS < autoTriggerReportRetryIntervalMS) {
-    return;
+    return false;
   }
 
-  lastAutoTriggerReportMS = currentTime;
   if (!postReportWithTimeout("hcsr04_trigger", 0, 0, "distance_trigger", autoTriggerReportTimeoutMS)) {
+    const unsigned long afterPostTime = millis();
+    lastAutoTriggerReportMS = afterPostTime;
     printTiming("hcsr04_trigger_post_timeout");
-    enableFastStartSequencePolling(currentTime, "hcsr04_trigger_post_timeout");
-    Serial.println("Auto trigger report failed. It will be retried.");
-    return;
+    enableFastStartSequencePolling(afterPostTime, "hcsr04_trigger_post_timeout");
+    Serial.println("Auto trigger report failed. Fast command polling will run before the next trigger retry.");
+    return true;
   }
+  const unsigned long afterPostTime = millis();
+  lastAutoTriggerReportMS = afterPostTime;
   printTiming("hcsr04_trigger_post_success");
+
+  if (handleStartSequenceFromReportResponse(afterPostTime, "hcsr04_response_start_sequence")) {
+    return true;
+  }
 
   if (lastReportIgnored) {
     if (reportSuggestsStartSequenceWaiting()) {
       printTiming("duplicate_trigger_waiting_start_sequence");
-      enableFastStartSequencePolling(currentTime, "duplicate_trigger_waiting_start_sequence");
+      if (handleStartSequenceFromReportResponse(afterPostTime, "duplicate_trigger_start_sequence")) {
+        return true;
+      }
+      enableFastStartSequencePolling(afterPostTime, "duplicate_trigger_waiting_start_sequence");
       clearAutoTriggerReportPending("server_has_existing_start_sequence");
       Serial.println("Auto trigger duplicate confirmed. Waiting for start_sequence command.");
-      return;
+      return true;
     }
 
     clearStartSequenceWaitState("server_ignored_trigger");
     clearAutoTriggerReportPending("server_ignored_trigger");
     Serial.println("Auto trigger was ignored by server. Waiting for sensor area to clear.");
-    return;
+    return true;
   }
 
-  enableFastStartSequencePolling(currentTime, "server_accepted_trigger");
+  enableFastStartSequencePolling(afterPostTime, "server_accepted_trigger");
   clearAutoTriggerReportPending("server_accepted_trigger");
   Serial.println("Auto trigger accepted. Waiting for start_sequence command.");
+  return true;
 }
 
 void clearAutoTriggerReportPending(const String& reason) {
@@ -734,6 +750,193 @@ bool reportSuggestsStartSequenceWaiting() {
   const bool startSequenceCommand = lastReportResponse.indexOf("start_sequence") >= 0;
   const bool duplicateReason = lastReportResponse.indexOf("duplicate_trigger_waiting_start_sequence") >= 0;
   return duplicateReason || (waitingStartStatus && startSequenceCommand);
+}
+
+bool handleStartSequenceFromReportResponse(unsigned long currentTime, const String& reason) {
+  MotorCommand command;
+  if (!parseStartSequenceCommandFromReportResponse(command)) {
+    return false;
+  }
+  if (command.commandId == lastConfirmedCommandId) {
+    clearAutoTriggerReportPending(reason + "_already_confirmed");
+    Serial.println("Start_sequence command from report ignored: command already confirmed.");
+    return true;
+  }
+
+  commandBackoffUntilMS = 0;
+  consecutiveCommandFailures = 0;
+  lastCommandPollMS = currentTime;
+  clearAutoTriggerReportPending(reason);
+  Serial.print("Start_sequence command found in report response. Executing without command polling. command_id=");
+  Serial.println(command.commandId);
+  handleCommand(command);
+  return true;
+}
+
+bool parseStartSequenceCommandFromReportResponse(MotorCommand& command) {
+  const String motorCommandBody = extractJsonObject(lastReportResponse, "motor_command");
+  if (motorCommandBody.length() == 0) {
+    return false;
+  }
+
+  const String commandName = readJsonString(motorCommandBody, "command");
+  if (commandName != "start_sequence") {
+    return false;
+  }
+
+  const int commandId = readJsonInt(motorCommandBody, "command_id", 0);
+  if (commandId <= 0) {
+    return false;
+  }
+
+  command.command = commandName;
+  command.commandId = commandId;
+  command.stationIndex = readJsonInt(motorCommandBody, "station_index", 1);
+  command.homeAngle = readJsonInt(motorCommandBody, "home_angle", HOME_ANGLE);
+  command.releaseAngle = readJsonInt(motorCommandBody, "release_angle", RELEASE_ANGLE);
+  command.servoSettleMs = readJsonInt(motorCommandBody, "servo_settle_ms", servoSettleMS);
+  command.fruitSettleMs = readJsonInt(motorCommandBody, "fruit_settle_ms", fruitSettleMS);
+  command.autoTriggerEnabled = false;
+  command.serverStatus = "waiting_esp32_start";
+
+  if (command.stationIndex <= 0) {
+    command.stationIndex = 1;
+  }
+  if (command.servoSettleMs <= 0) {
+    command.servoSettleMs = servoSettleMS;
+  }
+  if (command.fruitSettleMs <= 0) {
+    command.fruitSettleMs = fruitSettleMS;
+  }
+  return true;
+}
+
+String extractJsonObject(const String& body, const String& objectKey) {
+  const String pattern = "\"" + objectKey + "\"";
+  const int keyIndex = body.indexOf(pattern);
+  if (keyIndex < 0) {
+    return "";
+  }
+
+  const int objectStart = body.indexOf('{', keyIndex + pattern.length());
+  if (objectStart < 0) {
+    return "";
+  }
+
+  int depth = 0;
+  for (int index = objectStart; index < body.length(); index += 1) {
+    const char current = body.charAt(index);
+    if (current == '{') {
+      depth += 1;
+    } else if (current == '}') {
+      depth -= 1;
+      if (depth == 0) {
+        return body.substring(objectStart, index + 1);
+      }
+    }
+  }
+  return "";
+}
+
+String readJsonString(const String& body, const String& key) {
+  const String pattern = "\"" + key + "\"";
+  const int keyIndex = body.indexOf(pattern);
+  if (keyIndex < 0) {
+    return "";
+  }
+
+  const int colonIndex = body.indexOf(':', keyIndex + pattern.length());
+  if (colonIndex < 0) {
+    return "";
+  }
+
+  const int valueStart = body.indexOf('"', colonIndex + 1);
+  if (valueStart < 0) {
+    return "";
+  }
+  const int valueEnd = body.indexOf('"', valueStart + 1);
+  if (valueEnd < 0) {
+    return "";
+  }
+  return body.substring(valueStart + 1, valueEnd);
+}
+
+int readJsonInt(const String& body, const String& key, int defaultValue) {
+  const String pattern = "\"" + key + "\"";
+  const int keyIndex = body.indexOf(pattern);
+  if (keyIndex < 0) {
+    return defaultValue;
+  }
+
+  const int colonIndex = body.indexOf(':', keyIndex + pattern.length());
+  if (colonIndex < 0) {
+    return defaultValue;
+  }
+
+  int index = colonIndex + 1;
+  while (index < body.length()) {
+    const char current = body.charAt(index);
+    if (current != ' ' && current != '"' && current != '\t') {
+      break;
+    }
+    index += 1;
+  }
+
+  int sign = 1;
+  if (index < body.length() && body.charAt(index) == '-') {
+    sign = -1;
+    index += 1;
+  }
+
+  long value = 0;
+  bool hasDigit = false;
+  while (index < body.length()) {
+    const char current = body.charAt(index);
+    if (current < '0' || current > '9') {
+      break;
+    }
+    hasDigit = true;
+    value = (value * 10) + (current - '0');
+    index += 1;
+  }
+
+  if (!hasDigit) {
+    return defaultValue;
+  }
+  return static_cast<int>(value * sign);
+}
+
+bool responseHasIgnored(const String& response) {
+  return response.indexOf("\"ignored\": true") >= 0 || response.indexOf("\"ignored\":true") >= 0;
+}
+
+bool responseHasStartSequence(const String& response) {
+  return response.indexOf("start_sequence") >= 0;
+}
+
+void printReportHttpSummary(const String& event, int httpCode, const String& response) {
+  const String motorCommandBody = extractJsonObject(response, "motor_command");
+  const int responseCommandId = readJsonInt(motorCommandBody, "command_id", 0);
+
+  Serial.print("Report ");
+  Serial.print(event);
+  Serial.print(" HTTP ");
+  Serial.print(httpCode);
+  Serial.print(" body_length=");
+  Serial.print(response.length());
+  Serial.print(" ignored=");
+  Serial.print(responseHasIgnored(response) ? "1" : "0");
+  Serial.print(" start_sequence=");
+  Serial.print(responseHasStartSequence(response) ? "1" : "0");
+  if (responseCommandId > 0) {
+    Serial.print(" command_id=");
+    Serial.print(responseCommandId);
+  }
+  Serial.println();
+
+  if (verboseHttpResponseLog && response.length() > 0) {
+    Serial.println(response);
+  }
 }
 
 void printTriggerDebug(const String& reason, float distanceCM, unsigned long currentTime, bool force) {
