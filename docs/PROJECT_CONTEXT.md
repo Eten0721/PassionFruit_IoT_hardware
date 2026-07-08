@@ -1,177 +1,142 @@
-# 百香果檢測專題：專案進度導覽
+# 百香果辨識系統專案脈絡
 
 ## 1. 專案目標
 
-本專題目標是建立一套百香果品質檢測與自動分級系統。
+本專案目標是建立百香果照片蒐集、資料集管理與後續 AI 分級辨識流程。現階段重點是先穩定「資料採集」，讓每顆百香果能在固定軌道上停留於三個拍攝站點，各拍攝 1 張照片，形成可分類與可訓練的資料。
 
-系統流程概念如下：
+舊版「滾動中連拍 6 張」已停止作為主要方向。新版架構以 Django 中央狀態機協調手機相機與 ESP32 三段 SG90 閘門，完成三站停止拍攝。
 
-1. 百香果經由單顆化機構（singulation mechanism）或輸送機構依序進入拍攝區。
-2. 百香果在拍攝區向下滾動，Django 透過中央狀態機協調手機與 ESP32，於三個拍攝站點各拍攝一張照片。
-3. 電腦端接收影像後，透過 AI 模型分析百香果表面特徵與品質。
-4. 決策層根據模型結果判斷品質級距。
-5. 硬體分類機構依照判斷結果將百香果送往對應區域。
-
-## 2. 整體系統架構
-
-目前系統可分為四層：
+## 2. 目前系統架構
 
 ```text
-硬體流水線層
-  單顆化機構 / 送料入管機構
-  拍攝管道
-  分類機構
+HC-SR04 / dashboard
+  -> 觸發一顆百香果拍攝工作階段
 
-影像採集層
-  手機相機(iPhone Xs Max)
-  拍攝罩(將拍攝平台遮起來，並在頂部裝LED燈條(色溫4000K)與手機)
-  漫射光源(將LED燈條覆蓋描圖紙)
-  Django 影像上傳與資料管理
+Django Server
+  -> 中央狀態機
+  -> 手機拍攝請求
+  -> ESP32 馬達命令
+  -> dataset/temp 與分類資料夾管理
+  -> metadata.csv
 
-AI 檢測層
-  YOLO / YOLO-cls / YOLO-detect
-  多階段檢測流程
-  顏色、皺度、瑕疵等特徵分析
+手機相機頁 /camera/
+  -> 輪詢 Django
+  -> 單站拍攝 1 張
+  -> 上傳 img_01.jpg / img_02.jpg / img_03.jpg
 
-決策與控制層
-  品質級距判斷
-  Django 中央狀態機
-  ESP32 輪詢馬達命令
-  分類器控制
+ESP32 firmware
+  -> HTTPS client
+  -> HC-SR04 自動觸發
+  -> 輪詢 Django motor command
+  -> 控制 3 顆 SG90 閘門
+  -> 回報 station ready / finished
 ```
 
-## 3. 硬體流水線流程
-
-百香果會通過一條輸送路徑，進入拍攝區。拍攝後，電腦端會進行 AI 品質分析，最後由分類機構將百香果分流到「上等、中等、下等、加工、廢棄」。
-
-資料採集概念是：
-
-1. 單次只讓一顆百香果進入拍攝管道。
-2. 讓百香果透過重力自然滾動。
-3. 使用三段 SG90 閘門，使百香果在三個站點短暫停留；每站照片上傳完成後才放行到下一站。
-4. 拍攝完成後，百香果自然滾落到分類器上方。
-
-## 4. 拍攝管道與光源設計
-
-拍攝區需要加入罩子，減少外部環境光干擾。罩子上方或側面應配置漫射光，以避免百香果表面反光。
-
-光源方案採用「LED 燈條 + 柔光材料」為主，目標是讓皺褶、蟲爬痕、擦傷、炭疽病初期斑點等細節清楚可見。
-
-## 5. 影像採集裝置決策
-
-### 目前採用方向
-
-正式資料集採集與品質辨識階段，改採用較高解析度且成像品質較穩定的攝影裝置，例如：
+正式 firmware 位於：
 
 ```text
-手機相機(iPhone Xs Max)
-
+firmware/Three_Gate_Data_Collection/Three_Gate_Data_Collection.ino
 ```
-目前使用手機相機作為資料採集端，並透過 Django 提供手機端拍照頁面與電腦端 dashboard。
 
-## 6. MCU 與電腦端分工
+## 3. 現行拍攝流程
 
-目前硬體控制方向是使用 ESP32 作為控制板，電腦端則負責 Django API、影像管理、模型推論與決策。
+手動拍攝與自動拍攝只差在開始訊號來源：
 
-目前分工：
+- 自動模式：HC-SR04 偵測百香果進入軌道，ESP32 回報 `hcsr04_trigger`。
+- 手動模式：使用者在 dashboard 按下「手動拍攝」，Django 建立同一套開始請求。
+
+後續流程一致：
+
+1. Django 建立拍攝工作階段與 `start_sequence` motor command。
+2. ESP32 取得 `start_sequence`，確認第 1 站可拍攝後回報 `station_1_ready`。
+3. Django 設定第 1 站拍攝請求。
+4. 手機輪詢 `/api/state/`，拍攝並上傳 `img_01.jpg`。
+5. Django 保存成功後建立 `release_gate_1`。
+6. ESP32 放行第 1 閘門，百香果到達第 2 站後回報 `station_2_ready`。
+7. 第 2、3 站重複相同握手。
+8. Django 收到 `img_03.jpg` 後建立 `release_gate_3`。
+9. ESP32 放行第 3 閘門，等待百香果滾出後三顆馬達歸位，回報 `capture_sequence_finished`。
+10. 使用者在 dashboard 確認照片並分類。
+
+手機是否完成拍攝一律以 Django 收到並保存照片為準，不使用固定延遲猜測手機狀態。
+
+## 4. 硬體基準
+
+目前正式三閘門流程使用 3 顆 SG90：
+
+- Gate 1：GPIO `18`
+- Gate 2：GPIO `19`
+- Gate 3：GPIO `21`
+- HC-SR04 Trig：GPIO `26`
+- HC-SR04 Echo：GPIO `27`
+
+角度基準：
+
+- `HOME_ANGLE = 0`：攔截／歸位。
+- `RELEASE_ANGLE = 90`：放行。
+
+目前 timing 基準：
+
+- HC-SR04 觸發距離：`6.0 cm`
+- HC-SR04 重新待命距離：`8.0 cm`
+- `servo_settle_ms = 150`
+- `fruit_settle_ms = 300`
+- 第 1 站停穩測試值：`100 ms`
+- 第 3 站放行後歸位前額外等待：`300 ms`
+
+這些數值是目前實測版本，後續可依照片模糊、百香果滾動速度與機構摩擦狀況微調。
+
+## 5. Django 頁面與 API 角色
+
+主要頁面：
+
+- `/camera/`：手機相機頁，負責即時影像、輪詢拍攝請求、單張拍攝與上傳。
+- `/dashboard/`：電腦控制頁，負責手動觸發、流程狀態、三張照片預覽、分類與刪除。
+
+主要 API 角色：
+
+- `GET /api/state/`：手機與 dashboard 讀取目前拍攝狀態。
+- `POST /api/capture_started/`：手機回報開始拍攝 timing。
+- `POST /api/upload_images/`：手機上傳單站照片。
+- `GET /api/esp32/command/?format=text`：ESP32 輪詢 Django motor command。
+- `POST /api/esp32/report/`：ESP32 回報 `hcsr04_trigger`、`station_1_ready`、`station_2_ready`、`station_3_ready`、`capture_sequence_finished`。
+
+ESP32 是 HTTPS client，Django 不主動呼叫 ESP32。
+
+## 6. 自動觸發延遲優化
+
+目前已完成 `hcsr04_trigger -> start_sequence` 的延遲優化：
+
+- ESP32 預設不印完整 Django JSON response，只印 HTTP code、body length、ignored、start_sequence 與 command id 摘要。
+- 若 `hcsr04_trigger` response 內含 `motor_command.command=start_sequence`，ESP32 直接執行，不多等一次 command polling。
+- 若 `hcsr04_trigger` POST timeout，ESP32 會先進入 fast command polling 嘗試取得 Django 已建立的 `start_sequence`，不立即回到 idle polling。
+- 重複 `hcsr04_trigger` 必須冪等，不建立新的 fruit，也不覆蓋既有 motor command。
+
+## 7. 資料集結構
 
 ```text
-手機相機
-  負責影像採集
-  透過 Django 前端頁面開啟相機
-  輪詢 Django 拍攝請求
-  每個拍攝站點拍攝並上傳單張照片
+dataset/
+  temp/
+    fruit_001/
+      img_01.jpg
+      img_02.jpg
+      img_03.jpg
 
-Django 電腦端
-  提供手機端 /camera/ 頁面
-  提供電腦端 /dashboard/ 頁面
-  作為拍攝工作階段中央狀態機
-  接收照片
-  管理 dataset、metadata.csv、counter.json
-  後續負責 AI 推論與決策
-  提供 ESP32 輪詢馬達命令與回報站點狀態的 API
+  上中等/
+    fruit_001/
+      img_01.jpg
+      img_02.jpg
+      img_03.jpg
 
-ESP32
-  負責接收感測器訊號
-  以 HTTPS client 輪詢 Django
-  控制三段 SG90 閘門攔截與放行
-  回報站點就緒與流程完成
-  後續接收 Django 分類結果
-  控制馬達、伺服機與分類機構
+  下等/
+  加工/
+  廢棄/
+
+  metadata.csv
+  counter.json
 ```
 
-## 7. Django 與 API 溝通方向
-
-本專題使用 Django 作為電腦端控制中心與 API 溝通層。
-
-Django 可提供兩種前端頁面：
-
-```text
-/camera/
-  給手機使用
-  畫面以滿版相機預覽為主
-  負責開啟手機相機、輪詢每站拍攝請求、拍攝單張照片並上傳
-
-/dashboard/
-  給電腦使用
-  顯示完整 GUI
-  包含手動拍攝、目前 fruit_id、三張照片預覽、分類按鈕、刪除或跳過功能
-```
-
-ESP32 以 HTTPS client 身分呼叫 Django API，例如：
-
-```text
-POST /api/trigger/
-GET /api/esp32/command/
-POST /api/esp32/report/
-```
-
-手機端也會輪詢 Django API 取得拍攝請求，例如：
-
-```text
-GET /api/state/
-POST /api/upload_images/
-```
-
-手動拍攝與自動拍攝只差在開始訊號來源。自動模式由 HC-SR04 觸發 ESP32，ESP32 回報 Django 開始拍攝工作階段；手動模式由使用者在 dashboard 按下手動拍攝，Django 建立開始請求，ESP32 輪詢 Django 後開始同一套三段 SG90 閘門流程。後續攔截、拍攝、放行與資料儲存流程必須一致。
-
-手機是否完成拍攝不靠固定延遲判斷，而是以 Django 收到並保存當站照片為準。Django 保存照片後，才讓 ESP32 輪詢到下一個馬達命令。
-
-## 8. 品質分析特徵
-
-本專案百香果所需考慮特徵如下：
-
-| 分析面向 | 說明 |
-|---|---|
-| 顏色 | 判斷成熟度與新鮮程度 |
-| 皺度 | 分析是否過熟或水分流失 |
-| 炭疽病 | 橘色同心圓 |
-| 蟲爬 | 一條一條的白痕跡爬痕 |
-| 蟲咬 | 像人被蚊子叮一樣腫一包 |
-| 猴痘 | 同心圓腐爛 |
-| 擦傷 | 大面積掉色 |
-| 大小 | 未來可納入；前提是手機鏡頭與平台保持平行，且拍攝距離固定，才可依靠 ROI 面積估算大小 |
-
-## 9. AI 檢測層目前方向
-
-原先曾考慮「果實定位 + 品質分類」兩模型架構。後來調整為 multi-stage pipeline 架構，目標是讓百香果不同維度的特徵都能被掌握。
-
-目前 AI 檢測層可能包含：
-
-```text
-果實定位
-品質分類
-瑕疵偵測
-顏色分析
-皺褶分析
-多模型結果整合
-```
-
-## 10. 決策層目前方向
-
-決策層會根據 AI 檢測層輸出的特徵與分數，判斷百香果最終等級。
-
-目前資料採集與人工分類級距為：
+目前分類級距：
 
 ```text
 上中等
@@ -180,7 +145,7 @@ POST /api/upload_images/
 廢棄
 ```
 
-若硬體架構確立手機鏡頭與平台保持平行且距離固定，未來可把大小特徵納入決策，再將級距擴充為：
+未來若手機鏡頭與平台保持平行且拍攝距離固定，可將 ROI 面積納入「大小」特徵，再評估把 `上中等` 拆成：
 
 ```text
 上等
@@ -190,29 +155,11 @@ POST /api/upload_images/
 廢棄
 ```
 
-未來可能使用的決策方式：
+## 8. AI 整合方向
 
-```text
-規則式判斷
-多模型結果加權
-XGBoost / Random Forest 等機器學習模型
-統計分析
-```
+AI 推論與後段分類器目前暫緩，等待三站資料採集流程穩定後再整合。預期方向仍包含：
 
-## 11. 硬體層目前方向
-
-硬體層包含以下模組：
-```text
-送料入管機構
-拍攝管道
-分類機構
-統計層 / 數據分析
-```
-
-馬達選用：
-```text
-MG996R 伺服馬達 x1
-SG90 伺服馬達 x5
-```
-
-電腦端與 MCU 之間以同一 Wi-Fi 網域進行 HTTP / API 溝通。
+- 百香果 ROI 偵測或裁切。
+- 表面瑕疵與外觀特徵判斷。
+- 大小特徵，前提是拍攝平面與距離固定。
+- 後段分類器，例如 XGBoost / Random Forest。
