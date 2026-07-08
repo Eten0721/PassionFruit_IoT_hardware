@@ -18,7 +18,7 @@
 
   Gate angles:
   - HOME_ANGLE = 0: initial blocking position.
-  - RELEASE_ANGLE = 60: release position.
+  - RELEASE_ANGLE = 90: release position.
 
   Protocol:
   - HC-SR04 automatic trigger reports hcsr04_trigger to Django.
@@ -36,9 +36,9 @@ Servo gateServos[GATE_COUNT];
 const int gatePins[GATE_COUNT] = {18, 19, 21};
 
 const int HOME_ANGLE = 0;
-const int RELEASE_ANGLE = 60;
+const int RELEASE_ANGLE = 90;
 
-const float triggerDistanceCM = 5.0;
+const float triggerDistanceCM = 6.0;
 const float rearmDistanceCM = 8.0;
 
 const unsigned long sensorReadIntervalMS = 50;
@@ -51,7 +51,8 @@ const unsigned long cooldownMS = 3000;
 // High-speed data collection test values. If SG90 movement or fruit settling is
 // unstable in hardware tests, tune these back to 250, 300, or 500 ms.
 const unsigned long servoSettleMS = 150;
-const unsigned long fruitSettleMS = 150;
+const unsigned long fruitSettleMS = 300;
+const unsigned long finalGateReturnDelayMS = 300;
 const unsigned long reportRetryIntervalMS = 1000;
 const unsigned long autoTriggerReportRetryIntervalMS = 1000;
 const unsigned long wifiConnectTimeoutMS = 15000;
@@ -409,6 +410,7 @@ void handleReleaseGate(const MotorCommand& command) {
   }
 
   delay(command.fruitSettleMs);
+  delay(finalGateReturnDelayMS);
   moveAllGates(command.homeAngle);
   delay(command.servoSettleMs);
   gatesAtHome = true;
