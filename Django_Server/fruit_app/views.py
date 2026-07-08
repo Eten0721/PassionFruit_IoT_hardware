@@ -99,6 +99,14 @@ class CaptureCommandError(Exception):
         self.reason = reason
 
 
+def _print_timing_log(event_name, **fields):
+    parts = [f'DJANGO_TIMING {event_name}']
+    for key, value in fields.items():
+        if value is not None:
+            parts.append(f'{key}={value}')
+    print(' '.join(parts), flush=True)
+
+
 def home_view(request):
     return render(request, 'home.html')
 
@@ -333,6 +341,12 @@ def capture_started_api(request):
                 (APP_STATE['capture_started_monotonic'] - command_created) * 1000,
                 1,
             )
+        _print_timing_log(
+            'phone_capture_started',
+            fruit_id=fruit_id,
+            station_index=station_index,
+            command_to_phone_start_ms=APP_STATE['command_to_phone_start_ms'],
+        )
         if APP_STATE['status'] == 'waiting_camera':
             APP_STATE['message'] = f'{fruit_id} 第 {station_index} 站手機端已開始拍攝。'
         payload = {
@@ -396,7 +410,23 @@ def upload_images_api(request):
             return _json_error('上傳完成時拍攝命令已過期，請重新拍攝。', status=409)
         _apply_capture_meta(request.POST.get('capture_meta'))
         APP_STATE['pending_capture'] = False
+        upload_received_monotonic = time.monotonic()
         APP_STATE['upload_received_at'] = _now_string()
+        capture_started_monotonic = APP_STATE.get('capture_started_monotonic')
+        command_created_monotonic = APP_STATE.get('command_created_monotonic')
+        capture_to_upload_ms = None
+        command_to_upload_ms = None
+        if capture_started_monotonic is not None:
+            capture_to_upload_ms = round((upload_received_monotonic - capture_started_monotonic) * 1000, 1)
+        if command_created_monotonic is not None:
+            command_to_upload_ms = round((upload_received_monotonic - command_created_monotonic) * 1000, 1)
+        _print_timing_log(
+            'upload_received_at',
+            fruit_id=active_fruit_id,
+            station_index=station_index,
+            capture_to_upload_ms=capture_to_upload_ms,
+            command_to_upload_ms=command_to_upload_ms,
+        )
         _mark_station_captured(station_index)
         _set_release_command(station_index)
         payload = _state_payload(extra={

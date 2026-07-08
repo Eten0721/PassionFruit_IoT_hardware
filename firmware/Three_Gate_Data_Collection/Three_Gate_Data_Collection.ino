@@ -52,11 +52,15 @@ const unsigned long cooldownMS = 3000;
 // unstable in hardware tests, tune these back to 250, 300, or 500 ms.
 const unsigned long servoSettleMS = 150;
 const unsigned long fruitSettleMS = 300;
+// First gate already blocks the fruit; tune to 150, 200, or 300 ms if the
+// first image is still blurred in hardware tests.
+const unsigned long firstStationSettleMS = 100;
 const unsigned long finalGateReturnDelayMS = 300;
 const unsigned long reportRetryIntervalMS = 1000;
 const unsigned long autoTriggerReportRetryIntervalMS = 1000;
 const unsigned long wifiConnectTimeoutMS = 15000;
 const unsigned long commandHttpTimeoutMS = 1500;
+const unsigned long autoTriggerReportTimeoutMS = 1500;
 const unsigned long reportHttpTimeoutMS = 5000;
 const unsigned long startSequenceWaitLimitMS = 10000;
 const unsigned long commandFailureBackoffMinMS = 1500;
@@ -121,6 +125,7 @@ MotorCommand parseCommand(const String& body);
 String readValue(const String& body, const String& key);
 void beginSecureHttp(HTTPClient& http, WiFiClientSecure& client, const char* url, unsigned long timeoutMS);
 bool postReport(const String& event, int stationIndex, int commandId, const String& message);
+bool postReportWithTimeout(const String& event, int stationIndex, int commandId, const String& message, unsigned long timeoutMS);
 void allowImmediateCommandPoll(unsigned long currentTime);
 void queueReport(const String& event, int stationIndex, int commandId, const String& message);
 void flushPendingReport(unsigned long currentTime);
@@ -381,7 +386,7 @@ void handleStartSequence(const MotorCommand& command) {
     delay(command.servoSettleMs);
     gatesAtHome = true;
   }
-  delay(command.fruitSettleMs);
+  delay(firstStationSettleMS);
   queueReport("station_1_ready", 1, command.commandId, "start_sequence_station_1_ready");
 }
 
@@ -555,6 +560,10 @@ void beginSecureHttp(HTTPClient& http, WiFiClientSecure& client, const char* url
 }
 
 bool postReport(const String& event, int stationIndex, int commandId, const String& message) {
+  return postReportWithTimeout(event, stationIndex, commandId, message, reportHttpTimeoutMS);
+}
+
+bool postReportWithTimeout(const String& event, int stationIndex, int commandId, const String& message, unsigned long timeoutMS) {
   lastReportIgnored = false;
   lastReportResponse = "";
   if (WiFi.status() != WL_CONNECTED) {
@@ -564,7 +573,7 @@ bool postReport(const String& event, int stationIndex, int commandId, const Stri
 
   WiFiClientSecure requestClient;
   HTTPClient http;
-  beginSecureHttp(http, requestClient, reportUrl, reportHttpTimeoutMS);
+  beginSecureHttp(http, requestClient, reportUrl, timeoutMS);
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
 
   String body = "event=" + event;
@@ -647,7 +656,7 @@ void flushAutoTriggerReport(unsigned long currentTime) {
   }
 
   lastAutoTriggerReportMS = currentTime;
-  if (!postReport("hcsr04_trigger", 0, 0, "distance_trigger")) {
+  if (!postReportWithTimeout("hcsr04_trigger", 0, 0, "distance_trigger", autoTriggerReportTimeoutMS)) {
     printTiming("hcsr04_trigger_post_timeout");
     enableFastStartSequencePolling(currentTime, "hcsr04_trigger_post_timeout");
     Serial.println("Auto trigger report failed. It will be retried.");
