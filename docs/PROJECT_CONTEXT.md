@@ -40,6 +40,8 @@ firmware/Three_Gate_Data_Collection/Three_Gate_Data_Collection.ino
 
 入口 sketch 只負責初始化與主迴圈；HC-SR04 讀值、閘門 phase、Django HTTPS client 與採集控制分拆為 `Config.h`、`ProtocolTypes.h`、`DistanceSensor.*`、`GateController.*`、`DjangoApiClient.*` 與 `CaptureController.*`，避免把流程狀態散落在多個 `.ino` tab。
 
+Django 的單程序 runtime state／operation token 位於 `runtime_state.py`，timing 驗證與原子保存位於 `capture_timing.py`，ESP32 response shaping 位於 `api_payloads.py`；`capture_session.py`、`dataset_store.py` 與 `webrtc_signaling.py` 分別負責狀態轉移、dataset primitive／熱路徑 cache 與 signaling。`views.py` 仍保留 HTTP 整合、資料集生命週期與部分狀態機 helper，後續應延續相同責任邊界逐步縮小，不應誤稱為完全薄化。
+
 ## 3. 現行拍攝流程
 
 手動拍攝與自動拍攝在 Django 建立拍攝請求後共用同一套三站狀態機；自動模式可在安全前提成立時壓縮第 1 站前的控制往返：
@@ -101,7 +103,7 @@ HC-SR04 的 Echo 是 `5 V` 邏輯輸出，接到 ESP32 GPIO 前必須經過分�
 主要 API 角色：
 
 - `GET /api/state/`：dashboard 讀取完整拍攝、資料集、控制與 transition trace 狀態。
-- `GET /api/camera/state/`：手機讀取精簡且禁止快取的 state，主要包含 `revision`、fruit、token、站點與 `capture_requested`，並保留 `status`、`active_fruit_id`、`pending_capture` 與 nested `capture` 相容欄位。
+- `GET /api/camera/state/`：手機讀取精簡且禁止快取的 state，主要包含 `revision`、fruit、token、站點與 `capture_requested`，並保留 `status`、`active_fruit_id`、`pending_capture` 與 nested `capture` 相容欄位。此高頻路徑只讀記憶體狀態與套用 timeout，不執行 dataset 掃描或 metadata／counter I/O。
 - `POST /api/capture_timing/`：在 idle 時以完整四項 `*_ms` 設定更新下一顆 fruit 的硬體停穩參數。
 - `POST /api/capture_started/`：手機 best-effort 回報開始拍攝 timing；回報失敗不可阻塞相片擷取或上傳。
 - `POST /api/upload_images/`：手機上傳單站照片。
@@ -119,6 +121,8 @@ ESP32 是 HTTPS client，Django 不主動呼叫 ESP32。
 - ESP32 預設不印完整 Django JSON response，只印 HTTP code、request 耗時、body length、ignored 與是否包含 `start_sequence`；實際處理命令時另印 `Command #...`。
 - 若 `hcsr04_trigger` response 內含 `motor_command.command=start_sequence`，ESP32 直接執行，不多等一次 command polling。
 - 若 `hcsr04_trigger` POST timeout，ESP32 會先進入 fast command polling 嘗試取得 Django 已建立的 `start_sequence`，不立即回到 idle polling。
+- ESP32 等待 `release_gate` 時以 `50 ms` 輪詢；伺服移動、果實停穩與 report pending 階段停止 command polling，避免無效 HTTPS GET。
+- ESP32 report response 只保留 firmware 協定欄位；dashboard 專用圖片、labels、trace 與完整 timing 不再透過硬體回報端點傳送。
 - 重複 `hcsr04_trigger` 必須冪等，不建立新的 fruit，也不覆蓋既有 motor command。
 - HC-SR04 單次 Echo 等待上限為 `12 ms`；Wi-Fi 重連與伺服 phase 以 deadline 驅動，不得在主迴圈使用多秒同步等待。
 - HTTPS 的 connect 與 read 都使用該 request 的 deadline，正常連線採同 origin HTTP/1.1 keep-alive；Wi-Fi 斷線、timeout 或伺服器要求關閉連線時，必須關閉 client 後安全重建。

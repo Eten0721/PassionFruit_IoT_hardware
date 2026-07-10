@@ -26,7 +26,7 @@
 - `sensorReadIntervalMS = 50`
 - `commandPollIntervalMS = 5000`
 - `startSequenceCommandPollIntervalMS = 100`
-- `activeCommandPollIntervalMS = 120`
+- `awaitReleaseCommandPollIntervalMS = 50`
 - `servo_settle_ms = 200`
 - `fruit_settle_ms = 200`
 - `firstStationSettleMS = 200`
@@ -126,7 +126,9 @@ Django 是是否允許開始新 fruit 的唯一狀態來源。
 ## 手機相機頁
 
 - `/camera/` 以 single in-flight polling 輪詢 `/api/camera/state/`；此端點僅供相機頁使用，主要傳回 `revision`、fruit、token、站點與 capture request，並保留 `status`、`active_fruit_id`、`pending_capture` 與 nested `capture` 相容欄位，且禁止快取。
-- idle polling 為 `250 ms`，有 fruit／capture request 時為 `75 ms`，實際擷取或上傳期間為 `250 ms`；state request 使用 `AbortController`，逾時後才排下一輪。頁面進入背景時 polling 會停止，回到前景才重啟。
+- idle polling 為 `250 ms`，有 fruit／capture request 時為 `50 ms`，實際擷取或上傳期間為 `250 ms`；state request 使用 `AbortController`，逾時後才排下一輪。頁面進入背景時 polling 會停止，回到前景才重啟。
+- `/api/camera/state/` 的高頻路徑只可讀取記憶體狀態與套用 session timeout，不得重複掃描 dataset、讀取 counter 或驗證 `metadata.csv` schema。dataset 初始化每個 root 只執行一次，完整檔案系統恢復由啟動、dashboard state 與資料異動流程負責。
+- ESP32 只有在 idle、等待 `start_sequence` 或等待 `release_gate` 時輪詢 command；伺服移動、果實停穩與 report pending 階段不得送出無效 command GET。
 - 每次只在 Django 指定站點時拍攝並上傳 1 張照片。
 - 上傳必須包含 `fruit_id`、`capture_token`、`station_index`。
 - `capture_started` 是 best-effort timing telemetry，不能等待其 HTTP response 才擷取 canvas 或上傳；`capture_meta` 應記錄 request、影格、blob 與 upload 開始的 client timing。

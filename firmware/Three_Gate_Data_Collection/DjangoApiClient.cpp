@@ -92,7 +92,9 @@ HttpResult DjangoApiClient::postReport(
     bool gatesHome,
     bool stationSettled,
     uint32_t timingRevision) {
-  String body = "event=" + encodeFormValue(event);
+  String body;
+  body.reserve(160 + ((event.length() + message.length() + triggerId.length()) * 3));
+  body = "event=" + encodeFormValue(event);
   body += "&station_index=" + String(stationIndex);
   body += "&command_id=" + String(commandId);
   body += "&message=" + encodeFormValue(message);

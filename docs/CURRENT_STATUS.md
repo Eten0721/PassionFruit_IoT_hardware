@@ -19,7 +19,7 @@
 - Wi-Fi 重連、伺服 phase 與等待時間改為 deadline 驅動；Wi-Fi 失敗不再在主迴圈同步等待數秒。
 - 自動觸發可使用受守門的 `hcsr04_station_1_ready` 首站捷徑；本地安全條件不符、捷徑停用或收到可回退的協定拒絕時，會安全回退既有 `hcsr04_trigger -> start_sequence -> station_1_ready`。Gate 1 已攔住果實仍是實機部署前提，並非目前的硬體回授訊號。
 - `trigger_id` 是首站捷徑與 timeout retry 的 server-side 冪等鍵；legacy `hcsr04_trigger` 的重複防護仍由 Django active fruit 與既有 motor command 狀態負責。
-- Django 已提供禁止快取的 `/api/camera/state/`；手機頁使用 `250 ms` idle／`75 ms` active 的 single in-flight polling，並在 state request 加上 `AbortController` timeout。
+- Django 已提供禁止快取的 `/api/camera/state/`；手機頁使用 `250 ms` idle／`50 ms` active 的 single in-flight polling，並在 state request 加上 `AbortController` timeout。高頻路徑已不再重複掃描 dataset、讀取 counter 或驗證 metadata schema。
 - `capture_started` 已改為不阻塞拍照與上傳的 timing telemetry；上傳 `capture_meta` 會帶 client 端 request、影格、blob 與 upload timing。
 - Dashboard 可顯示最近的 transition trace；舊版後端未傳回 trace 時會顯示相容提示。
 - Dashboard 可持久化管理四項拍攝停穩設定；最後一版數值固定原子覆寫至 `runtime_config/capture_timing.json`，Django 以 revision 下發，ESP32 僅在 idle 套用並回報 `timing_config_applied`。
@@ -43,12 +43,15 @@
 - 四項 Dashboard 推薦校正值皆為 `200 ms`；可在 idle 時以 `50 ms` 為步進調整至最多 `3000 ms`。最後一版調整會跨重啟保留，且舊版 dataset timing 檔會遷移後移除。
 - ESP32 idle command polling：`5000 ms`。
 - 等待 `start_sequence` command polling：`100 ms`。
-- active sequence command polling：`120 ms`。
+- 等待 `release_gate` command polling：`50 ms`；伺服移動、果實停穩與 report pending 階段不輪詢 command。
 - `hcsr04_trigger` POST timeout：`1000 ms`。
 - command GET timeout：`1500 ms`。
 - station report POST timeout：`5000 ms`。
 - HC-SR04 Echo timeout：`12000 us`；完整 `sensor_read_us` 的 firmware warning 門檻約為 `12100 us`。
-- 手機 `/api/camera/state/` polling：single in-flight，idle `250 ms`、active `75 ms`、state timeout `1000 ms`。
+- 手機 `/api/camera/state/` polling：single in-flight，idle `250 ms`、active `50 ms`、state timeout `1000 ms`。
+- Django runtime state、dataset cache、timing persistence 與 ESP32 response shaping 已分離；分類、刪除與 reset 使用 operation token，檔案搬移／刪除在全域狀態鎖外執行。前景檔案重試上限約為 `100 ms`。
+- ESP32 report 使用 firmware 相容的精簡 response，不再回傳 dashboard 圖片、labels、完整 trace 或 timing telemetry。
+- 相機與 dashboard 的 CSS／JavaScript 已移至 Django static assets；dashboard 只在圖片 manifest 改變時重建縮圖，圖片 API 使用串流與 `ETag`／`Last-Modified`。
 - HTTPS connect／read 皆使用每種 request 的 deadline：trigger `1000 ms`、command `1500 ms`、report `5000 ms`。正常時重用同 origin HTTP/1.1 TLS 連線；Wi-Fi 斷線、timeout 或 `Connection: close` 時關閉 client 並重建。
 
 ## 目前觀察到的瓶頸
@@ -70,8 +73,8 @@
 
 本版已完成的自動化驗證：
 
-- Django `fruit_app`：`35` 項測試通過。
-- 相機與 dashboard 內嵌 JavaScript syntax check 通過。
+- Django `fruit_app`：`45` 項測試通過。
+- 相機與 dashboard static JavaScript syntax check 通過。
 - `git diff --check` 通過。
 - 正式 firmware 已以 `esp32:esp32:esp32` 編譯通過。
 

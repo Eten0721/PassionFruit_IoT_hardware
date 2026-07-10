@@ -1,13 +1,15 @@
 import csv
 import json
+import shutil
 import tempfile
+import threading
 from pathlib import Path
 from unittest import mock
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, SimpleTestCase, override_settings
 
-from . import views
+from . import dataset_store, views
 
 
 class DataCollectionFlowTests(SimpleTestCase):
@@ -685,6 +687,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             encoding='utf-8-sig',
         )
 
+        dataset_store.RUNTIME_CACHE.reset(self.dataset_root)
         views._ensure_dataset_structure()
 
         with metadata_path.open('r', encoding='utf-8-sig', newline='') as csv_file:
@@ -776,7 +779,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(camera_response.status_code, 200)
         self.assertContains(camera_response, '開啟相機')
         self.assertContains(camera_response, '安全來源')
-        self.assertContains(camera_response, 'isSecureContext')
+        self.assertContains(camera_response, '/static/fruit_app/js/camera.js')
         self.assertEqual(camera_response['Cache-Control'], 'no-store, max-age=0')
 
     def test_fast_station_one_report_opens_camera_without_start_sequence(self):
@@ -986,6 +989,122 @@ class DataCollectionFlowTests(SimpleTestCase):
         command_after_late_telemetry = self._esp32_command()
         self.assertEqual(command_after_late_telemetry['command'], 'release_gate')
         self.assertEqual(command_after_late_telemetry['command_id'], release['command_id'])
+
+    def test_camera_state_hot_path_does_not_reconcile_or_read_dataset_files(self):
+        self.client.get('/api/camera/state/')
+        with (
+            mock.patch.object(views, '_sync_active_state_with_filesystem') as sync_state,
+            mock.patch.object(views, '_read_counter') as read_counter,
+            mock.patch.object(views, '_ensure_metadata_header') as ensure_metadata,
+            mock.patch.object(views, '_retry_deferred_discards_if_due') as retry_cleanup,
+        ):
+            response = self.client.get('/api/camera/state/')
+
+        self.assertEqual(response.status_code, 200)
+        sync_state.assert_not_called()
+        read_counter.assert_not_called()
+        ensure_metadata.assert_not_called()
+        retry_cleanup.assert_not_called()
+
+    def test_esp32_report_payload_is_compact_and_firmware_compatible(self):
+        response = self._report(
+            'hcsr04_station_1_ready',
+            trigger_id='compact-001',
+            gates_home=1,
+            station_settled=1,
+            station_index=1,
+        )
+        payload = response.json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload['ok'])
+        self.assertTrue(payload['capture_requested'])
+        self.assertEqual(payload['fruit_id'], 'fruit_001')
+        self.assertEqual(payload['server_status'], 'waiting_camera')
+        self.assertNotIn('latest_images', payload)
+        self.assertNotIn('transition_trace', payload)
+        self.assertNotIn('labels', payload)
+        self.assertNotIn('timing', payload)
+
+    def test_dataset_operation_releases_state_lock_and_rejects_duplicate_mutation(self):
+        fruit_id = 'fruit_001'
+        fruit_dir = self.dataset_root / 'temp' / fruit_id
+        fruit_dir.mkdir(parents=True)
+        for filename in views.IMAGE_FILENAMES:
+            (fruit_dir / filename).write_bytes(b'jpeg')
+        with views.STATE_LOCK:
+            views.APP_STATE['active_fruit_id'] = fruit_id
+            views.APP_STATE['status'] = 'uploaded'
+            views.APP_STATE['capture_time'] = views._now_string()
+
+        operation_started = threading.Event()
+        allow_operation_to_finish = threading.Event()
+        result = {}
+
+        def slow_move(src, dest):
+            shutil.move(str(src), str(dest))
+            operation_started.set()
+            allow_operation_to_finish.wait(timeout=2)
+
+        def classify_in_thread():
+            client = Client()
+            result['response'] = client.post(
+                '/api/classify/',
+                data=json.dumps({'label': '上中等'}),
+                content_type='application/json',
+            )
+
+        with mock.patch.object(views, '_safe_move', side_effect=slow_move):
+            worker = threading.Thread(target=classify_in_thread)
+            worker.start()
+            self.assertTrue(operation_started.wait(timeout=1))
+
+            camera_response = self.client.get('/api/camera/state/')
+            command_payload = self._esp32_command()
+            duplicate_response = self._post_json('/api/discard/')
+
+            allow_operation_to_finish.set()
+            worker.join(timeout=2)
+
+        self.assertEqual(camera_response.status_code, 200)
+        self.assertEqual(command_payload['command'], 'none')
+        self.assertEqual(command_payload['auto_trigger_enabled'], 0)
+        self.assertEqual(duplicate_response.status_code, 409)
+        self.assertEqual(duplicate_response.json()['reason'], 'dataset_busy')
+        self.assertEqual(result['response'].status_code, 200)
+        self.assertIsNone(views.APP_STATE.get('dataset_operation'))
+
+    def test_dataset_image_streams_with_cache_validator(self):
+        fruit_dir = self.dataset_root / 'temp' / 'fruit_001'
+        fruit_dir.mkdir(parents=True)
+        image_path = fruit_dir / 'img_01.jpg'
+        image_path.write_bytes(b'jpeg-content')
+
+        response = self.client.get('/api/image/fruit_001/img_01.jpg/')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.streaming)
+        self.assertIn('ETag', response)
+        self.assertIn('Last-Modified', response)
+        self.assertEqual(response['Cache-Control'], 'private, max-age=3600')
+        self.assertEqual(b''.join(response.streaming_content), b'jpeg-content')
+        response.close()
+
+        cached = self.client.get(
+            '/api/image/fruit_001/img_01.jpg/',
+            HTTP_IF_NONE_MATCH=response['ETag'],
+        )
+        self.assertEqual(cached.status_code, 304)
+        cached.close()
+
+    def test_pages_load_external_static_assets(self):
+        camera = self.client.get('/camera/').content.decode('utf-8')
+        dashboard = self.client.get('/dashboard/').content.decode('utf-8')
+        self.assertIn('/static/fruit_app/js/camera.js', camera)
+        self.assertIn('/static/fruit_app/css/camera.css', camera)
+        self.assertIn('/static/fruit_app/js/dashboard.js', dashboard)
+        self.assertIn('/static/fruit_app/css/dashboard.css', dashboard)
+        self.assertNotIn('<style>', camera)
+        self.assertNotIn('<style>', dashboard)
 
     def _post_json(self, url, payload=None):
         return self.client.post(

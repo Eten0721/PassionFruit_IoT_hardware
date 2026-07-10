@@ -23,7 +23,7 @@ constexpr uint32_t kCooldownMS = 3000UL;
 
 constexpr uint32_t kIdleCommandPollIntervalMS = 5000UL;
 constexpr uint32_t kStartSequenceCommandPollIntervalMS = 100UL;
-constexpr uint32_t kActiveCommandPollIntervalMS = 120UL;
+constexpr uint32_t kAwaitReleaseCommandPollIntervalMS = 50UL;
 
 constexpr uint32_t kServoSettleMS = 200UL;
 constexpr uint32_t kFruitSettleMS = 200UL;

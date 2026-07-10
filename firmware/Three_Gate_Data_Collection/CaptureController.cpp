@@ -542,6 +542,9 @@ void CaptureController::queueReport(
 void CaptureController::handlePendingReportSuccess(const String& event) {
   if (event.startsWith("station_")) {
     motionPhase_ = MotionPhase::kWaitingForCommand;
+    lastCommandPollAt_ =
+        millis() - FirmwareConfig::kAwaitReleaseCommandPollIntervalMS;
+    commandBackoffUntilAt_ = 0;
     return;
   }
   if (event == "capture_sequence_finished") {
@@ -641,6 +644,12 @@ void CaptureController::pollCommand(uint32_t currentTime) {
   if (!api_.wifiConnected()) {
     return;
   }
+  const bool waitingForStartSequence = autoTrigger_.waitingForStartSequence;
+  const bool waitingForRelease = motionPhase_ == MotionPhase::kWaitingForCommand;
+  const bool idle = motionPhase_ == MotionPhase::kIdle;
+  if (!waitingForStartSequence && !waitingForRelease && !idle) {
+    return;
+  }
   if (
       commandBackoffUntilAt_ != 0 &&
       !timeReached(currentTime, commandBackoffUntilAt_)) {
@@ -688,8 +697,8 @@ uint32_t CaptureController::currentCommandPollInterval() const {
   if (autoTrigger_.waitingForStartSequence) {
     return FirmwareConfig::kStartSequenceCommandPollIntervalMS;
   }
-  if (sequenceActive_ || motionPhase_ != MotionPhase::kIdle) {
-    return FirmwareConfig::kActiveCommandPollIntervalMS;
+  if (motionPhase_ == MotionPhase::kWaitingForCommand) {
+    return FirmwareConfig::kAwaitReleaseCommandPollIntervalMS;
   }
   return FirmwareConfig::kIdleCommandPollIntervalMS;
 }
@@ -838,8 +847,8 @@ void CaptureController::registerCommandFailure(int httpCode) {
   uint32_t backoffMS = FirmwareConfig::kCommandFailureBackoffMinMS;
   if (autoTrigger_.waitingForStartSequence) {
     backoffMS = FirmwareConfig::kStartSequenceCommandPollIntervalMS;
-  } else if (sequenceActive_) {
-    backoffMS = FirmwareConfig::kActiveCommandPollIntervalMS;
+  } else if (motionPhase_ == MotionPhase::kWaitingForCommand) {
+    backoffMS = FirmwareConfig::kAwaitReleaseCommandPollIntervalMS;
   } else if (consecutiveCommandFailures_ >= 2) {
     backoffMS = FirmwareConfig::kCommandFailureBackoffMaxMS;
   }

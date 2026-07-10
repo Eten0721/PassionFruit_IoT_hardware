@@ -183,7 +183,7 @@ HC-SR04 以直接 Trigger pulse 與 `12000 us` Echo timeout 讀值；Wi-Fi、伺
 
 ### 決策
 
-手機只輪詢 `/api/camera/state/`，idle 為 `250 ms`、有 fruit／capture request 時為 `75 ms`、實際擷取或上傳期間為 `250 ms`，state request 使用 `AbortController` timeout。頁面進入背景時 polling 會停止，回到前景才重啟。`capture_started` 改為 best-effort telemetry，不得阻塞 canvas 擷取或照片上傳。
+手機只輪詢 `/api/camera/state/`，idle 為 `250 ms`、有 fruit／capture request 時為 `50 ms`、實際擷取或上傳期間為 `250 ms`，state request 使用 `AbortController` timeout。頁面進入背景時 polling 會停止，回到前景才重啟。`capture_started` 改為 best-effort telemetry，不得阻塞 canvas 擷取或照片上傳。
 
 ### 原因
 
@@ -194,6 +194,24 @@ HC-SR04 以直接 Trigger pulse 與 `12000 us` Echo timeout 讀值；Wi-Fi、伺
 - Django 仍只以照片原子保存成功作為放行下一閘門的條件。
 - `capture_meta` 保留既有欄位，另加入 request、影格、blob 與 upload 的 client timing，供 transition trace 對照。
 - Dashboard 顯示最近 transition trace；舊版 state 未提供 trace 時不影響控制功能。
+
+## 2026-07-11：高頻狀態路徑與等待命令輪詢最佳化
+
+### 決策
+
+Django 的 dataset 初始化、metadata schema 檢查與 timing 載入改為每個 dataset root 只執行一次；`/api/camera/state/` 不再進行檔案系統同步。分類、刪除與 reset 以 operation token 保護，慢速檔案操作移出全域狀態鎖。ESP32 report 回傳精簡協定 payload。
+
+ESP32 只在 idle、等待 `start_sequence`、等待 `release_gate` 時輪詢 command。等待 release 的 interval 為 `50 ms`，伺服移動、果實停穩與 report pending 階段不輪詢。
+
+### 原因
+
+原本相機 active polling 每 `75 ms` 會反覆執行 dataset 維護，Windows 檔案重試也可能在全域鎖內累積約 `1.2 秒`。另外 active sequence 的 `120 ms` polling 會在硬體仍移動時取得不可能更新的命令。這些等待都不屬於機構安全停穩時間，可以在不改變三站交握的前提下降低。
+
+### 影響
+
+- 手機 active polling 改為 `50 ms`，但仍維持 single in-flight 與背景暫停規則。
+- 前景檔案重試限制約 `100 ms`；失敗時沿用 upload retry、`409` 或 deferred cleanup。
+- 四項機構 timing 預設仍為 `200 ms`，不得因本次軟體最佳化直接縮短。
 
 ## 2026-07-10：HC-SR04 Echo 必須降壓後接 ESP32
 
