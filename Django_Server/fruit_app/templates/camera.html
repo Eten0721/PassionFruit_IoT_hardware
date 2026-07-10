@@ -126,9 +126,11 @@
     let capturePollTimer = null;
     let webrtcPollTimer = null;
     const captureRetryDelayMs = 2000;
-    const captureIdlePollMs = 200;
-    const captureActivePollMs = 200;
-    const captureBusyPollMs = 1000;
+    const captureIdlePollMs = 250;
+    const captureActivePollMs = 75;
+    const captureBusyPollMs = 250;
+    const captureStateRequestTimeoutMs = 1000;
+    const captureStartedTelemetryTimeoutMs = 750;
     const webrtcPollMs = 1000;
     const RTC_CONFIG = {
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -150,12 +152,35 @@
         diagnosticEl.textContent = '安全來源已通過。點擊按鈕後，瀏覽器應會詢問相機權限。';
     }
 
-    async function postJson(url, data) {
-        const response = await fetch(url, {
+    async function fetchWithTimeout(url, options, timeoutMs) {
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            return await fetch(url, {
+                ...options,
+                signal: controller.signal,
+            });
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                const timeoutError = new Error(`請求逾時（${timeoutMs} ms）：${url}`);
+                timeoutError.code = 'request_timeout';
+                throw timeoutError;
+            }
+            throw error;
+        } finally {
+            window.clearTimeout(timeoutId);
+        }
+    }
+
+    async function postJson(url, data, { timeoutMs = null } = {}) {
+        const options = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
-        });
+        };
+        const response = timeoutMs === null
+            ? await fetch(url, options)
+            : await fetchWithTimeout(url, options, timeoutMs);
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
             throwHttpError(payload, response.status);
@@ -172,8 +197,26 @@
     }
 
     async function fetchCaptureState() {
-        const response = await fetch('/api/state/', { cache: 'no-store' });
-        return response.json();
+        const response = await fetchWithTimeout('/api/camera/state/', {
+            cache: 'no-store',
+            headers: { 'Cache-Control': 'no-cache' },
+        }, captureStateRequestTimeoutMs);
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throwHttpError(payload, response.status);
+        }
+        return payload;
+    }
+
+    function captureRequestFromState(data) {
+        const capture = data.capture || {};
+        return {
+            revision: data.revision ?? 0,
+            fruitId: capture.fruit_id ?? data.fruit_id ?? data.active_fruit_id ?? '',
+            captureToken: capture.token ?? data.capture_token ?? 0,
+            stationIndex: Number(capture.station_index ?? data.station_index ?? data.active_station_index ?? 0),
+            captureRequested: Boolean(capture.requested ?? data.capture_requested),
+        };
     }
 
     async function startCamera() {
@@ -330,31 +373,34 @@
                 setStatus(data.message || 'Django 拍攝流程發生錯誤。');
                 return data;
             }
-            const stationIndex = Number(data.station_index || data.active_station_index || 0);
-            const requestKey = `${data.active_fruit_id || ''}:${data.capture_token || 0}:${stationIndex}`;
+            const capture = captureRequestFromState(data);
+            const captureIdentity = `${capture.fruitId}:${capture.captureToken}:${capture.stationIndex}`;
+            const requestKey = `${capture.revision}:${captureIdentity}`;
             if (
-                data.capture_requested &&
-                stationIndex > 0 &&
+                capture.captureRequested &&
+                capture.fruitId &&
+                capture.stationIndex > 0 &&
                 requestKey !== lastCaptureRequestKey &&
                 !isCapturing
             ) {
                 if (
-                    requestKey === lastFailedCaptureRequestKey &&
+                    captureIdentity === lastFailedCaptureRequestKey &&
                     Date.now() - lastCaptureFailureTime < captureRetryDelayMs
                 ) {
                     return;
                 }
                 const completed = await captureAndUpload(
-                    data.active_fruit_id,
-                    data.capture_token,
-                    stationIndex
+                    capture.fruitId,
+                    capture.captureToken,
+                    capture.stationIndex,
+                    capture.revision
                 );
                 if (completed) {
                     lastCaptureRequestKey = requestKey;
                     lastFailedCaptureRequestKey = '';
                     lastCaptureFailureTime = 0;
                 } else {
-                    lastFailedCaptureRequestKey = requestKey;
+                    lastFailedCaptureRequestKey = captureIdentity;
                     lastCaptureFailureTime = Date.now();
                 }
             }
@@ -369,7 +415,8 @@
         if (isCapturing) {
             return captureBusyPollMs;
         }
-        if (data && (data.capture_requested || data.active_fruit_id)) {
+        const capture = data ? captureRequestFromState(data) : null;
+        if (capture && (capture.captureRequested || capture.fruitId)) {
             return captureActivePollMs;
         }
         return captureIdlePollMs;
@@ -388,6 +435,9 @@
             return;
         }
         const data = await pollCaptureState();
+        if (document.hidden) {
+            return;
+        }
         restartCapturePolling(capturePollDelay(data));
     }
 
@@ -404,6 +454,9 @@
             return;
         }
         await pollWebrtcState();
+        if (document.hidden) {
+            return;
+        }
         restartWebrtcPolling(webrtcPollMs);
     }
 
@@ -423,32 +476,55 @@
         restartWebrtcPolling(0);
     });
 
-    async function captureAndUpload(fruitId, captureToken, stationIndex) {
+    function roundTimingMs(value) {
+        return Number(value.toFixed(1));
+    }
+
+    async function captureAndUpload(fruitId, captureToken, stationIndex, requestRevision) {
         if (!localStream) {
             setStatus('尚未開啟相機，無法拍攝。');
             return false;
         }
         isCapturing = true;
+        const requestReceivedAtMs = performance.now();
         setStatus(`收到 ${fruitId} 第 ${stationIndex} 站拍攝請求，準備拍攝單張照片。`);
 
         try {
             await waitForVideoReady();
-            await notifyCaptureStarted(fruitId, captureToken, stationIndex);
+            const videoReadyAtMs = performance.now();
+            const captureStartedSentAtMs = performance.now();
+            notifyCaptureStarted(fruitId, captureToken, stationIndex, captureStartedSentAtMs)
+                .catch((error) => console.warn('開始拍攝 telemetry 回報失敗，不影響照片上傳', error));
 
             const formData = new FormData();
             formData.append('fruit_id', fruitId);
             formData.append('capture_token', captureToken);
             formData.append('station_index', stationIndex);
-            const capturedAt = performance.now();
-            const blob = await captureFrameBlob();
-            formData.append('image', blob, `img_${String(stationIndex).padStart(2, '0')}.jpg`);
+            const capturedFrame = await captureFrameBlob();
+            const uploadStartedAtMs = performance.now();
+            formData.append('image', capturedFrame.blob, `img_${String(stationIndex).padStart(2, '0')}.jpg`);
             setStatus(`${fruitId} 第 ${stationIndex} 站照片已拍攝，正在上傳。`);
 
             formData.append('capture_meta', JSON.stringify({
+                schema_version: 2,
                 capture_token: captureToken,
                 station_index: stationIndex,
-                timestamps_ms: [Number(capturedAt.toFixed(1))],
+                timestamps_ms: [roundTimingMs(capturedFrame.frameDrawnAtMs)],
                 intervals_ms: [],
+                client_timing: {
+                    clock: 'performance.now',
+                    request_revision: requestRevision,
+                    request_received_at_ms: roundTimingMs(requestReceivedAtMs),
+                    video_ready_at_ms: roundTimingMs(videoReadyAtMs),
+                    capture_started_sent_at_ms: roundTimingMs(captureStartedSentAtMs),
+                    frame_drawn_at_ms: roundTimingMs(capturedFrame.frameDrawnAtMs),
+                    blob_ready_at_ms: roundTimingMs(capturedFrame.blobReadyAtMs),
+                    upload_started_at_ms: roundTimingMs(uploadStartedAtMs),
+                    request_to_video_ready_ms: roundTimingMs(videoReadyAtMs - requestReceivedAtMs),
+                    request_to_frame_drawn_ms: roundTimingMs(capturedFrame.frameDrawnAtMs - requestReceivedAtMs),
+                    frame_to_blob_ready_ms: roundTimingMs(capturedFrame.blobReadyAtMs - capturedFrame.frameDrawnAtMs),
+                    request_to_upload_started_ms: roundTimingMs(uploadStartedAtMs - requestReceivedAtMs),
+                },
             }));
 
             const response = await fetch('/api/upload_images/', {
@@ -469,29 +545,16 @@
         }
     }
 
-    async function notifyCaptureStarted(fruitId, captureToken, stationIndex) {
-        try {
-            await postJson('/api/capture_started/', {
-                fruit_id: fruitId,
-                capture_token: captureToken,
-                station_index: stationIndex,
-            });
-            return;
-        } catch (error) {
-            const data = await fetchCaptureState();
-            const currentStation = Number(data.station_index || data.active_station_index || 0);
-            const sameCaptureRequest = (
-                data.capture_requested &&
-                data.active_fruit_id === fruitId &&
-                Number(data.capture_token) === Number(captureToken) &&
-                currentStation === Number(stationIndex)
-            );
-            if (sameCaptureRequest) {
-                setStatus(`開始拍攝回報失敗但同站請求仍有效，繼續上傳：${error.message}`);
-                return;
-            }
-            throw error;
-        }
+    function notifyCaptureStarted(fruitId, captureToken, stationIndex, sentAtMs) {
+        return postJson('/api/capture_started/', {
+            fruit_id: fruitId,
+            capture_token: captureToken,
+            station_index: stationIndex,
+            client_timing: {
+                clock: 'performance.now',
+                capture_started_sent_at_ms: roundTimingMs(sentAtMs),
+            },
+        }, { timeoutMs: captureStartedTelemetryTimeoutMs });
     }
 
     function waitForVideoReady() {
@@ -508,10 +571,15 @@
         canvas.height = localVideo.videoHeight;
         const context = canvas.getContext('2d');
         context.drawImage(localVideo, 0, 0, canvas.width, canvas.height);
+        const frameDrawnAtMs = performance.now();
         return new Promise((resolve, reject) => {
             canvas.toBlob((blob) => {
                 if (blob) {
-                    resolve(blob);
+                    resolve({
+                        blob,
+                        frameDrawnAtMs,
+                        blobReadyAtMs: performance.now(),
+                    });
                 } else {
                     reject(new Error('瀏覽器無法產生照片 blob。'));
                 }

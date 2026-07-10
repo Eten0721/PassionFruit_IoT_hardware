@@ -43,7 +43,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(command['command'], 'start_sequence')
         self.assertEqual(command['station_index'], 1)
         self.assertEqual(command['release_angle'], 90)
-        self.assertEqual(command['servo_settle_ms'], 150)
+        self.assertEqual(command['servo_settle_ms'], 300)
         self.assertEqual(command['fruit_settle_ms'], 300)
 
         station_1 = self._report('station_1_ready', station_index=1, command_id=command['command_id']).json()
@@ -124,13 +124,16 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(state_payload['status'], 'waiting_esp32_start')
         self.assertEqual(state_payload['motor_command']['command'], 'start_sequence')
         self.assertEqual(state_payload['motor_command']['station_index'], 1)
+        trace_events = [entry['event'] for entry in state_payload['transition_trace']]
+        self.assertIn('hcsr04_trigger_received', trace_events)
+        self.assertIn('hcsr04_trigger_accepted', trace_events)
 
         command = self._esp32_command()
         self.assertEqual(command['command'], 'start_sequence')
         self.assertEqual(command['station_index'], 1)
         self.assertEqual(command['fruit_id'], 'fruit_042')
         self.assertEqual(command['release_angle'], 90)
-        self.assertEqual(command['servo_settle_ms'], 150)
+        self.assertEqual(command['servo_settle_ms'], 300)
         self.assertEqual(command['fruit_settle_ms'], 300)
 
     def test_hcsr04_trigger_is_ignored_when_active_fruit_exists(self):
@@ -184,7 +187,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(command['server_status'], 'waiting_esp32_start')
         self.assertEqual(command['command'], 'start_sequence')
         self.assertEqual(command['release_angle'], '90')
-        self.assertEqual(command['servo_settle_ms'], '150')
+        self.assertEqual(command['servo_settle_ms'], '300')
         self.assertEqual(command['fruit_settle_ms'], '300')
 
     def test_hcsr04_trigger_is_ignored_when_temp_fruit_exists(self):
@@ -402,7 +405,9 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         discard_payload = response.json()
         self.assertEqual(discard_payload['discarded_fruit_id'], 'fruit_005')
+        self.assertEqual(discard_payload['status'], 'idle')
         self.assertIsNone(discard_payload['active_fruit_id'])
+        self.assertEqual(discard_payload['capture_token'], 0)
         self.assertTrue(discard_payload['can_manual_capture'])
         self.assertFalse(discard_payload['can_discard'])
         self.assertFalse(discard_payload['can_classify'])
@@ -415,6 +420,76 @@ class DataCollectionFlowTests(SimpleTestCase):
 
         with (self.dataset_root / 'counter.json').open('r', encoding='utf-8') as counter_file:
             self.assertEqual(json.load(counter_file)['next_id'], 5)
+
+        refreshed = self.client.get('/api/state/').json()
+        self.assertEqual(refreshed['status'], 'idle')
+        self.assertTrue(refreshed['can_manual_capture'])
+
+    def test_capture_timing_defaults_persist_and_are_acknowledged_by_esp32(self):
+        initial = self.client.get('/api/state/').json()
+        self.assertEqual(initial['capture_timing'], {
+            'first_station_settle_ms': 300,
+            'servo_settle_ms': 300,
+            'fruit_settle_ms': 300,
+            'final_gate_return_delay_ms': 300,
+        })
+        self.assertEqual(initial['capture_timing_revision'], 1)
+
+        configured = self._post_json('/api/capture_timing/', {
+            'first_station_settle_ms': 350,
+            'servo_settle_ms': 400,
+            'fruit_settle_ms': 450,
+            'final_gate_return_delay_ms': 300,
+        })
+        self.assertEqual(configured.status_code, 200)
+        payload = configured.json()
+        self.assertEqual(payload['capture_timing_revision'], 2)
+        self.assertEqual(payload['capture_timing']['fruit_settle_ms'], 450)
+        self.assertEqual(payload['capture_timing_status'], 'waiting_esp32')
+
+        with (self.dataset_root / 'capture_timing.json').open('r', encoding='utf-8') as timing_file:
+            saved = json.load(timing_file)
+        self.assertEqual(saved['revision'], 2)
+        self.assertEqual(saved['capture_timing']['servo_settle_ms'], 400)
+
+        command = self._esp32_command_text()
+        self.assertEqual(command['timing_revision'], '2')
+        self.assertEqual(command['first_station_settle_ms'], '350')
+        self.assertEqual(command['servo_settle_ms'], '400')
+        self.assertEqual(command['fruit_settle_ms'], '450')
+        self.assertEqual(command['final_gate_return_delay_ms'], '300')
+
+        acknowledged = self._report('timing_config_applied', timing_revision=2)
+        self.assertEqual(acknowledged.status_code, 200)
+        acknowledged_payload = acknowledged.json()
+        self.assertEqual(acknowledged_payload['capture_timing_status'], 'applied')
+        self.assertEqual(acknowledged_payload['capture_timing_applied_revision'], 2)
+
+        views.reset_runtime_state_for_tests()
+        views._ensure_dataset_structure()
+        reloaded = self.client.get('/api/state/').json()
+        self.assertEqual(reloaded['capture_timing_revision'], 2)
+        self.assertEqual(reloaded['capture_timing']['servo_settle_ms'], 400)
+
+    def test_capture_timing_rejects_invalid_step_and_active_session_update(self):
+        invalid = self._post_json('/api/capture_timing/', {
+            'first_station_settle_ms': 325,
+            'servo_settle_ms': 300,
+            'fruit_settle_ms': 300,
+            'final_gate_return_delay_ms': 300,
+        })
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(invalid.json()['reason'], 'capture_timing_invalid_step')
+
+        self._report('hcsr04_trigger')
+        blocked = self._post_json('/api/capture_timing/', {
+            'first_station_settle_ms': 350,
+            'servo_settle_ms': 350,
+            'fruit_settle_ms': 350,
+            'final_gate_return_delay_ms': 350,
+        })
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(blocked.json()['reason'], 'capture_timing_update_requires_idle')
 
     def test_empty_temp_folder_does_not_lock_manual_capture(self):
         stale_dir = self.dataset_root / 'temp' / 'fruit_001'
@@ -573,6 +648,214 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertContains(camera_response, 'isSecureContext')
         self.assertEqual(camera_response['Cache-Control'], 'no-store, max-age=0')
 
+    def test_fast_station_one_report_opens_camera_without_start_sequence(self):
+        response = self._report(
+            'hcsr04_station_1_ready',
+            trigger_id='fast-001',
+            gates_home='1',
+            station_settled='true',
+            station_index=1,
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['ok'])
+        self.assertTrue(payload['accepted'])
+        self.assertTrue(payload['fast_path'])
+        self.assertEqual(payload['status'], 'waiting_camera')
+        self.assertTrue(payload['capture_requested'])
+        self.assertEqual(payload['station_index'], 1)
+        self.assertEqual(payload['motor_command']['command'], 'none')
+        self.assertTrue((self.dataset_root / 'temp' / payload['fruit_id']).exists())
+
+        command = self._esp32_command()
+        self.assertEqual(command['command'], 'none')
+        self.assertEqual(command['fruit_id'], payload['fruit_id'])
+        upload_response = self._upload_station(payload['fruit_id'], payload['capture_token'], 1)
+        self.assertEqual(upload_response.status_code, 200)
+        self.assertEqual(upload_response.json()['motor_command']['command'], 'release_gate')
+
+    def test_fast_station_one_retry_reuses_same_fruit_and_capture_token(self):
+        first = self._report(
+            'hcsr04_station_1_ready',
+            trigger_id='retry-001',
+            gates_home=1,
+            station_settled=1,
+            station_index=1,
+        )
+        self.assertEqual(first.status_code, 200)
+        first_payload = first.json()
+
+        retry = self._report(
+            'hcsr04_station_1_ready',
+            trigger_id='retry-001',
+            gates_home=1,
+            station_settled=1,
+            station_index=1,
+        )
+        self.assertEqual(retry.status_code, 200)
+        retry_payload = retry.json()
+        self.assertTrue(retry_payload['ok'])
+        self.assertTrue(retry_payload['duplicate'])
+        self.assertEqual(retry_payload['status'], 'waiting_camera')
+        self.assertTrue(retry_payload['capture_requested'])
+        self.assertEqual(retry_payload['fruit_id'], first_payload['fruit_id'])
+        self.assertEqual(retry_payload['capture_token'], first_payload['capture_token'])
+        self.assertFalse((self.dataset_root / 'temp' / 'fruit_002').exists())
+
+    def test_fast_station_one_rejects_unsafe_report_with_legacy_fallback(self):
+        response = self._report(
+            'hcsr04_station_1_ready',
+            trigger_id='unsafe-001',
+            gates_home=0,
+            station_settled=1,
+            station_index=1,
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload['ok'])
+        self.assertTrue(payload['fallback_to_legacy'])
+        self.assertEqual(payload['reason'], 'fast_path_unsafe')
+        self.assertIsNone(payload['active_fruit_id'])
+
+        legacy = self._report('hcsr04_trigger')
+        self.assertEqual(legacy.status_code, 200)
+        self.assertEqual(legacy.json()['motor_command']['command'], 'start_sequence')
+
+    def test_fast_station_one_requires_explicit_station_one(self):
+        response = self._report(
+            'hcsr04_station_1_ready',
+            trigger_id='missing-station-001',
+            gates_home=1,
+            station_settled=1,
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload['ok'])
+        self.assertTrue(payload['fallback_to_legacy'])
+        self.assertEqual(payload['reason'], 'fast_path_unsafe')
+        self.assertIsNone(payload['active_fruit_id'])
+
+    def test_fast_station_one_respects_feature_switch(self):
+        with override_settings(ENABLE_AUTO_STATION_1_FAST_PATH=False):
+            response = self._report(
+                'hcsr04_station_1_ready',
+                trigger_id='disabled-001',
+                gates_home=1,
+                station_settled=1,
+                station_index=1,
+            )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload['ok'])
+        self.assertTrue(payload['fallback_to_legacy'])
+        self.assertEqual(payload['reason'], 'fast_path_disabled')
+
+    def test_fast_station_one_is_ignored_when_auto_trigger_is_locked(self):
+        first = self._report(
+            'hcsr04_station_1_ready',
+            trigger_id='locked-first-001',
+            gates_home=1,
+            station_settled=1,
+            station_index=1,
+        )
+        self.assertEqual(first.status_code, 200)
+        first_payload = first.json()
+
+        locked = self._report(
+            'hcsr04_station_1_ready',
+            trigger_id='locked-second-001',
+            gates_home=1,
+            station_settled=1,
+            station_index=1,
+        )
+        self.assertEqual(locked.status_code, 200)
+        locked_payload = locked.json()
+        self.assertTrue(locked_payload['ok'])
+        self.assertTrue(locked_payload['ignored'])
+        self.assertFalse(locked_payload['fallback_to_legacy'])
+        self.assertEqual(locked_payload['reason'], 'active_fruit_exists')
+        self.assertEqual(locked_payload['active_fruit_id'], first_payload['fruit_id'])
+        self.assertFalse((self.dataset_root / 'temp' / 'fruit_002').exists())
+
+    def test_camera_state_is_minimal_no_store_and_uses_revision(self):
+        fast = self._report(
+            'hcsr04_station_1_ready',
+            trigger_id='camera-state-001',
+            gates_home=1,
+            station_settled=1,
+            station_index=1,
+        ).json()
+
+        response = self.client.get('/api/camera/state/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Cache-Control'], 'no-store, max-age=0')
+        payload = response.json()
+        self.assertEqual(payload['fruit_id'], fast['fruit_id'])
+        self.assertEqual(payload['active_fruit_id'], fast['fruit_id'])
+        self.assertEqual(payload['capture_token'], fast['capture_token'])
+        self.assertEqual(payload['station_index'], 1)
+        self.assertTrue(payload['capture_requested'])
+        self.assertEqual(payload['capture']['token'], fast['capture_token'])
+        self.assertGreater(payload['revision'], 0)
+        self.assertNotIn('latest_images', payload)
+
+    def test_transition_trace_keeps_sensor_to_atomic_save_timeline(self):
+        fast = self._report(
+            'hcsr04_station_1_ready',
+            trigger_id='trace-001',
+            gates_home=1,
+            station_settled=1,
+            station_index=1,
+        ).json()
+        capture_started = self._post_json('/api/capture_started/', {
+            'fruit_id': fast['fruit_id'],
+            'capture_token': fast['capture_token'],
+            'station_index': 1,
+            'client_timing': {
+                'request_received_at_ms': 2,
+                'frame_drawn_at_ms': 12,
+                'blob_ready_at_ms': 20,
+                'frame_to_blob_ready_ms': 8,
+            },
+        })
+        self.assertEqual(capture_started.status_code, 200)
+
+        upload = self._upload_station(fast['fruit_id'], fast['capture_token'], 1)
+        self.assertEqual(upload.status_code, 200)
+        payload = upload.json()
+        events = [entry['event'] for entry in payload['transition_trace']]
+        self.assertIn('hcsr04_station_1_ready_received', events)
+        self.assertIn('fast_path_station_1_capture_requested', events)
+        self.assertIn('phone_capture_started', events)
+        self.assertIn('station_image_saved', events)
+        self.assertIn('motor_command_issued', events)
+        self.assertEqual(payload['timing']['client_timing']['frame_drawn_at_ms'], 12.0)
+        self.assertEqual(payload['timing']['client_timing']['frame_to_blob_ready_ms'], 8.0)
+
+    def test_late_capture_started_telemetry_does_not_duplicate_release_command(self):
+        fast = self._report(
+            'hcsr04_station_1_ready',
+            trigger_id='late-telemetry-001',
+            gates_home=1,
+            station_settled=1,
+            station_index=1,
+        ).json()
+        upload = self._upload_station(fast['fruit_id'], fast['capture_token'], 1)
+        self.assertEqual(upload.status_code, 200)
+        release = upload.json()['motor_command']
+        self.assertEqual(release['command'], 'release_gate')
+
+        late = self._post_json('/api/capture_started/', {
+            'fruit_id': fast['fruit_id'],
+            'capture_token': fast['capture_token'],
+            'station_index': 1,
+            'client_timing': {'upload_started_at_ms': 25},
+        })
+        self.assertEqual(late.status_code, 200)
+        command_after_late_telemetry = self._esp32_command()
+        self.assertEqual(command_after_late_telemetry['command'], 'release_gate')
+        self.assertEqual(command_after_late_telemetry['command_id'], release['command_id'])
+
     def _post_json(self, url, payload=None):
         return self.client.post(
             url,
@@ -595,12 +878,13 @@ class DataCollectionFlowTests(SimpleTestCase):
         lines = response.content.decode('utf-8').splitlines()
         return dict(line.split('=', 1) for line in lines if '=' in line)
 
-    def _report(self, event, station_index=None, command_id=None):
+    def _report(self, event, station_index=None, command_id=None, **extra):
         payload = {'event': event}
         if station_index is not None:
             payload['station_index'] = station_index
         if command_id is not None:
             payload['command_id'] = command_id
+        payload.update(extra)
         return self.client.post('/api/esp32/report/', payload)
 
     def _fake_image(self, station_index):

@@ -27,25 +27,31 @@
 - `commandPollIntervalMS = 5000`
 - `startSequenceCommandPollIntervalMS = 100`
 - `activeCommandPollIntervalMS = 120`
-- `servo_settle_ms = 150`
+- `servo_settle_ms = 300`
 - `fruit_settle_ms = 300`
-- `firstStationSettleMS = 100`
+- `firstStationSettleMS = 300`
 - `finalGateReturnDelayMS = 300`
 - `autoTriggerReportTimeoutMS = 1000`
 - `commandHttpTimeoutMS = 1500`
 - `reportHttpTimeoutMS = 5000`
+- `FirmwareConfig::kEnableAutoStation1FastPath = true`
+- `FirmwareConfig::kEchoPulseTimeoutUS = 12000UL`
 
-`servo_settle_ms` 與 `fruit_settle_ms` 只用於硬體動作與果實停穩，不用來判斷手機是否拍攝完成。
+四個停穩設定預設皆為 `300 ms`，由 Dashboard 的 `POST /api/capture_timing/` 管理並持久化為 `capture_timing.json`。設定僅能在 Django 為 `idle` 時以完整四欄更新；值必須是 `50 ms` 的倍數，範圍為 `50` 到 `3000 ms`，最終歸位延遲可為 `0 ms`。Django 以 revision 下發設定，ESP32 僅在 idle、沒有流程或 pending report 且所有 Gate home 時套用，並回報 `timing_config_applied`。
+
+每顆 fruit 開始後，ESP32 會 snapshot 四項 timing；`servo_settle_ms` 與 `fruit_settle_ms` 只用於硬體動作與果實停穩，不用來判斷手機是否拍攝完成，也不可在流程中覆寫。
+
+HC-SR04 Echo 接到 ESP32 前必須降壓至 `3.3 V` 邏輯；正常目標為 ≤ `3.3 V`，絕不可超過 `3.6 V`。不可將 HC-SR04 的 `5 V` Echo 腳直接接到 GPIO。`12000 us` 是 Echo 等待上限，完整 `sensor_read_us` 的 firmware warning 門檻約為 `12100 us`。
 
 ## 觸發入口
 
 ### 自動模式
 
-1. HC-SR04 偵測距離進入觸發範圍。
-2. ESP32 queue `hcsr04_trigger`。
-3. ESP32 POST `/api/esp32/report/` 回報 `hcsr04_trigger`。
-4. Django 若允許新資料，建立 active fruit 與 `start_sequence` motor command。
-5. 若 Django 回應內已包含 `start_sequence`，ESP32 可直接執行；否則進入 fast command polling。
+1. HC-SR04 偵測距離進入觸發範圍，ESP32 產生一個 `trigger_id`。
+2. 若 `FirmwareConfig::kEnableAutoStation1FastPath=true`、firmware 為 idle、沒有進行中的 sequence、三個 Gate 的角度追蹤都在 `HOME_ANGLE` 且已等待 `firstStationSettleMS`，ESP32 POST `/api/esp32/report/` 回報 `hcsr04_station_1_ready`，並帶 `trigger_id`、`station_index=1`、`gates_home=true`、`station_settled=true`。Gate 1 已攔住果實是部署與機構驗證前提，不是此版本的硬體回授訊號。
+3. Django 驗證 ESP32 宣告與自動觸發鎖定後，建立／找回 active fruit，直接開放第 1 站拍攝請求。
+4. 捷徑未開啟、本地條件不符或收到可回退的協定拒絕時，ESP32 queue `hcsr04_trigger`，Django 建立 `start_sequence`，再走標準第 1 站交握。HTTP timeout 時只能重送相同 `trigger_id`；收到 `ignored` 時停止本次 trigger 並等待感測器重新待命。
+5. `hcsr04_trigger` response 若已含 `start_sequence`，ESP32 直接執行；否則進入 fast command polling。
 
 ### 手動模式
 
@@ -58,10 +64,21 @@
 
 ## 三站握手流程
 
+### 自動首站捷徑
+
+自動模式的首站捷徑只壓縮第 1 站前的控制往返，不放寬拍照完成的判定。`gates_home` 與 `station_settled` 是 ESP32 的軟體安全宣告，不取代實機確認 Gate 1 的攔截位置：
+
+1. ESP32 以同一個 `trigger_id` 與 `station_index=1` 回報 `hcsr04_station_1_ready`。
+2. Django 確認 `gates_home` 與 `station_settled`，建立或重用工作階段並設定第 1 站拍攝請求。
+3. 手機上傳 `img_01.jpg`，且 Django 原子保存成功後才建立 `release_gate_1`。
+4. 第 2、3 站完全沿用下列標準交握。
+
+### 標準與回退流程
+
 1. Django 建立 `start_sequence`，並分配 `command_id`。
 2. ESP32 取得 `start_sequence` 後回報 `station_1_ready`，必須帶同一個 `command_id`。
 3. Django 設定第 1 站拍攝請求。
-4. 手機輪詢 `/api/state/`，拍攝並上傳 `img_01.jpg`。
+4. 手機輪詢 `/api/camera/state/`，拍攝並上傳 `img_01.jpg`。
 5. Django 保存成功後建立 `release_gate_1`。
 6. ESP32 取得 `release_gate_1`，Gate 1 轉到 `90` 度放行。
 7. ESP32 等待 `servo_settle_ms` 與 `fruit_settle_ms`，回報 `station_2_ready`，必須帶 `release_gate_1` 的 `command_id`。
@@ -69,7 +86,7 @@
 9. 第 3 站重複：手機上傳 `img_03.jpg`，Django 建立 `release_gate_3`。
 10. ESP32 放行 Gate 3，等待百香果滾出，再額外等待 `finalGateReturnDelayMS`，三顆馬達歸位。
 11. ESP32 回報 `capture_sequence_finished`，必須帶 `release_gate_3` 的 `command_id`。
-12. Dashboard 顯示三張照片，等待使用者分類或刪除。
+12. Dashboard 以固定 `4:3` 縮圖顯示三張照片，點擊可在網頁內以原始比例彈窗預覽，等待使用者分類或刪除。
 
 command id 規則：
 
@@ -90,23 +107,29 @@ Django 是是否允許開始新 fruit 的唯一狀態來源。
 - `dataset/temp/fruit_XXX/` 有未分類暫存資料。
 - 流程處於 `waiting_esp32_start`、`waiting_camera`、`uploaded`、`incomplete` 或 `error`。
 
-當 `auto_trigger_enabled=0` 時，`hcsr04_trigger` 回 `200 ignored`。ESP32 收到 ignored 後清除 pending，不應建立新 fruit，也不應覆蓋既有 motor command。
+當 `auto_trigger_enabled=0` 時，`hcsr04_trigger` 回 `200 ignored`。ESP32 收到 ignored 後清除 pending，等待感測器重新待命；不應建立新 fruit，也不應覆蓋既有 motor command。
+
+使用者按「跳過／刪除」成功後，Django 必須清除 temp fruit 的流程狀態並回到 `idle`，讓自動／手動觸發立即重新可用；若檔案仍被占用，則回傳結構化錯誤而不假裝流程已解除。
 
 若 `hcsr04_trigger` 重送時 Django 已在 `waiting_esp32_start` 且既有 `start_sequence`，Django 回 `duplicate_trigger_waiting_start_sequence` 並保留既有 `motor_command`，ESP32 可據此進入 fast polling 或直接執行 response 內的 `start_sequence`。
 
 ## Timeout 與延遲處理
 
 - `hcsr04_trigger` POST timeout 不代表 Django 一定沒收到。ESP32 會設定等待 `start_sequence` 狀態，優先 fast command polling。
+- 首站捷徑 `hcsr04_station_1_ready` 的 timeout retry 必須重用原本的 `trigger_id`；不得以新的 id 猜測前一次失敗。legacy `hcsr04_trigger` 的重複防護由 Django active fruit 與既有 motor command 狀態負責。
 - `hcsr04_trigger` pending retry 會保留，但不應每 `100 ms` 重送。
 - `waitingStartSequenceCommand=true` 時，command GET timeout 不應進入 `10000 ms` idle backoff。
 - ESP32 預設只印 response 摘要；若需要完整 Django JSON，才將 `verboseHttpResponseLog` 改為 `true`。
+- Wi-Fi 重連與伺服等待以 deadline 驅動，不在主迴圈同步等待數秒。HC-SR04 無回波時最多阻塞 `12 ms`。
+- HTTPS transport 的 connect 與 read 都使用該 request 的 deadline：自動 trigger `1000 ms`、command `1500 ms`、一般 report `5000 ms`。正常情況重用同 origin HTTP/1.1 TLS 連線，Wi-Fi 斷線、timeout、client 失效或 `Connection: close` 時停止 client 後重建。
 
 ## 手機相機頁
 
-- `/camera/` 以 single in-flight polling 輪詢 `/api/state/`。
-- 目前 idle / active 輪詢約 `200 ms`。
+- `/camera/` 以 single in-flight polling 輪詢 `/api/camera/state/`；此端點僅供相機頁使用，主要傳回 `revision`、fruit、token、站點與 capture request，並保留 `status`、`active_fruit_id`、`pending_capture` 與 nested `capture` 相容欄位，且禁止快取。
+- idle polling 為 `250 ms`，有 fruit／capture request 時為 `75 ms`，實際擷取或上傳期間為 `250 ms`；state request 使用 `AbortController`，逾時後才排下一輪。頁面進入背景時 polling 會停止，回到前景才重啟。
 - 每次只在 Django 指定站點時拍攝並上傳 1 張照片。
 - 上傳必須包含 `fruit_id`、`capture_token`、`station_index`。
+- `capture_started` 是 best-effort timing telemetry，不能等待其 HTTP response 才擷取 canvas 或上傳；`capture_meta` 應記錄 request、影格、blob 與 upload 開始的 client timing。
 - Django 仍嚴格檢查 token、fruit id、站點與流程狀態。
 
 ## Dataset 與 metadata
@@ -147,3 +170,10 @@ C:\Users\qoqoo\anaconda3\envs\pf_iot_env\python.exe manage.py test fruit_app
 ```
 
 啟動 HTTPS 開發伺服器時，依目前專案環境使用既有 `runsslserver` 設定。
+
+## 實機驗收
+
+1. 空軌連續 `100` 次 HC-SR04 讀取，確認 Echo 等待上限為 `12 ms`，完整 `sensor_read_us` 未跨過約 `12.1 ms` warning 門檻。
+2. transition trace 可量測「Django 收到 `hcsr04_station_1_ready`」至 `img_01.jpg` 原子保存的伺服器端鏈路。健康網路下連續 `20` 次自動採集的 HC-SR04 實體偵測至保存總延遲，必須以同次 firmware Serial timing 與高速錄影／外部同步量測確認中位數不超過 `1.0 s`、`p95` 不超過 `1.5 s`。
+3. 用高速錄影確認第 2、3 站在回報 ready 前已停止，再檢查三張照片的清晰度、temp 鎖定與分類後下一顆可觸發。
+4. 分別模擬 Wi-Fi 中斷、TLS timeout、手機未上傳、錯站與重複 trigger，確認不會建立重複 fruit 或提前放行閘門。

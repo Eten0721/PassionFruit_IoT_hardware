@@ -14,6 +14,8 @@ from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
+from . import capture_session, dataset_store, webrtc_signaling
+
 
 LABELS = ['上中等', '下等', '廢棄', '加工']
 IMAGE_COUNT = 3
@@ -35,10 +37,21 @@ MIN_CAPTURE_INTERVAL_MS = 0
 MAX_CAPTURE_INTERVAL_MS = 3000
 HOME_ANGLE = 0
 RELEASE_ANGLE = 90
-# High-speed data collection test values. If SG90 movement or fruit settling is
-# unstable in hardware tests, tune these back to 250, 300, or 500 ms.
-SERVO_SETTLE_MS = 150
+# Conservative defaults that still preserve the first-station fast path.
+FIRST_STATION_SETTLE_MS = 300
+SERVO_SETTLE_MS = 300
 FRUIT_SETTLE_MS = 300
+FINAL_GATE_RETURN_DELAY_MS = 300
+CAPTURE_TIMING_RECOMMENDED = {
+    'first_station_settle_ms': FIRST_STATION_SETTLE_MS,
+    'servo_settle_ms': SERVO_SETTLE_MS,
+    'fruit_settle_ms': FRUIT_SETTLE_MS,
+    'final_gate_return_delay_ms': FINAL_GATE_RETURN_DELAY_MS,
+}
+CAPTURE_TIMING_FIELDS = tuple(CAPTURE_TIMING_RECOMMENDED)
+CAPTURE_TIMING_STEP_MS = 50
+CAPTURE_TIMING_MIN_MS = 50
+CAPTURE_TIMING_MAX_MS = 3000
 ESP32_ONLINE_WINDOW_SECONDS = 20
 ESP32_START_TIMEOUT_SECONDS = 10
 HARDWARE_STEP_TIMEOUT_SECONDS = 20
@@ -46,6 +59,27 @@ CAMERA_UPLOAD_TIMEOUT_SECONDS = 45
 FILE_OPERATION_RETRIES = 8
 FILE_OPERATION_RETRY_DELAY_SECONDS = 0.15
 UPLOAD_STAGING_SUFFIX = '.uploading'
+CLIENT_TIMING_KEYS = (
+    # Current camera page timestamps.
+    'request_received_at_ms',
+    'video_ready_at_ms',
+    'capture_started_sent_at_ms',
+    'frame_drawn_at_ms',
+    'blob_ready_at_ms',
+    'upload_started_at_ms',
+    'frame_to_blob_ready_ms',
+    # Keep the pre-fast-path aliases accepted during staggered deployment.
+    'request_received_ms',
+    'video_ready_ms',
+    'capture_started_sent_ms',
+    'frame_drawn_ms',
+    'blob_ready_ms',
+    'upload_started_ms',
+    'request_to_video_ready_ms',
+    'request_to_frame_drawn_ms',
+    'request_to_blob_ready_ms',
+    'request_to_upload_started_ms',
+)
 
 STATE_LOCK = threading.RLock()
 APP_STATE = {
@@ -72,7 +106,21 @@ APP_STATE = {
     'command_to_phone_start_ms': None,
     'phone_capture_timestamps_ms': [],
     'phone_capture_intervals_ms': [],
+    'client_timing': {},
     'upload_received_at': None,
+    # Fast station-1 reports are idempotent across HTTPS response timeouts.
+    'fast_path_trigger_id': None,
+    'fast_path_fruit_id': None,
+    'fast_path_capture_token': None,
+    # A small in-memory trace gives dashboard and Serial logs one timing chain.
+    'state_revision': 0,
+    'trace_sequence': 0,
+    'transition_trace': [],
+    'capture_timing': dict(CAPTURE_TIMING_RECOMMENDED),
+    'capture_timing_revision': 1,
+    'capture_timing_applied_revision': 0,
+    'capture_timing_applied_at': None,
+    'capture_timing_loaded_path': None,
     'status': 'idle',
     'message': '等待手機連線與手動拍攝。',
 }
@@ -107,6 +155,29 @@ def _print_timing_log(event_name, **fields):
     print(' '.join(parts), flush=True)
 
 
+def _record_transition(
+    event,
+    *,
+    fruit_id=None,
+    station_index=None,
+    command_id=None,
+    trigger_id=None,
+    details=None,
+):
+    """Record one bounded state transition while ``STATE_LOCK`` is held."""
+    return capture_session.append_transition_trace(
+        APP_STATE,
+        event=event,
+        now_string=_now_string,
+        monotonic=time.monotonic,
+        fruit_id=fruit_id,
+        station_index=station_index,
+        command_id=command_id,
+        trigger_id=trigger_id,
+        details=details,
+    )
+
+
 def home_view(request):
     return render(request, 'home.html')
 
@@ -127,7 +198,17 @@ def state_api(request):
     with STATE_LOCK:
         _sync_active_state_with_filesystem()
         payload = _state_payload()
-    return JsonResponse(payload)
+    return _no_store_response(JsonResponse(payload))
+
+
+@require_GET
+def camera_state_api(request):
+    """Return only the fields needed by the high-frequency camera poller."""
+    _ensure_dataset_structure()
+    with STATE_LOCK:
+        _sync_active_state_with_filesystem()
+        payload = _camera_state_payload()
+    return _no_store_response(JsonResponse(payload))
 
 
 @csrf_exempt
@@ -150,6 +231,66 @@ def set_counter_api(request):
         _write_counter(next_id)
         APP_STATE['message'] = f'下一筆資料將從 {fruit_id} 開始。'
     return JsonResponse({'status': 'success', 'next_fruit_id': fruit_id})
+
+
+@csrf_exempt
+@require_POST
+def capture_timing_api(request):
+    """Persist a complete next-fruit timing profile while the controller is idle."""
+    _ensure_dataset_structure()
+    data = _request_data(request)
+    with STATE_LOCK:
+        _sync_active_state_with_filesystem()
+        if APP_STATE['status'] != 'idle' or APP_STATE.get('active_fruit_id') or APP_STATE.get('motor_command'):
+            return _json_error(
+                '拍攝流程進行中，請等待目前 fruit 完成、分類或跳過後再調整停穩時間。',
+                status=409,
+                reason='capture_timing_update_requires_idle',
+            )
+
+        try:
+            timing = _normalise_capture_timing(data, require_all=True)
+        except CaptureCommandError as exc:
+            return _json_error(exc.message, status=exc.status, reason=exc.reason)
+
+        if timing == APP_STATE['capture_timing']:
+            return JsonResponse(_state_payload(extra={
+                'ok': True,
+                'capture_timing_unchanged': True,
+            }))
+
+        previous_timing = APP_STATE['capture_timing']
+        previous_revision = APP_STATE['capture_timing_revision']
+        previous_applied_at = APP_STATE['capture_timing_applied_at']
+        APP_STATE['capture_timing'] = timing
+        APP_STATE['capture_timing_revision'] = previous_revision + 1
+        APP_STATE['capture_timing_applied_at'] = None
+        try:
+            _write_capture_timing_config(
+                timing,
+                APP_STATE['capture_timing_revision'],
+            )
+        except OSError as exc:
+            APP_STATE['capture_timing'] = previous_timing
+            APP_STATE['capture_timing_revision'] = previous_revision
+            APP_STATE['capture_timing_applied_at'] = previous_applied_at
+            return _json_error(
+                f'無法保存拍攝停穩設定：{exc}',
+                status=500,
+                reason='capture_timing_persist_failed',
+            )
+        _record_transition(
+            'capture_timing_updated',
+            details={
+                'revision': APP_STATE['capture_timing_revision'],
+                **timing,
+            },
+        )
+        payload = _state_payload(extra={
+            'ok': True,
+            'capture_timing_updated': True,
+        })
+    return JsonResponse(payload)
 
 
 @csrf_exempt
@@ -216,7 +357,19 @@ def esp32_report_api(request):
 
     with STATE_LOCK:
         _mark_esp32_report()
+        if event == 'timing_config_applied':
+            try:
+                payload = _handle_timing_config_applied(data)
+            except CaptureCommandError as exc:
+                return _json_error(exc.message, status=exc.status, reason=exc.reason, extra={'ok': False})
+            return JsonResponse(payload)
+
+        if event == 'hcsr04_station_1_ready':
+            payload = _handle_hcsr04_station_1_ready(data)
+            return JsonResponse(payload)
+
         if event == 'hcsr04_trigger':
+            _record_transition('hcsr04_trigger_received')
             if not _auto_trigger_enabled():
                 reason = _auto_trigger_disabled_reason()
                 payload = _state_payload(extra={
@@ -341,11 +494,18 @@ def capture_started_api(request):
                 (APP_STATE['capture_started_monotonic'] - command_created) * 1000,
                 1,
             )
+        _apply_client_timing(data.get('client_timing'))
         _print_timing_log(
             'phone_capture_started',
             fruit_id=fruit_id,
             station_index=station_index,
             command_to_phone_start_ms=APP_STATE['command_to_phone_start_ms'],
+        )
+        _record_transition(
+            'phone_capture_started',
+            fruit_id=fruit_id,
+            station_index=station_index,
+            details={'command_to_phone_start_ms': APP_STATE['command_to_phone_start_ms']},
         )
         if APP_STATE['status'] == 'waiting_camera':
             APP_STATE['message'] = f'{fruit_id} 第 {station_index} 站手機端已開始拍攝。'
@@ -427,6 +587,15 @@ def upload_images_api(request):
             capture_to_upload_ms=capture_to_upload_ms,
             command_to_upload_ms=command_to_upload_ms,
         )
+        _record_transition(
+            'station_image_saved',
+            fruit_id=active_fruit_id,
+            station_index=station_index,
+            details={
+                'capture_to_upload_ms': capture_to_upload_ms,
+                'command_to_upload_ms': command_to_upload_ms,
+            },
+        )
         _mark_station_captured(station_index)
         _set_release_command(station_index)
         payload = _state_payload(extra={
@@ -487,6 +656,9 @@ def classify_api(request):
         APP_STATE['active_fruit_id'] = None
         APP_STATE['capture_time'] = None
         APP_STATE['source'] = None
+        APP_STATE['fast_path_trigger_id'] = None
+        APP_STATE['fast_path_fruit_id'] = None
+        APP_STATE['fast_path_capture_token'] = None
         APP_STATE['active_station_index'] = None
         APP_STATE['station_statuses'] = {}
         APP_STATE['motor_command'] = None
@@ -494,6 +666,7 @@ def classify_api(request):
         APP_STATE['status'] = 'classified'
         APP_STATE['message'] = f'{fruit_id} 已分類為「{label}」。'
         _reset_timing_state(keep_interval=True)
+        _record_transition('fruit_classified', fruit_id=fruit_id, details={'label': label})
         payload = {
             'status': 'success',
             'fruit_id': fruit_id,
@@ -531,20 +704,12 @@ def discard_api(request):
                     payload = _state_payload(extra={'delete_warnings': [str(exc)]})
                     return JsonResponse(payload, status=409)
 
-        APP_STATE['pending_capture'] = False
-        APP_STATE['active_fruit_id'] = None
-        APP_STATE['capture_time'] = None
-        APP_STATE['source'] = None
-        APP_STATE['active_station_index'] = None
-        APP_STATE['station_statuses'] = {}
-        APP_STATE['motor_command'] = None
-        APP_STATE['last_error_reason'] = None
-        APP_STATE['status'] = 'discarded'
         if delete_warnings:
-            APP_STATE['message'] = f'{fruit_id} 已解除目前狀態；空資料夾暫時刪不掉，之後會自動重用或再清理。'
+            message = f'{fruit_id} 已解除目前狀態；空資料夾暫時刪不掉，之後會自動重用或再清理。'
         else:
-            APP_STATE['message'] = f'{fruit_id} 已刪除，counter 不會自動增加。'
-        _reset_timing_state(keep_interval=True)
+            message = f'{fruit_id} 已刪除，counter 不會自動增加。'
+        _clear_active_state(message, status='idle')
+        _record_transition('fruit_discarded', fruit_id=fruit_id)
         payload = _state_payload(extra={'discarded_fruit_id': fruit_id, 'delete_warnings': delete_warnings})
     return JsonResponse(payload)
 
@@ -562,7 +727,10 @@ def reset_dataset_api(request):
         APP_STATE['capture_token'] = 0
         APP_STATE['capture_interval_ms'] = DEFAULT_CAPTURE_INTERVAL_MS
         APP_STATE['motor_command_id'] = 0
+        APP_STATE['transition_trace'] = []
+        APP_STATE['trace_sequence'] = 0
         _reset_timing_state(keep_interval=True)
+        _record_transition('dataset_reset', details={'delete_warning_count': len(delete_warnings)})
         payload = _state_payload(extra={'reset_done': True, 'delete_warnings': delete_warnings})
     return JsonResponse(payload)
 
@@ -597,14 +765,7 @@ def webrtc_offer_api(request):
         return _json_error('WebRTC offer 格式不正確。', status=400)
 
     with STATE_LOCK:
-        WEBRTC_STATE['offer_id'] += 1
-        WEBRTC_STATE['offer'] = offer
-        WEBRTC_STATE['answer'] = None
-        WEBRTC_STATE['answer_id'] = 0
-        WEBRTC_STATE['dashboard_ice'] = []
-        WEBRTC_STATE['camera_ice'] = []
-        WEBRTC_STATE['updated_at'] = _now_string()
-        offer_id = WEBRTC_STATE['offer_id']
+        offer_id = webrtc_signaling.accept_offer(WEBRTC_STATE, offer, _now_string)
     return JsonResponse({'status': 'success', 'offer_id': offer_id})
 
 
@@ -617,10 +778,7 @@ def webrtc_answer_api(request):
         return _json_error('WebRTC answer 格式不正確。', status=400)
 
     with STATE_LOCK:
-        WEBRTC_STATE['answer_id'] += 1
-        WEBRTC_STATE['answer'] = answer
-        WEBRTC_STATE['updated_at'] = _now_string()
-        answer_id = WEBRTC_STATE['answer_id']
+        answer_id = webrtc_signaling.accept_answer(WEBRTC_STATE, answer, _now_string)
     return JsonResponse({'status': 'success', 'answer_id': answer_id})
 
 
@@ -635,10 +793,13 @@ def webrtc_ice_api(request):
     if not candidate:
         return JsonResponse({'status': 'success', 'ignored': True})
 
-    key = 'dashboard_ice' if role == 'dashboard' else 'camera_ice'
     with STATE_LOCK:
-        WEBRTC_STATE[key].append(candidate)
-        WEBRTC_STATE['updated_at'] = _now_string()
+        webrtc_signaling.add_ice_candidate(
+            WEBRTC_STATE,
+            role=role,
+            candidate=candidate,
+            now_string=_now_string,
+        )
     return JsonResponse({'status': 'success'})
 
 
@@ -651,22 +812,13 @@ def webrtc_state_api(request):
         camera_from = _ice_from_index(request.GET.get('camera_ice_from'), len(camera_ice))
         known_offer_id = _safe_int(request.GET.get('known_offer_id'))
         known_answer_id = _safe_int(request.GET.get('known_answer_id'))
-        incremental = dashboard_from is not None or camera_from is not None
-        include_offer = known_offer_id is None or known_offer_id != WEBRTC_STATE['offer_id']
-        include_answer = known_answer_id is None or known_answer_id != WEBRTC_STATE['answer_id']
-        payload = {
-            'offer': WEBRTC_STATE['offer'] if include_offer else None,
-            'offer_id': WEBRTC_STATE['offer_id'],
-            'answer': WEBRTC_STATE['answer'] if include_answer else None,
-            'answer_id': WEBRTC_STATE['answer_id'],
-            'dashboard_ice': dashboard_ice[dashboard_from or 0:] if incremental else dashboard_ice,
-            'camera_ice': camera_ice[camera_from or 0:] if incremental else camera_ice,
-            'dashboard_ice_total': len(dashboard_ice),
-            'camera_ice_total': len(camera_ice),
-            'offer_present': WEBRTC_STATE['offer'] is not None,
-            'answer_present': WEBRTC_STATE['answer'] is not None,
-            'updated_at': WEBRTC_STATE['updated_at'],
-        }
+        payload = webrtc_signaling.build_state_payload(
+            WEBRTC_STATE,
+            dashboard_from=dashboard_from,
+            camera_from=camera_from,
+            known_offer_id=known_offer_id,
+            known_answer_id=known_answer_id,
+        )
     return JsonResponse(payload)
 
 
@@ -696,7 +848,19 @@ def reset_runtime_state_for_tests():
             'command_to_phone_start_ms': None,
             'phone_capture_timestamps_ms': [],
             'phone_capture_intervals_ms': [],
+            'client_timing': {},
             'upload_received_at': None,
+            'fast_path_trigger_id': None,
+            'fast_path_fruit_id': None,
+            'fast_path_capture_token': None,
+            'state_revision': 0,
+            'trace_sequence': 0,
+            'transition_trace': [],
+            'capture_timing': dict(CAPTURE_TIMING_RECOMMENDED),
+            'capture_timing_revision': 1,
+            'capture_timing_applied_revision': 0,
+            'capture_timing_applied_at': None,
+            'capture_timing_loaded_path': None,
             'status': 'idle',
             'message': '等待手機連線與手動拍攝。',
         })
@@ -730,6 +894,10 @@ def _counter_path():
     return _dataset_root() / 'counter.json'
 
 
+def _capture_timing_path():
+    return _dataset_root() / 'capture_timing.json'
+
+
 def _metadata_path():
     return _dataset_root() / 'metadata.csv'
 
@@ -750,6 +918,7 @@ def _ensure_dataset_structure():
         (root / label).mkdir(parents=True, exist_ok=True)
     if not _counter_path().exists():
         _write_counter(1)
+    _ensure_capture_timing_config()
     _ensure_metadata_header()
 
 
@@ -778,6 +947,108 @@ def _write_counter(next_id):
     with _counter_path().open('w', encoding='utf-8') as counter_file:
         json.dump({'next_id': int(next_id)}, counter_file, ensure_ascii=False, indent=2)
         counter_file.write('\n')
+
+
+def _normalise_capture_timing(raw_timing, *, require_all):
+    raw_timing = raw_timing if isinstance(raw_timing, dict) else {}
+    timing = {}
+    for field in CAPTURE_TIMING_FIELDS:
+        raw_value = raw_timing.get(field)
+        if raw_value is None:
+            if require_all:
+                raise CaptureCommandError(
+                    f'缺少停穩時間欄位：{field}。',
+                    status=400,
+                    reason='capture_timing_field_missing',
+                )
+            continue
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            raise CaptureCommandError(
+                f'{field} 必須是整數毫秒。',
+                status=400,
+                reason='capture_timing_invalid_value',
+            ) from None
+
+        minimum = 0 if field == 'final_gate_return_delay_ms' else CAPTURE_TIMING_MIN_MS
+        if value < minimum or value > CAPTURE_TIMING_MAX_MS:
+            raise CaptureCommandError(
+                f'{field} 必須介於 {minimum} 到 {CAPTURE_TIMING_MAX_MS} ms。',
+                status=400,
+                reason='capture_timing_out_of_range',
+            )
+        if value % CAPTURE_TIMING_STEP_MS != 0:
+            raise CaptureCommandError(
+                f'{field} 必須以 {CAPTURE_TIMING_STEP_MS} ms 為間距。',
+                status=400,
+                reason='capture_timing_invalid_step',
+            )
+        timing[field] = value
+    return timing
+
+
+def _read_capture_timing_config():
+    default_timing = dict(CAPTURE_TIMING_RECOMMENDED)
+    try:
+        with _capture_timing_path().open('r', encoding='utf-8') as timing_file:
+            data = json.load(timing_file)
+        timing = _normalise_capture_timing(data.get('capture_timing'), require_all=True)
+        revision = _safe_int(data.get('revision'))
+        if revision is None or revision < 1:
+            raise ValueError('invalid timing revision')
+        return timing, revision, False
+    except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError, ValueError, CaptureCommandError):
+        return default_timing, 1, True
+
+
+def _write_capture_timing_config(timing, revision):
+    path = _capture_timing_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging_path = path.with_suffix('.tmp')
+    payload = {
+        'revision': int(revision),
+        'capture_timing': dict(timing),
+    }
+    with staging_path.open('w', encoding='utf-8') as timing_file:
+        json.dump(payload, timing_file, ensure_ascii=False, indent=2)
+        timing_file.write('\n')
+    os.replace(staging_path, path)
+
+
+def _ensure_capture_timing_config():
+    path = _capture_timing_path()
+    path_key = str(path)
+    if APP_STATE.get('capture_timing_loaded_path') == path_key:
+        return
+
+    timing, revision, needs_write = _read_capture_timing_config()
+    APP_STATE['capture_timing'] = timing
+    APP_STATE['capture_timing_revision'] = revision
+    APP_STATE['capture_timing_applied_revision'] = 0
+    APP_STATE['capture_timing_applied_at'] = None
+    APP_STATE['capture_timing_loaded_path'] = path_key
+    if needs_write:
+        _write_capture_timing_config(timing, revision)
+
+
+def _capture_timing_status():
+    if APP_STATE['capture_timing_applied_revision'] == APP_STATE['capture_timing_revision']:
+        return 'applied'
+    if not _esp32_is_online():
+        return 'waiting_esp32'
+    return 'pending_esp32_apply'
+
+
+def _capture_timing_state_payload():
+    return {
+        'capture_timing': dict(APP_STATE['capture_timing']),
+        'capture_timing_recommended': dict(CAPTURE_TIMING_RECOMMENDED),
+        'capture_timing_revision': APP_STATE['capture_timing_revision'],
+        'capture_timing_applied_revision': APP_STATE['capture_timing_applied_revision'],
+        'capture_timing_applied_at': APP_STATE['capture_timing_applied_at'],
+        'capture_timing_status': _capture_timing_status(),
+    }
 
 
 def _format_fruit_id(number):
@@ -905,6 +1176,15 @@ def _create_capture_session(source):
         message = f'已建立 {fruit_id}，等待 ESP32 輪詢開始三站流程。'
     _start_new_capture_session(fruit_id, source, 'waiting_esp32_start', message)
     _set_motor_command('start_sequence', station_index=1)
+    if source == 'esp32':
+        # The report receipt was logged before creating the session, which
+        # resets the per-fruit trace. Record it again on the new fruit so the
+        # legacy path retains the same sensor-to-save trace contract as the
+        # guarded station-1 shortcut.
+        _record_transition('hcsr04_trigger_received', fruit_id=fruit_id)
+        _record_transition('hcsr04_trigger_accepted', fruit_id=fruit_id)
+    elif source.startswith('manual'):
+        _record_transition('manual_capture_accepted', fruit_id=fruit_id)
 
     return _state_payload(extra={
         'status': 'success',
@@ -912,6 +1192,185 @@ def _create_capture_session(source):
         'capture_token': APP_STATE['capture_token'],
         'source': source,
     })
+
+
+def _handle_hcsr04_station_1_ready(data):
+    """Accept the guarded HC-SR04 shortcut without a start-command round trip.
+
+    The ESP32 must prove that all gates are home and the fruit is stationary at
+    station 1.  A network timeout can cause this exact report to be sent again;
+    the stored trigger id then returns the same session instead of allocating a
+    second fruit directory.
+    """
+    trigger_id = _normalise_trigger_id(data.get('trigger_id'))
+    gates_home = _safe_bool(data.get('gates_home'))
+    station_settled = _safe_bool(data.get('station_settled'))
+    reported_station = _safe_int(data.get('station_index'))
+    _record_transition(
+        'hcsr04_station_1_ready_received',
+        trigger_id=trigger_id,
+        station_index=reported_station,
+        details={
+            'gates_home': gates_home,
+            'station_settled': station_settled,
+        },
+    )
+
+    if not trigger_id:
+        return _fast_path_fallback(
+            trigger_id=None,
+            reason='missing_trigger_id',
+            message='Fast station-1 report requires trigger_id.',
+        )
+    if not _fast_path_enabled():
+        return _fast_path_fallback(
+            trigger_id=trigger_id,
+            reason='fast_path_disabled',
+            message='Fast station-1 path is disabled; use the legacy trigger handshake.',
+        )
+    if not gates_home or not station_settled or reported_station != 1:
+        return _fast_path_fallback(
+            trigger_id=trigger_id,
+            reason='fast_path_unsafe',
+            message='Fast station-1 safety proof is incomplete.',
+        )
+
+    if (
+        APP_STATE.get('fast_path_trigger_id') == trigger_id
+        and APP_STATE.get('active_fruit_id') == APP_STATE.get('fast_path_fruit_id')
+    ):
+        _record_transition(
+            'hcsr04_station_1_ready_duplicate',
+            trigger_id=trigger_id,
+            fruit_id=APP_STATE.get('fast_path_fruit_id'),
+            station_index=1,
+            details={'retry': True},
+        )
+        return _fast_path_payload(trigger_id, duplicate=True)
+
+    if not _auto_trigger_enabled():
+        return _fast_path_ignored(
+            trigger_id=trigger_id,
+            reason=_auto_trigger_disabled_reason(),
+            message='Fast station-1 path is currently locked; wait for sensor rearm.',
+        )
+
+    try:
+        fruit_number = _next_available_number(_read_counter())
+        fruit_id = _format_fruit_id(fruit_number)
+        _prepare_fruit_dir(fruit_id, source='esp32_fast_station_1')
+    except CaptureCommandError as exc:
+        return _fast_path_fallback(
+            trigger_id=trigger_id,
+            reason=exc.reason,
+            message='Fast station-1 session could not be prepared; use the legacy trigger handshake.',
+        )
+
+    _start_new_capture_session(
+        fruit_id,
+        source='esp32_fast_station_1',
+        status='waiting_camera',
+        message=f'{fruit_id} fast station 1 is ready; waiting for one camera upload.',
+    )
+    # ``_start_new_capture_session`` starts a per-fruit trace, so re-add the
+    # sensor event after the reset to retain the full sensor-to-save timeline.
+    _record_transition(
+        'hcsr04_station_1_ready_received',
+        fruit_id=fruit_id,
+        station_index=1,
+        trigger_id=trigger_id,
+        details={'gates_home': True, 'station_settled': True},
+    )
+    APP_STATE['fast_path_trigger_id'] = trigger_id
+    APP_STATE['fast_path_fruit_id'] = fruit_id
+    capture_session.request_station_capture(
+        APP_STATE,
+        fruit_id=fruit_id,
+        station_index=1,
+        now_string=_now_string,
+        monotonic=time.monotonic,
+        increment_token=False,
+    )
+    APP_STATE['fast_path_capture_token'] = APP_STATE['capture_token']
+    _start_wait_timer()
+    _record_transition(
+        'fast_path_station_1_capture_requested',
+        fruit_id=fruit_id,
+        station_index=1,
+        trigger_id=trigger_id,
+        details={'gates_home': True, 'station_settled': True},
+    )
+    _print_timing_log(
+        'fast_path_station_1_requested',
+        fruit_id=fruit_id,
+        capture_token=APP_STATE['capture_token'],
+        trigger_id=trigger_id,
+    )
+    return _fast_path_payload(trigger_id, duplicate=False)
+
+
+def _fast_path_payload(trigger_id, duplicate):
+    fruit_id = APP_STATE.get('fast_path_fruit_id') or APP_STATE.get('active_fruit_id')
+    capture_token = APP_STATE.get('fast_path_capture_token') or APP_STATE.get('capture_token')
+    return _state_payload(extra={
+        'ok': True,
+        'event': 'hcsr04_station_1_ready',
+        'accepted': True,
+        'fast_path': True,
+        'duplicate': duplicate,
+        'trigger_id': trigger_id,
+        'fruit_id': fruit_id,
+        'capture_token': capture_token,
+        'station_index': 1,
+        'capture_requested': bool(APP_STATE.get('pending_capture')),
+    })
+
+
+def _fast_path_fallback(trigger_id, reason, message):
+    _record_transition(
+        'fast_path_fallback_to_legacy',
+        trigger_id=trigger_id,
+        details={'reason': reason},
+    )
+    return _state_payload(extra={
+        'ok': False,
+        'event': 'hcsr04_station_1_ready',
+        'accepted': False,
+        'fast_path': False,
+        'fallback_to_legacy': True,
+        'trigger_id': trigger_id,
+        'reason': reason,
+        'message': message,
+    })
+
+
+def _fast_path_ignored(trigger_id, reason, message):
+    """Return a successful no-op when auto capture is intentionally locked.
+
+    A lock such as an unclassified temp fruit is not a protocol incompatibility.
+    Returning ``fallback_to_legacy`` here would cause the ESP32 to send a second
+    legacy trigger even though Django must reject it as well.
+    """
+    _record_transition(
+        'fast_path_ignored',
+        trigger_id=trigger_id,
+        details={'reason': reason},
+    )
+    return _state_payload(extra={
+        'ok': True,
+        'event': 'hcsr04_station_1_ready',
+        'accepted': False,
+        'fast_path': False,
+        'fallback_to_legacy': False,
+        'ignored': True,
+        'trigger_id': trigger_id,
+        'reason': reason,
+        'message': message,
+    })
+
+
+def _fast_path_enabled():
+    return bool(getattr(settings, 'ENABLE_AUTO_STATION_1_FAST_PATH', True))
 
 
 def _prepare_fruit_dir(fruit_id, source):
@@ -948,10 +1407,20 @@ def _start_new_capture_session(fruit_id, source, status, message):
     APP_STATE['motor_command'] = None
     APP_STATE['last_error_reason'] = None
     APP_STATE['upload_received_at'] = None
+    APP_STATE['fast_path_trigger_id'] = None
+    APP_STATE['fast_path_fruit_id'] = None
+    APP_STATE['fast_path_capture_token'] = None
+    APP_STATE['transition_trace'] = []
+    APP_STATE['trace_sequence'] = 0
     APP_STATE['status'] = status
     APP_STATE['message'] = message
     _reset_timing_state(keep_interval=True)
     _start_wait_timer()
+    _record_transition(
+        'capture_session_created',
+        fruit_id=fruit_id,
+        details={'source': source, 'status': status},
+    )
 
 
 def _start_existing_capture_session(fruit_id, source, message):
@@ -960,6 +1429,7 @@ def _start_existing_capture_session(fruit_id, source, message):
 
 
 def _set_motor_command(command, station_index=None):
+    timing = APP_STATE['capture_timing']
     APP_STATE['motor_command_id'] += 1
     APP_STATE['motor_command'] = {
         'command_id': APP_STATE['motor_command_id'],
@@ -968,11 +1438,20 @@ def _set_motor_command(command, station_index=None):
         'fruit_id': APP_STATE['active_fruit_id'],
         'home_angle': HOME_ANGLE,
         'release_angle': RELEASE_ANGLE,
-        'servo_settle_ms': SERVO_SETTLE_MS,
-        'fruit_settle_ms': FRUIT_SETTLE_MS,
+        'timing_revision': APP_STATE['capture_timing_revision'],
+        'first_station_settle_ms': timing['first_station_settle_ms'],
+        'servo_settle_ms': timing['servo_settle_ms'],
+        'fruit_settle_ms': timing['fruit_settle_ms'],
+        'final_gate_return_delay_ms': timing['final_gate_return_delay_ms'],
         'created_at': _now_string(),
     }
     _start_wait_timer()
+    _record_transition(
+        'motor_command_issued',
+        station_index=station_index,
+        command_id=APP_STATE['motor_command_id'],
+        details={'command': command},
+    )
 
 
 def _set_release_command(station_index):
@@ -1020,20 +1499,21 @@ def _handle_station_ready(station_index, command_id=None):
     if current_command and command_id != current_command.get('command_id'):
         raise CaptureCommandError('ESP32 回報的 command_id 與目前馬達命令不符。', reason='command_id_mismatch')
 
-    APP_STATE['motor_command'] = None
-    APP_STATE['active_station_index'] = station_index
-    APP_STATE['capture_token'] += 1
-    APP_STATE['pending_capture'] = True
-    APP_STATE['status'] = 'waiting_camera'
-    APP_STATE['station_statuses'][station_key] = 'ready'
-    APP_STATE['command_created_at'] = _now_string()
-    APP_STATE['command_created_monotonic'] = time.monotonic()
-    APP_STATE['capture_started_at'] = None
-    APP_STATE['capture_started_monotonic'] = None
-    APP_STATE['command_to_phone_start_ms'] = None
-    APP_STATE['upload_received_at'] = None
-    APP_STATE['message'] = f'{fruit_id} 第 {station_index} 站已就緒，等待手機拍攝並上傳單張照片。'
+    capture_session.request_station_capture(
+        APP_STATE,
+        fruit_id=fruit_id,
+        station_index=station_index,
+        now_string=_now_string,
+        monotonic=time.monotonic,
+        increment_token=True,
+    )
     _start_wait_timer()
+    _record_transition(
+        'station_capture_requested',
+        fruit_id=fruit_id,
+        station_index=station_index,
+        command_id=command_id,
+    )
     return _state_payload(extra={'ok': True, 'event': f'station_{station_index}_ready'})
 
 
@@ -1076,6 +1556,11 @@ def _handle_sequence_finished(command_id=None):
     APP_STATE['status'] = 'uploaded'
     APP_STATE['message'] = f'{fruit_id} 三站照片已完成，請在 dashboard 確認後分類。'
     _clear_wait_timer()
+    _record_transition(
+        'capture_sequence_finished',
+        fruit_id=fruit_id,
+        command_id=command_id,
+    )
     return _state_payload(extra={'ok': True, 'event': 'capture_sequence_finished'})
 
 
@@ -1088,6 +1573,7 @@ def _station_from_ready_event(event):
 
 def _esp32_command_payload():
     auto_trigger_enabled = _auto_trigger_enabled()
+    timing = APP_STATE['capture_timing']
     base_payload = {
         'status': 'success',
         'auto_trigger_enabled': 1 if auto_trigger_enabled else 0,
@@ -1103,8 +1589,14 @@ def _esp32_command_payload():
             'fruit_id': command['fruit_id'] or '',
             'home_angle': command['home_angle'],
             'release_angle': command['release_angle'],
-            'servo_settle_ms': command['servo_settle_ms'],
-            'fruit_settle_ms': command['fruit_settle_ms'],
+            'timing_revision': command.get('timing_revision', APP_STATE['capture_timing_revision']),
+            'first_station_settle_ms': command.get('first_station_settle_ms', timing['first_station_settle_ms']),
+            'servo_settle_ms': command.get('servo_settle_ms', timing['servo_settle_ms']),
+            'fruit_settle_ms': command.get('fruit_settle_ms', timing['fruit_settle_ms']),
+            'final_gate_return_delay_ms': command.get(
+                'final_gate_return_delay_ms',
+                timing['final_gate_return_delay_ms'],
+            ),
             'message': APP_STATE['message'],
         }
     return {
@@ -1115,10 +1607,49 @@ def _esp32_command_payload():
         'fruit_id': APP_STATE['active_fruit_id'] or '',
         'home_angle': HOME_ANGLE,
         'release_angle': RELEASE_ANGLE,
-        'servo_settle_ms': SERVO_SETTLE_MS,
-        'fruit_settle_ms': FRUIT_SETTLE_MS,
+        'timing_revision': APP_STATE['capture_timing_revision'],
+        'first_station_settle_ms': timing['first_station_settle_ms'],
+        'servo_settle_ms': timing['servo_settle_ms'],
+        'fruit_settle_ms': timing['fruit_settle_ms'],
+        'final_gate_return_delay_ms': timing['final_gate_return_delay_ms'],
         'message': APP_STATE['message'],
     }
+
+
+def _handle_timing_config_applied(data):
+    revision = _safe_int(data.get('timing_revision'))
+    if revision is None or revision < 1:
+        raise CaptureCommandError(
+            'ESP32 timing_config_applied 缺少有效 revision。',
+            status=400,
+            reason='invalid_timing_revision',
+        )
+
+    current_revision = APP_STATE['capture_timing_revision']
+    if revision != current_revision:
+        return _state_payload(extra={
+            'ok': True,
+            'event': 'timing_config_applied',
+            'ignored': True,
+            'reason': 'stale_or_unknown_timing_revision',
+            'reported_timing_revision': revision,
+        })
+
+    was_applied = APP_STATE['capture_timing_applied_revision'] == revision
+    APP_STATE['capture_timing_applied_revision'] = revision
+    APP_STATE['capture_timing_applied_at'] = _now_string()
+    if APP_STATE['status'] == 'idle':
+        APP_STATE['message'] = f'ESP32 已套用拍攝停穩設定 revision {revision}。'
+    if not was_applied:
+        _record_transition(
+            'timing_config_applied',
+            details={'revision': revision},
+        )
+    return _state_payload(extra={
+        'ok': True,
+        'event': 'timing_config_applied',
+        'timing_revision': revision,
+    })
 
 
 def _auto_trigger_enabled():
@@ -1171,8 +1702,11 @@ def _format_command_text(payload):
         'fruit_id',
         'home_angle',
         'release_angle',
+        'timing_revision',
+        'first_station_settle_ms',
         'servo_settle_ms',
         'fruit_settle_ms',
+        'final_gate_return_delay_ms',
     ]:
         lines.append(f'{key}={payload.get(key, "")}')
     return '\n'.join(lines) + '\n'
@@ -1222,6 +1756,7 @@ def _set_error_state(reason, message):
     APP_STATE['status'] = 'error'
     APP_STATE['message'] = message
     _clear_wait_timer()
+    _record_transition('capture_error', details={'reason': reason})
 
 
 def _capture_started_debug_payload(received_fruit_id, received_capture_token, received_station_index):
@@ -1260,6 +1795,8 @@ def _state_payload(extra=None):
         'pending_capture': APP_STATE['pending_capture'],
         'capture_requested': APP_STATE['pending_capture'],
         'capture_token': APP_STATE['capture_token'],
+        'revision': APP_STATE.get('state_revision', 0),
+        'state_revision': APP_STATE.get('state_revision', 0),
         'capture_interval_ms': APP_STATE['capture_interval_ms'],
         'active_fruit_id': active_fruit_id,
         'station_index': APP_STATE.get('active_station_index'),
@@ -1282,14 +1819,45 @@ def _state_payload(extra=None):
         'last_error_reason': APP_STATE.get('last_error_reason'),
         'home_angle': HOME_ANGLE,
         'release_angle': RELEASE_ANGLE,
-        'servo_settle_ms': SERVO_SETTLE_MS,
-        'fruit_settle_ms': FRUIT_SETTLE_MS,
+        'first_station_settle_ms': APP_STATE['capture_timing']['first_station_settle_ms'],
+        'servo_settle_ms': APP_STATE['capture_timing']['servo_settle_ms'],
+        'fruit_settle_ms': APP_STATE['capture_timing']['fruit_settle_ms'],
+        'final_gate_return_delay_ms': APP_STATE['capture_timing']['final_gate_return_delay_ms'],
+        **_capture_timing_state_payload(),
         'timing': _timing_payload(),
+        'transition_trace': list(APP_STATE.get('transition_trace') or []),
+        # ``trace`` is a small compatibility alias for early dashboard builds.
+        'trace': list(APP_STATE.get('transition_trace') or []),
         'dataset_path': str(_dataset_root()),
     }
     if extra:
         payload.update(extra)
     return payload
+
+
+def _camera_state_payload():
+    """Minimal, cache-safe state contract for the phone camera poller."""
+    fruit_id = APP_STATE.get('active_fruit_id')
+    station_index = APP_STATE.get('active_station_index')
+    requested = bool(APP_STATE.get('pending_capture'))
+    capture = {
+        'fruit_id': fruit_id,
+        'token': APP_STATE.get('capture_token'),
+        'capture_token': APP_STATE.get('capture_token'),
+        'station_index': station_index,
+        'requested': requested,
+    }
+    return {
+        'revision': APP_STATE.get('state_revision', 0),
+        'fruit_id': fruit_id,
+        'active_fruit_id': fruit_id,
+        'capture_token': APP_STATE.get('capture_token'),
+        'station_index': station_index,
+        'capture_requested': requested,
+        'pending_capture': requested,
+        'status': APP_STATE.get('status'),
+        'capture': capture,
+    }
 
 
 def _sync_active_state_with_filesystem():
@@ -1392,9 +1960,13 @@ def _sync_active_state_with_filesystem():
 
 def _clear_active_state(message, status='idle'):
     APP_STATE['pending_capture'] = False
+    APP_STATE['capture_token'] = 0
     APP_STATE['active_fruit_id'] = None
     APP_STATE['capture_time'] = None
     APP_STATE['source'] = None
+    APP_STATE['fast_path_trigger_id'] = None
+    APP_STATE['fast_path_fruit_id'] = None
+    APP_STATE['fast_path_capture_token'] = None
     APP_STATE['active_station_index'] = None
     APP_STATE['station_statuses'] = {}
     APP_STATE['motor_command'] = None
@@ -1427,6 +1999,7 @@ def _timing_payload():
         'capture_interval_ms': APP_STATE['capture_interval_ms'],
         'phone_capture_timestamps_ms': APP_STATE['phone_capture_timestamps_ms'],
         'phone_capture_intervals_ms': APP_STATE['phone_capture_intervals_ms'],
+        'client_timing': APP_STATE.get('client_timing') or {},
         'wait_started_at': APP_STATE.get('wait_started_at'),
     }
 
@@ -1440,6 +2013,7 @@ def _reset_timing_state(keep_interval=False):
     APP_STATE['command_to_phone_start_ms'] = None
     APP_STATE['phone_capture_timestamps_ms'] = []
     APP_STATE['phone_capture_intervals_ms'] = []
+    APP_STATE['client_timing'] = {}
     APP_STATE['upload_received_at'] = None
     if keep_interval:
         APP_STATE['capture_interval_ms'] = interval_ms
@@ -1461,6 +2035,35 @@ def _apply_capture_meta(raw_meta):
         APP_STATE['phone_capture_timestamps_ms'] = timestamps
     if intervals:
         APP_STATE['phone_capture_intervals_ms'] = intervals
+    _apply_client_timing(meta.get('client_timing'))
+
+
+def _apply_client_timing(raw_timing):
+    if isinstance(raw_timing, str):
+        try:
+            raw_timing = json.loads(raw_timing)
+        except (TypeError, json.JSONDecodeError):
+            return
+    if not isinstance(raw_timing, dict):
+        return
+
+    timing = {}
+    for key in CLIENT_TIMING_KEYS:
+        value = raw_timing.get(key)
+        if value is None:
+            continue
+        try:
+            timing[key] = round(float(value), 1)
+        except (TypeError, ValueError):
+            continue
+    if not timing:
+        return
+    APP_STATE['client_timing'] = timing
+    _record_transition(
+        'client_timing_received',
+        station_index=APP_STATE.get('active_station_index'),
+        details=timing,
+    )
 
 
 def _number_list(value, limit):
@@ -1487,6 +2090,25 @@ def _safe_int(value):
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _safe_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return False
+
+
+def _normalise_trigger_id(value):
+    if value is None:
+        return None
+    trigger_id = str(value).strip()
+    if not trigger_id or len(trigger_id) > 128 or any(char.isspace() for char in trigger_id):
+        return None
+    return trigger_id
 
 
 def _ice_from_index(value, total):
@@ -1586,19 +2208,15 @@ def _replace_temp_images(fruit_dir, image_files):
 
 
 def _save_station_image(fruit_dir, station_index, image_file):
-    fruit_dir = Path(fruit_dir)
-    filename = IMAGE_FILENAMES[station_index - 1]
-    target = fruit_dir / filename
-    staging = fruit_dir / f'{filename}{UPLOAD_STAGING_SUFFIX}'
-    try:
-        _safe_unlink(staging)
-        with staging.open('wb') as output:
-            for chunk in image_file.chunks():
-                output.write(chunk)
-        _safe_replace(staging, target)
-    except Exception:
-        _safe_unlink(staging)
-        raise
+    return dataset_store.save_station_image(
+        Path(fruit_dir),
+        station_index,
+        image_file,
+        image_filenames=IMAGE_FILENAMES,
+        staging_suffix=UPLOAD_STAGING_SUFFIX,
+        safe_unlink=_safe_unlink,
+        safe_replace=_safe_replace,
+    )
 
 
 def _reset_dataset_contents():

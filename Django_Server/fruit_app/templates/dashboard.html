@@ -178,12 +178,35 @@
             background: #f8fafb;
         }
 
+        button.thumb {
+            display: block;
+            width: 100%;
+            min-height: 0;
+            padding: 0;
+            color: #1f2933;
+            text-align: left;
+        }
+
+        button.thumb:hover {
+            border-color: #2269a8;
+        }
+
+        button.thumb:focus-visible {
+            outline: 3px solid #7cb7e8;
+            outline-offset: 2px;
+        }
+
+        .thumb-media {
+            aspect-ratio: 4 / 3;
+            overflow: hidden;
+            background: #d8e0e6;
+        }
+
         .thumb img {
             display: block;
             width: 100%;
-            aspect-ratio: 4 / 3;
+            height: 100%;
             object-fit: cover;
-            background: #d8e0e6;
         }
 
         .thumb span {
@@ -221,6 +244,118 @@
             line-height: 1.5;
         }
 
+        .timing-config-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .timing-config-field {
+            display: grid;
+            gap: 5px;
+            color: #31424f;
+            font-size: 14px;
+        }
+
+        .timing-config-field small,
+        .timing-config-status {
+            color: #60707c;
+            font-size: 12px;
+            line-height: 1.45;
+        }
+
+        .timing-config-actions {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+
+        .image-dialog {
+            width: min(94vw, 1080px);
+            max-width: 1080px;
+            padding: 0;
+            border: 0;
+            border-radius: 10px;
+            background: #111827;
+            color: #ffffff;
+        }
+
+        .image-dialog::backdrop {
+            background: rgba(15, 23, 42, 0.72);
+        }
+
+        .image-dialog-body {
+            display: grid;
+            gap: 10px;
+            padding: 12px;
+        }
+
+        .image-dialog-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .image-dialog-title {
+            overflow-wrap: anywhere;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .image-dialog-close {
+            min-height: 36px;
+            padding: 0 11px;
+            background: #5f6f7a;
+        }
+
+        .image-dialog-image {
+            display: block;
+            width: 100%;
+            max-height: min(78vh, 800px);
+            object-fit: contain;
+            background: #000000;
+        }
+
+        .trace-list {
+            display: grid;
+            gap: 8px;
+            margin: 0;
+            padding: 0;
+            list-style: none;
+        }
+
+        .trace-entry,
+        .trace-empty {
+            border: 1px solid #d8e0e6;
+            border-radius: 6px;
+            padding: 8px 10px;
+            background: #f8fafb;
+        }
+
+        .trace-event {
+            display: block;
+            color: #1f2933;
+            font-size: 14px;
+            font-weight: 700;
+            overflow-wrap: anywhere;
+        }
+
+        .trace-meta {
+            display: block;
+            margin-top: 3px;
+            color: #60707c;
+            font-size: 12px;
+            line-height: 1.45;
+            overflow-wrap: anywhere;
+        }
+
+        .trace-empty {
+            color: #60707c;
+            font-size: 14px;
+            text-align: center;
+        }
+
         @media (max-width: 900px) {
             header {
                 align-items: flex-start;
@@ -234,6 +369,10 @@
 
             .button-row {
                 grid-template-columns: repeat(2, 1fr);
+            }
+
+            .timing-config-grid {
+                grid-template-columns: 1fr;
             }
         }
     </style>
@@ -306,6 +445,48 @@
         </section>
 
         <section>
+            <h2>拍攝停穩設定</h2>
+            <div class="section-body grid">
+                <div class="timing-config-grid">
+                    <label class="timing-config-field" for="timing-first-station">
+                        <span>第 1 站停穩時間（ms）</span>
+                        <input id="timing-first-station" type="number" min="50" max="3000" step="50" inputmode="numeric" value="300">
+                        <small>推薦：300 ms</small>
+                    </label>
+                    <label class="timing-config-field" for="timing-servo">
+                        <span>伺服放行後穩定時間（ms）</span>
+                        <input id="timing-servo" type="number" min="50" max="3000" step="50" inputmode="numeric" value="300">
+                        <small>推薦：300 ms</small>
+                    </label>
+                    <label class="timing-config-field" for="timing-fruit">
+                        <span>到下一站停穩時間（ms）</span>
+                        <input id="timing-fruit" type="number" min="50" max="3000" step="50" inputmode="numeric" value="300">
+                        <small>推薦：300 ms</small>
+                    </label>
+                    <label class="timing-config-field" for="timing-final-return">
+                        <span>第 3 站放行後歸位延遲（ms）</span>
+                        <input id="timing-final-return" type="number" min="0" max="3000" step="50" inputmode="numeric" value="300">
+                        <small>推薦：300 ms</small>
+                    </label>
+                </div>
+                <div id="timing-config-status" class="timing-config-status">等待 Django 載入拍攝停穩設定。</div>
+                <div class="timing-config-actions">
+                    <button id="btn-reset-timing" type="button" class="secondary">恢復推薦值</button>
+                    <button id="btn-apply-timing" type="button">套用停穩設定</button>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>最近流程事件</h2>
+            <div class="section-body">
+                <ol id="transition-trace" class="trace-list" aria-live="polite">
+                    <li class="trace-empty">伺服器尚未提供 transition trace。</li>
+                </ol>
+            </div>
+        </section>
+
+        <section>
             <h2>人工分類</h2>
             <div class="section-body grid">
                 <textarea id="note" placeholder="note，可留空"></textarea>
@@ -320,6 +501,16 @@
         </section>
     </div>
 </main>
+
+<dialog id="image-dialog" class="image-dialog" aria-labelledby="image-dialog-title">
+    <div class="image-dialog-body">
+        <div class="image-dialog-header">
+            <strong id="image-dialog-title" class="image-dialog-title">照片預覽</strong>
+            <button id="btn-close-image-dialog" class="image-dialog-close" type="button">關閉</button>
+        </div>
+        <img id="image-dialog-image" class="image-dialog-image" alt="照片預覽">
+    </div>
+</dialog>
 
 <script>
     const remoteVideo = document.getElementById('remote-video');
@@ -349,6 +540,24 @@
     const timingCommandDelay = document.getElementById('timing-command-delay');
     const timingWaitStarted = document.getElementById('timing-wait-started');
     const timingUploadReceived = document.getElementById('timing-upload-received');
+    const transitionTraceEl = document.getElementById('transition-trace');
+    const timingFirstStationInput = document.getElementById('timing-first-station');
+    const timingServoInput = document.getElementById('timing-servo');
+    const timingFruitInput = document.getElementById('timing-fruit');
+    const timingFinalReturnInput = document.getElementById('timing-final-return');
+    const timingInputs = [
+        timingFirstStationInput,
+        timingServoInput,
+        timingFruitInput,
+        timingFinalReturnInput,
+    ];
+    const timingConfigStatus = document.getElementById('timing-config-status');
+    const applyTimingButton = document.getElementById('btn-apply-timing');
+    const resetTimingButton = document.getElementById('btn-reset-timing');
+    const imageDialog = document.getElementById('image-dialog');
+    const imageDialogImage = document.getElementById('image-dialog-image');
+    const imageDialogTitle = document.getElementById('image-dialog-title');
+    const closeImageDialogButton = document.getElementById('btn-close-image-dialog');
 
     let peerConnection = null;
     let answerApplied = false;
@@ -358,6 +567,8 @@
     let statePollTimer = null;
     let webrtcPollTimer = null;
     let lastState = null;
+    let timingInputsDirty = false;
+    let timingUpdateInFlight = false;
     const stateIdlePollMs = 1000;
     const stateActivePollMs = 500;
     const webrtcPollMs = 1000;
@@ -568,6 +779,8 @@
         setMessage(data.message || '');
         renderThumbnails(images);
         renderTiming(data.timing || {});
+        renderCaptureTiming(data);
+        renderTransitionTrace(data);
 
         classifyButtons.forEach((button) => {
             button.disabled = !data.can_classify;
@@ -586,10 +799,17 @@
     function renderThumbnails(images) {
         thumbnailGrid.innerHTML = '';
         thumbnailEmpty.style.display = images.length ? 'none' : 'grid';
+        if (!images.length) {
+            closeImagePreview();
+        }
         images.forEach((image) => {
-            const item = document.createElement('div');
+            const item = document.createElement('button');
             item.className = 'thumb';
+            item.type = 'button';
+            item.setAttribute('aria-label', `預覽 ${image.filename}`);
 
+            const media = document.createElement('div');
+            media.className = 'thumb-media';
             const img = document.createElement('img');
             img.src = image.url;
             img.alt = image.filename;
@@ -597,13 +817,34 @@
             const label = document.createElement('span');
             label.textContent = image.filename;
 
-            item.appendChild(img);
+            media.appendChild(img);
+            item.appendChild(media);
             item.appendChild(label);
+            item.addEventListener('click', () => openImagePreview(image));
             thumbnailGrid.appendChild(item);
         });
     }
 
+    function openImagePreview(image) {
+        imageDialogTitle.textContent = image.filename || '照片預覽';
+        imageDialogImage.src = image.url;
+        imageDialogImage.alt = image.filename || '照片預覽';
+        if (!imageDialog.open) {
+            imageDialog.showModal();
+        }
+    }
+
+    function closeImagePreview() {
+        if (imageDialog.open) {
+            imageDialog.close();
+            return;
+        }
+        imageDialogImage.removeAttribute('src');
+        imageDialogImage.src = '';
+    }
+
     function releaseThumbnailFileHandles() {
+        closeImagePreview();
         thumbnailGrid.querySelectorAll('img').forEach((img) => {
             img.removeAttribute('src');
             img.src = '';
@@ -631,6 +872,217 @@
         timingCommandDelay.textContent = typeof delay === 'number' ? `${delay} ms` : '尚無資料';
         timingWaitStarted.textContent = timing.wait_started_at || '尚無資料';
         timingUploadReceived.textContent = timing.upload_received_at || '尚無資料';
+    }
+
+    function recommendedCaptureTiming(data = lastState || {}) {
+        return data.capture_timing_recommended || {
+            first_station_settle_ms: 300,
+            servo_settle_ms: 300,
+            fruit_settle_ms: 300,
+            final_gate_return_delay_ms: 300,
+        };
+    }
+
+    function setTimingInputs(timing) {
+        timingFirstStationInput.value = timing.first_station_settle_ms ?? 300;
+        timingServoInput.value = timing.servo_settle_ms ?? 300;
+        timingFruitInput.value = timing.fruit_settle_ms ?? 300;
+        timingFinalReturnInput.value = timing.final_gate_return_delay_ms ?? 300;
+    }
+
+    function timingStatusText(data) {
+        const revision = data.capture_timing_revision ?? 0;
+        const appliedRevision = data.capture_timing_applied_revision ?? 0;
+        switch (data.capture_timing_status) {
+            case 'applied':
+                return `ESP32 已套用 revision ${revision}。`;
+            case 'pending_esp32_apply':
+                return `設定 revision ${revision} 已儲存，等待 ESP32 在閒置時套用（目前已套用 ${appliedRevision}）。`;
+            case 'waiting_esp32':
+                return `設定 revision ${revision} 已儲存，等待 ESP32 連線並套用。`;
+            default:
+                return '等待 Django 與 ESP32 同步拍攝停穩設定。';
+        }
+    }
+
+    function renderCaptureTiming(data) {
+        const timing = data.capture_timing || recommendedCaptureTiming(data);
+        if (!timingInputsDirty && !timingUpdateInFlight) {
+            setTimingInputs(timing);
+        }
+        const motorCommand = data.motor_command || {};
+        const hasPendingMotorCommand = motorCommand.command && motorCommand.command !== 'none';
+        const editable = data.status === 'idle' && !data.active_fruit_id && !hasPendingMotorCommand;
+        timingInputs.forEach((input) => {
+            input.disabled = !editable || timingUpdateInFlight;
+        });
+        applyTimingButton.disabled = !editable || timingUpdateInFlight;
+        resetTimingButton.disabled = !editable || timingUpdateInFlight;
+        timingConfigStatus.textContent = timingStatusText(data);
+    }
+
+    function readTimingInput(input, key, minimum) {
+        const value = Number(input.value);
+        if (!Number.isInteger(value) || value < minimum || value > 3000 || value % 50 !== 0) {
+            throw new Error(`${key} 必須介於 ${minimum} 到 3000 ms，且以 50 ms 為間距。`);
+        }
+        return value;
+    }
+
+    function captureTimingPayloadFromInputs() {
+        return {
+            first_station_settle_ms: readTimingInput(timingFirstStationInput, '第 1 站停穩時間', 50),
+            servo_settle_ms: readTimingInput(timingServoInput, '伺服穩定時間', 50),
+            fruit_settle_ms: readTimingInput(timingFruitInput, '到站停穩時間', 50),
+            final_gate_return_delay_ms: readTimingInput(timingFinalReturnInput, '最終歸位延遲', 0),
+        };
+    }
+
+    function restoreRecommendedTiming() {
+        setTimingInputs(recommendedCaptureTiming());
+        timingInputsDirty = true;
+        setMessage('已填入推薦值，按下「套用停穩設定」後才會儲存。');
+    }
+
+    async function applyCaptureTiming() {
+        let timing;
+        try {
+            timing = captureTimingPayloadFromInputs();
+        } catch (error) {
+            setMessage(`停穩設定無效：${error.message}`);
+            return;
+        }
+
+        timingUpdateInFlight = true;
+        if (lastState) {
+            renderCaptureTiming(lastState);
+        }
+        try {
+            const payload = await postJson('/api/capture_timing/', timing);
+            timingInputsDirty = false;
+            lastState = payload;
+            renderState(payload);
+            setMessage(payload.capture_timing_unchanged
+                ? '停穩設定沒有變更。'
+                : '停穩設定已儲存，等待 ESP32 閒置時套用。');
+        } catch (error) {
+            if (error.payload) {
+                lastState = error.payload;
+                renderState(error.payload);
+            }
+            setMessage(`套用停穩設定失敗：${error.message}`);
+        } finally {
+            timingUpdateInFlight = false;
+            if (lastState) {
+                renderCaptureTiming(lastState);
+            }
+        }
+    }
+
+    function transitionTraceFromState(data) {
+        const candidates = [
+            data.transition_trace,
+            data.trace,
+            data.timing && data.timing.transition_trace,
+            data.timing && data.timing.trace,
+        ];
+        return candidates.find((candidate) => Array.isArray(candidate)) || [];
+    }
+
+    function traceEventLabel(eventName) {
+        const labels = {
+            hcsr04_trigger: 'HC-SR04 觸發',
+            hcsr04_trigger_received: 'Django 已收到 HC-SR04 觸發',
+            hcsr04_station_1_ready: 'HC-SR04 首站捷徑就緒',
+            hcsr04_station_1_ready_received: 'Django 已收到首站捷徑就緒',
+            hcsr04_station_1_ready_duplicate: '首站捷徑重送已去重',
+            fast_path_station_1_capture_requested: '首站捷徑已開放手機拍攝',
+            fast_path_fallback_to_legacy: '首站捷徑回退標準流程',
+            start_sequence: '三站流程啟動',
+            capture_session_created: '拍攝工作階段已建立',
+            motor_command_issued: 'Django 已發出馬達命令',
+            station_1_ready: '第 1 站已就緒',
+            station_2_ready: '第 2 站已就緒',
+            station_3_ready: '第 3 站已就緒',
+            capture_requested: '手機拍攝請求已開放',
+            station_capture_requested: '站點已開放手機拍攝',
+            phone_capture_started: '手機開始拍攝',
+            client_timing_received: '手機端 timing 已收到',
+            upload_received: '照片已收到',
+            image_saved: '照片已原子保存',
+            station_image_saved: '站點照片已原子保存',
+            release_gate_1: '放行 Gate 1',
+            release_gate_2: '放行 Gate 2',
+            release_gate_3: '放行 Gate 3',
+            capture_sequence_finished: '三站流程完成',
+            capture_timing_updated: '拍攝停穩設定已更新',
+            timing_config_applied: 'ESP32 已套用拍攝停穩設定',
+            fruit_discarded: '暫存資料已跳過／刪除',
+        };
+        return labels[eventName] || eventName || '未命名事件';
+    }
+
+    function traceMetaText(entry) {
+        const parts = [];
+        if (entry.at) {
+            parts.push(entry.at);
+        }
+        if (entry.fruit_id) {
+            parts.push(entry.fruit_id);
+        }
+        if (entry.station_index) {
+            parts.push(`第 ${entry.station_index} 站`);
+        }
+        if (entry.command_id) {
+            parts.push(`command #${entry.command_id}`);
+        }
+        if (entry.trigger_id) {
+            parts.push(`trigger ${entry.trigger_id}`);
+        }
+        if (entry.details && typeof entry.details === 'object') {
+            const detailText = Object.entries(entry.details)
+                .filter(([, value]) => ['string', 'number', 'boolean'].includes(typeof value))
+                .slice(0, 3)
+                .map(([key, value]) => `${key}=${value}`)
+                .join('，');
+            if (detailText) {
+                parts.push(detailText);
+            }
+        } else if (typeof entry.details === 'string' && entry.details) {
+            parts.push(entry.details);
+        }
+        return parts.length ? parts.join('｜') : '尚無附加資料';
+    }
+
+    function renderTransitionTrace(data) {
+        const trace = transitionTraceFromState(data);
+        transitionTraceEl.replaceChildren();
+        if (!trace.length) {
+            const empty = document.createElement('li');
+            empty.className = 'trace-empty';
+            empty.textContent = '尚無流程事件；舊版後端不提供 trace 時會維持此顯示。';
+            transitionTraceEl.appendChild(empty);
+            return;
+        }
+
+        trace.slice(-12).reverse().forEach((rawEntry) => {
+            const entry = rawEntry && typeof rawEntry === 'object'
+                ? rawEntry
+                : { event: String(rawEntry || '未命名事件') };
+            const item = document.createElement('li');
+            item.className = 'trace-entry';
+
+            const event = document.createElement('strong');
+            event.className = 'trace-event';
+            event.textContent = traceEventLabel(entry.event || entry.name);
+
+            const meta = document.createElement('span');
+            meta.className = 'trace-meta';
+            meta.textContent = traceMetaText(entry);
+
+            item.append(event, meta);
+            transitionTraceEl.appendChild(item);
+        });
     }
 
     async function setCounter() {
@@ -711,6 +1163,8 @@
             if (error.payload) {
                 lastState = error.payload;
                 renderState(error.payload);
+            } else {
+                await refreshState();
             }
             setMessage(`刪除失敗：${error.message}`);
         }
@@ -754,6 +1208,13 @@
     }
 
     document.getElementById('btn-set-counter').addEventListener('click', setCounter);
+    timingInputs.forEach((input) => {
+        input.addEventListener('input', () => {
+            timingInputsDirty = true;
+        });
+    });
+    resetTimingButton.addEventListener('click', restoreRecommendedTiming);
+    applyTimingButton.addEventListener('click', applyCaptureTiming);
     manualCaptureButton.addEventListener('click', manualCapture);
     recaptureButton.addEventListener('click', recaptureCurrent);
     document.getElementById('btn-open-folder').addEventListener('click', openDatasetFolder);
@@ -761,6 +1222,16 @@
     resetDatasetButton.addEventListener('click', resetDataset);
     document.getElementById('btn-reconnect').addEventListener('click', () => {
         startWebRTC().catch((error) => setStreamStatus(`串流重連失敗：${error.message}`));
+    });
+    closeImageDialogButton.addEventListener('click', closeImagePreview);
+    imageDialog.addEventListener('click', (event) => {
+        if (event.target === imageDialog) {
+            closeImagePreview();
+        }
+    });
+    imageDialog.addEventListener('close', () => {
+        imageDialogImage.removeAttribute('src');
+        imageDialogImage.src = '';
     });
     classifyButtons.forEach((button) => {
         button.addEventListener('click', () => classify(button.dataset.label));

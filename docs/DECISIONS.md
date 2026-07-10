@@ -85,26 +85,27 @@ Django 是流程狀態中心；手機與 ESP32 透過輪詢或回報同步狀態
 - Django command payload 與 ESP32 fallback 常數需同步。
 - 第 3 站 `release_gate_3` 後，ESP32 先等待 `finalGateReturnDelayMS = 300`，再讓三顆馬達歸位。
 
-## 2026-07-08：站點停穩時間調整
+## 2026-07-10：站點停穩時間改由 Dashboard 管理
 
 ### 決策
 
-目前 `servo_settle_ms = 150`，`fruit_settle_ms = 300`。第 1 站另有 `firstStationSettleMS = 100` 測試值。
+第 1 站、伺服放行後、到下一站與最終歸位的推薦預設皆為 `300 ms`。Django 將完整 timing profile 與 revision 持久化到 `capture_timing.json`，ESP32 僅在 idle、沒有流程或 pending report 且 Gate home 時套用，然後回報 `timing_config_applied`。
 
 ### 原因
 
-第 2、3 站曾出現百香果尚未停穩就拍攝的模糊問題，因此將果實停穩時間從高速測試值提高到 `300 ms`。
+首站捷徑縮短網路交握後，果實可能在到站前就被手機拍攝。固定編譯時間不利於現場校正，故改由 Dashboard 以安全範圍和 `50 ms` 步進管理。
 
 ### 影響
 
-- 第 2、3 站照片清晰度優先於極限速度。
-- 若仍模糊，可再提高到 `400` 或 `500 ms`；若速度太慢，可回測 `250 ms`。
+- 每顆 fruit 開始時 snapshot 四項時間，過程中不會混用新版設定。
+- Dashboard 僅在 idle 時允許更新；未收到 ESP32 ACK 時顯示等待套用，避免誤以為首站捷徑已使用新值。
+- 若仍模糊，以 `50 ms` 為單位優先增加第 1 站或到下一站停穩時間。
 
 ## 2026-07-08：ESP32 預設不印完整 JSON response
 
 ### 決策
 
-ESP32 Serial Monitor 預設只印 HTTP code、body length、ignored、start_sequence 與 command id 摘要。完整 response 需將 `verboseHttpResponseLog` 改為 `true` 才會輸出。
+ESP32 Serial Monitor 預設只印 HTTP code、request 耗時、body length、ignored 與是否包含 `start_sequence`。完整 response 需將 `verboseHttpResponseLog` 改為 `true` 才會輸出；實際處理命令時另印 `Command #...`。
 
 ### 原因
 
@@ -145,3 +146,111 @@ ESP32 timeout 不代表 Django 沒收到 POST。若立即 retry，可能多花�
 
 - `hcsr04_trigger` pending retry 仍保留，但不阻塞優先找回 `start_sequence`。
 - `waitingStartSequenceCommand=true` 時 command GET timeout 不進入長時間 idle backoff。
+
+## 2026-07-10：自動模式採用受守門的首站捷徑
+
+### 決策
+
+自動模式預設啟用 `FirmwareConfig::kEnableAutoStation1FastPath`。當且僅當 firmware 為 idle、沒有進行中的 sequence、三個 Gate 的角度追蹤皆為 home，且已完成 `firstStationSettleMS`，ESP32 才能以 `trigger_id` 與 `station_index=1` 回報 `hcsr04_station_1_ready`，讓 Django 直接開放第 1 站拍攝。Gate 1 攔住果實是實機部署與機構驗證前提，不是此版本的硬體回授訊號。
+
+### 原因
+
+既有流程在果實已安全停在第 1 站後，仍需經過 `hcsr04_trigger -> start_sequence -> station_1_ready` 的額外 HTTPS 往返，造成第一張照片前可感知的等待。
+
+### 影響
+
+- 捷徑只縮短第 1 站前置握手；`station_N_ready -> Django 保存照片成功 -> release_gate_N` 的安全規則不變。
+- 前置條件不符、功能被關閉或收到可回退的協定拒絕時，ESP32 必須走舊流程，不能假設捷徑成功。收到 `ignored` 時停止本次 trigger，等待感測器重新待命。
+- 首站捷徑 timeout retry 使用同一個 `trigger_id`，避免 Django 已成功建立工作階段時產生重複 fruit。legacy `hcsr04_trigger` 的重複防護仍由 Django active fruit 與既有 motor command 狀態負責。
+
+## 2026-07-10：感測、Wi-Fi 與 TLS 皆採有界等待
+
+### 決策
+
+HC-SR04 以直接 Trigger pulse 與 `12000 us` Echo timeout 讀值；Wi-Fi、伺服 phase 與 retry 使用 deadline 驅動。完整 `sensor_read_us` 的 firmware warning 門檻約為 `12100 us`。HTTPS 的 connect 與 read 均使用對應 request deadline，正常時重用同 origin HTTP/1.1 TLS 連線，連線失效時再關閉重建。
+
+### 原因
+
+首張延遲不能被無回波、同步 Wi-Fi 等待或每次 request 重做 TLS handshake 放大。
+
+### 影響
+
+- 感測、Wi-Fi 與伺服 phase 不再以長時間 `delay()` 卡住主迴圈；HTTPS request 仍是有 connect／read deadline 的同步操作。
+- Wi-Fi 斷線、timeout 或 `Connection: close` 都必須使 client 回到可安全重建的狀態。
+- 序列 log 記錄 phase 與 request 耗時，搭配 Django trace 找出延遲來源。
+
+## 2026-07-10：手機拍攝 request 使用精簡 state 與非阻塞 telemetry
+
+### 決策
+
+手機只輪詢 `/api/camera/state/`，idle 為 `250 ms`、有 fruit／capture request 時為 `75 ms`、實際擷取或上傳期間為 `250 ms`，state request 使用 `AbortController` timeout。頁面進入背景時 polling 會停止，回到前景才重啟。`capture_started` 改為 best-effort telemetry，不得阻塞 canvas 擷取或照片上傳。
+
+### 原因
+
+完整 dashboard state 會增加手機端解析與傳輸負擔；等待 telemetry response 會直接拉長首張照片時間，卻不是放行閘門的依據。
+
+### 影響
+
+- Django 仍只以照片原子保存成功作為放行下一閘門的條件。
+- `capture_meta` 保留既有欄位，另加入 request、影格、blob 與 upload 的 client timing，供 transition trace 對照。
+- Dashboard 顯示最近 transition trace；舊版 state 未提供 trace 時不影響控制功能。
+
+## 2026-07-10：HC-SR04 Echo 必須降壓後接 ESP32
+
+### 決策
+
+HC-SR04 的 `5 V` Echo 訊號必須經過分壓或邏輯電平轉換，正常目標為 ESP32 GPIO 端 ≤ `3.3 V`、絕不可超過 `3.6 V` 後才可接到 GPIO `27`。
+
+### 原因
+
+ESP32 GPIO 並非 `5 V` 耐受；直接接 Echo 會造成不穩定讀值或硬體損傷風險。
+
+### 影響
+
+- 刷入新版 firmware 前需依硬體 note 檢查共地、分壓方向與量測電壓。
+- 這是安全前置條件，不可用韌體 timeout 或軟體容錯取代。
+
+## 2026-07-10：區分伺服器 trace 與實體首張延遲
+
+### 決策
+
+Django transition trace 的首站起點定義為伺服器收到 `hcsr04_station_1_ready`，只用於分析伺服器端鏈路。HC-SR04 實體偵測到照片保存的總延遲，必須以同次 firmware Serial timing 與高速錄影／外部同步量測驗收。
+
+### 原因
+
+firmware 目前只在 Serial 輸出 `hcsr04_trigger_detected` 的裝置端時間，未把實體偵測時間上送到 Django；不能把 server receipt 誤當成感測瞬間。
+
+### 影響
+
+- `20` 次首張延遲驗收保留為實機待辦，目標為中位數 ≤ `1.0 s`、`p95` ≤ `1.5 s`。
+- Dashboard trace 仍可用來定位 Django 收到事件後的狀態轉移與照片原子保存時間。
+
+## 2026-07-10：跳過資料後一律回到 idle
+
+### 決策
+
+`POST /api/discard/` 成功後以 `_clear_active_state(..., status='idle')` 作為唯一流程清理入口，再記錄 `fruit_discarded` trace。
+
+### 原因
+
+手動散落清理欄位會遺漏等待計時器或 capture token，造成 temp 已刪除但 Django 仍顯示舊流程狀態、阻擋下一顆 fruit。
+
+### 影響
+
+- 刪除成功後自動與手動觸發立即重新可用。
+- 檔案無法安全刪除時維持結構化失敗回應，不可錯誤宣告為 idle。
+
+## 2026-07-10：三站縮圖固定比例並採原生彈窗預覽
+
+### 決策
+
+Dashboard 縮圖以可鍵盤操作的 button 顯示固定 `4:3` cover；點擊後使用原生 `<dialog>` 以 `object-fit: contain` 顯示原始比例照片。
+
+### 原因
+
+固定縮圖能讓三站比較一致，而彈窗仍保留完整照片內容以判斷模糊與構圖。
+
+### 影響
+
+- 使用者可按 `Esc`、關閉按鈕或點擊彈窗背景離開預覽。
+- 刪除或分類前會先關閉彈窗並釋放縮圖檔案 handle，避免 Windows 檔案占用。
