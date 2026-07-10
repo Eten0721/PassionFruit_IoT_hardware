@@ -66,8 +66,13 @@
         }
 
         .remote-video-wrap {
+            display: none;
             background: #000;
             aspect-ratio: 16 / 9;
+        }
+
+        .remote-video-wrap.is-streaming {
+            display: block;
         }
 
         video {
@@ -197,7 +202,7 @@
         }
 
         .thumb-media {
-            aspect-ratio: 4 / 3;
+            aspect-ratio: 3 / 4;
             overflow: hidden;
             background: #d8e0e6;
         }
@@ -387,7 +392,7 @@
     <div class="grid">
         <section>
             <h2>手機即時畫面</h2>
-            <div class="remote-video-wrap">
+            <div id="remote-video-wrap" class="remote-video-wrap" hidden>
                 <video id="remote-video" autoplay playsinline muted></video>
             </div>
             <div class="section-body grid">
@@ -434,13 +439,16 @@
         </section>
 
         <section>
-            <h2>流程時間</h2>
-            <div class="section-body">
-                <ul class="timing-list">
-                    <li>命令到手機開始：<strong id="timing-command-delay">尚無資料</strong></li>
-                    <li>目前等待開始：<strong id="timing-wait-started">尚無資料</strong></li>
-                    <li>上次照片上傳：<strong id="timing-upload-received">尚無資料</strong></li>
-                </ul>
+            <h2>人工分類</h2>
+            <div class="section-body grid">
+                <textarea id="note" placeholder="note，可留空"></textarea>
+                <div class="button-row">
+                    <button type="button" class="label classify-button" data-label="上中等">上中等</button>
+                    <button type="button" class="label classify-button" data-label="下等">下等</button>
+                    <button type="button" class="label classify-button" data-label="廢棄">廢棄</button>
+                    <button type="button" class="label classify-button" data-label="加工">加工</button>
+                </div>
+                <button id="btn-discard" type="button" class="danger">跳過 / 刪除</button>
             </div>
         </section>
 
@@ -450,28 +458,28 @@
                 <div class="timing-config-grid">
                     <label class="timing-config-field" for="timing-first-station">
                         <span>第 1 站停穩時間（ms）</span>
-                        <input id="timing-first-station" type="number" min="50" max="3000" step="50" inputmode="numeric" value="300">
-                        <small>推薦：300 ms</small>
+                        <input id="timing-first-station" type="number" min="50" max="3000" step="50" inputmode="numeric" value="200">
+                        <small>推薦：200 ms</small>
                     </label>
                     <label class="timing-config-field" for="timing-servo">
                         <span>伺服放行後穩定時間（ms）</span>
-                        <input id="timing-servo" type="number" min="50" max="3000" step="50" inputmode="numeric" value="300">
-                        <small>推薦：300 ms</small>
+                        <input id="timing-servo" type="number" min="50" max="3000" step="50" inputmode="numeric" value="200">
+                        <small>推薦：200 ms</small>
                     </label>
                     <label class="timing-config-field" for="timing-fruit">
                         <span>到下一站停穩時間（ms）</span>
-                        <input id="timing-fruit" type="number" min="50" max="3000" step="50" inputmode="numeric" value="300">
-                        <small>推薦：300 ms</small>
+                        <input id="timing-fruit" type="number" min="50" max="3000" step="50" inputmode="numeric" value="200">
+                        <small>推薦：200 ms</small>
                     </label>
                     <label class="timing-config-field" for="timing-final-return">
                         <span>第 3 站放行後歸位延遲（ms）</span>
-                        <input id="timing-final-return" type="number" min="0" max="3000" step="50" inputmode="numeric" value="300">
-                        <small>推薦：300 ms</small>
+                        <input id="timing-final-return" type="number" min="0" max="3000" step="50" inputmode="numeric" value="200">
+                        <small>推薦：200 ms</small>
                     </label>
                 </div>
                 <div id="timing-config-status" class="timing-config-status">等待 Django 載入拍攝停穩設定。</div>
                 <div class="timing-config-actions">
-                    <button id="btn-reset-timing" type="button" class="secondary">恢復推薦值</button>
+                    <button id="btn-reset-timing" type="button" class="secondary">恢復校正預設</button>
                     <button id="btn-apply-timing" type="button">套用停穩設定</button>
                 </div>
             </div>
@@ -487,16 +495,13 @@
         </section>
 
         <section>
-            <h2>人工分類</h2>
-            <div class="section-body grid">
-                <textarea id="note" placeholder="note，可留空"></textarea>
-                <div class="button-row">
-                    <button type="button" class="label classify-button" data-label="上中等">上中等</button>
-                    <button type="button" class="label classify-button" data-label="下等">下等</button>
-                    <button type="button" class="label classify-button" data-label="廢棄">廢棄</button>
-                    <button type="button" class="label classify-button" data-label="加工">加工</button>
-                </div>
-                <button id="btn-discard" type="button" class="danger">跳過 / 刪除</button>
+            <h2>流程時間</h2>
+            <div class="section-body">
+                <ul class="timing-list">
+                    <li>命令到手機開始：<strong id="timing-command-delay">尚無資料</strong></li>
+                    <li>目前等待開始：<strong id="timing-wait-started">尚無資料</strong></li>
+                    <li>上次照片上傳：<strong id="timing-upload-received">尚無資料</strong></li>
+                </ul>
             </div>
         </section>
     </div>
@@ -514,6 +519,7 @@
 
 <script>
     const remoteVideo = document.getElementById('remote-video');
+    const remoteVideoWrap = document.getElementById('remote-video-wrap');
     const streamStatus = document.getElementById('stream-status');
     const messageEl = document.getElementById('message');
     const activeFruitEl = document.getElementById('active-fruit');
@@ -586,6 +592,11 @@
         streamStatus.textContent = message;
     }
 
+    function setRemoteVideoVisible(visible) {
+        remoteVideoWrap.hidden = !visible;
+        remoteVideoWrap.classList.toggle('is-streaming', visible);
+    }
+
     async function postJson(url, data = {}) {
         const response = await fetch(url, {
             method: 'POST',
@@ -610,6 +621,7 @@
         currentOfferId = 0;
         knownAnswerId = 0;
         remoteVideo.srcObject = null;
+        setRemoteVideoVisible(false);
         peerConnection = new RTCPeerConnection(RTC_CONFIG);
         peerConnection.addTransceiver('video', { direction: 'recvonly' });
 
@@ -617,6 +629,12 @@
             const [stream] = event.streams;
             if (stream) {
                 remoteVideo.srcObject = stream;
+                setRemoteVideoVisible(stream.getVideoTracks().length > 0);
+                stream.addEventListener('removetrack', () => {
+                    if (!stream.getVideoTracks().length) {
+                        setRemoteVideoVisible(false);
+                    }
+                });
                 setStreamStatus('手機即時畫面已連線。');
             }
         };
@@ -629,6 +647,9 @@
             }
         };
         peerConnection.onconnectionstatechange = () => {
+            if (['failed', 'closed', 'disconnected'].includes(peerConnection.connectionState)) {
+                setRemoteVideoVisible(false);
+            }
             renderWebRTCStatus();
         };
         peerConnection.oniceconnectionstatechange = () => {
@@ -867,6 +888,18 @@
         return warnings.length ? `；注意：部分舊資料已移到 _delete_pending 或標記忽略：${warnings.join('；')}` : '';
     }
 
+    function discardResultText(payload) {
+        const fruitId = payload.discarded_fruit_id || '目前資料';
+        switch (payload.discard_mode) {
+            case 'quarantined':
+                return `${fruitId} 已隔離等待背景清理，可立即拍攝下一顆。`;
+            case 'deferred_cleanup':
+                return `${fruitId} 仍被占用，已跳過並等待背景清理；下一筆為 ${payload.next_fruit_id || '新的 fruit ID'}。`;
+            default:
+                return `${fruitId} 已刪除。`;
+        }
+    }
+
     function renderTiming(timing) {
         const delay = timing.command_to_phone_start_ms;
         timingCommandDelay.textContent = typeof delay === 'number' ? `${delay} ms` : '尚無資料';
@@ -876,18 +909,18 @@
 
     function recommendedCaptureTiming(data = lastState || {}) {
         return data.capture_timing_recommended || {
-            first_station_settle_ms: 300,
-            servo_settle_ms: 300,
-            fruit_settle_ms: 300,
-            final_gate_return_delay_ms: 300,
+            first_station_settle_ms: 200,
+            servo_settle_ms: 200,
+            fruit_settle_ms: 200,
+            final_gate_return_delay_ms: 200,
         };
     }
 
     function setTimingInputs(timing) {
-        timingFirstStationInput.value = timing.first_station_settle_ms ?? 300;
-        timingServoInput.value = timing.servo_settle_ms ?? 300;
-        timingFruitInput.value = timing.fruit_settle_ms ?? 300;
-        timingFinalReturnInput.value = timing.final_gate_return_delay_ms ?? 300;
+        timingFirstStationInput.value = timing.first_station_settle_ms ?? 200;
+        timingServoInput.value = timing.servo_settle_ms ?? 200;
+        timingFruitInput.value = timing.fruit_settle_ms ?? 200;
+        timingFinalReturnInput.value = timing.final_gate_return_delay_ms ?? 200;
     }
 
     function timingStatusText(data) {
@@ -941,7 +974,7 @@
     function restoreRecommendedTiming() {
         setTimingInputs(recommendedCaptureTiming());
         timingInputsDirty = true;
-        setMessage('已填入推薦值，按下「套用停穩設定」後才會儲存。');
+        setMessage('已填入校正預設 200 ms，按下「套用停穩設定」後才會儲存。');
     }
 
     async function applyCaptureTiming() {
@@ -1157,7 +1190,7 @@
             const payload = await postJson('/api/discard/');
             lastState = payload;
             renderState(payload);
-            setMessage(`${payload.discarded_fruit_id || '目前資料'} 已刪除。${warningText(payload)}`);
+            setMessage(`${discardResultText(payload)}${warningText(payload)}`);
             await refreshState();
         } catch (error) {
             if (error.payload) {

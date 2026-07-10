@@ -14,7 +14,11 @@ class DataCollectionFlowTests(SimpleTestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.dataset_root = Path(self.temp_dir.name)
-        self.settings_override = override_settings(DATASET_ROOT=self.dataset_root)
+        self.capture_timing_path = self.dataset_root / 'runtime_config' / 'capture_timing.json'
+        self.settings_override = override_settings(
+            DATASET_ROOT=self.dataset_root,
+            CAPTURE_TIMING_CONFIG_PATH=self.capture_timing_path,
+        )
         self.settings_override.enable()
         views.reset_runtime_state_for_tests()
         views._ensure_dataset_structure()
@@ -43,8 +47,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(command['command'], 'start_sequence')
         self.assertEqual(command['station_index'], 1)
         self.assertEqual(command['release_angle'], 90)
-        self.assertEqual(command['servo_settle_ms'], 300)
-        self.assertEqual(command['fruit_settle_ms'], 300)
+        self.assertEqual(command['servo_settle_ms'], 200)
+        self.assertEqual(command['fruit_settle_ms'], 200)
 
         station_1 = self._report('station_1_ready', station_index=1, command_id=command['command_id']).json()
         self.assertTrue(station_1['capture_requested'])
@@ -133,8 +137,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(command['station_index'], 1)
         self.assertEqual(command['fruit_id'], 'fruit_042')
         self.assertEqual(command['release_angle'], 90)
-        self.assertEqual(command['servo_settle_ms'], 300)
-        self.assertEqual(command['fruit_settle_ms'], 300)
+        self.assertEqual(command['servo_settle_ms'], 200)
+        self.assertEqual(command['fruit_settle_ms'], 200)
 
     def test_hcsr04_trigger_is_ignored_when_active_fruit_exists(self):
         first_response = self._report('hcsr04_trigger')
@@ -187,8 +191,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(command['server_status'], 'waiting_esp32_start')
         self.assertEqual(command['command'], 'start_sequence')
         self.assertEqual(command['release_angle'], '90')
-        self.assertEqual(command['servo_settle_ms'], '300')
-        self.assertEqual(command['fruit_settle_ms'], '300')
+        self.assertEqual(command['servo_settle_ms'], '200')
+        self.assertEqual(command['fruit_settle_ms'], '200')
 
     def test_hcsr04_trigger_is_ignored_when_temp_fruit_exists(self):
         fruit_dir = self.dataset_root / 'temp' / 'fruit_001'
@@ -425,13 +429,90 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(refreshed['status'], 'idle')
         self.assertTrue(refreshed['can_manual_capture'])
 
+    def test_discard_quarantines_busy_temp_folder_and_reenables_auto_trigger(self):
+        self._post_json('/api/set_counter/', {'start_id': 5})
+        self._mark_esp32_online()
+        self._post_json('/api/manual_capture/')
+        fruit_dir = self.dataset_root / 'temp' / 'fruit_005'
+        (fruit_dir / 'img_01.jpg').write_bytes(b'image')
+
+        with mock.patch.object(
+            views,
+            '_safe_rmtree',
+            side_effect=views.DatasetFileBusyError('delete locked'),
+        ):
+            response = self._post_json('/api/discard/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['discard_mode'], 'quarantined')
+        self.assertEqual(payload['status'], 'idle')
+        self.assertTrue(payload['can_manual_capture'])
+        self.assertFalse(fruit_dir.exists())
+        self.assertTrue((self.dataset_root / '_delete_pending').exists())
+        self.assertTrue((self.dataset_root / 'discard_state.json').exists())
+        self.assertEqual(self._esp32_command()['auto_trigger_enabled'], 1)
+
+    def test_discard_defers_locked_temp_folder_and_skips_its_fruit_id(self):
+        self._post_json('/api/set_counter/', {'start_id': 5})
+        self._mark_esp32_online()
+        self._post_json('/api/manual_capture/')
+        fruit_dir = self.dataset_root / 'temp' / 'fruit_005'
+        (fruit_dir / 'img_01.jpg').write_bytes(b'image')
+
+        with mock.patch.object(
+            views,
+            '_safe_rmtree',
+            side_effect=views.DatasetFileBusyError('delete locked'),
+        ), mock.patch.object(
+            views,
+            '_safe_move',
+            side_effect=views.DatasetFileBusyError('move locked'),
+        ):
+            response = self._post_json('/api/discard/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['discard_mode'], 'deferred_cleanup')
+        self.assertEqual(payload['status'], 'idle')
+        self.assertEqual(payload['next_fruit_id'], 'fruit_006')
+        self.assertTrue(fruit_dir.exists())
+        self.assertTrue(payload['can_manual_capture'])
+        self.assertEqual(self._esp32_command()['auto_trigger_enabled'], 1)
+
+        with (self.dataset_root / 'discard_state.json').open('r', encoding='utf-8') as state_file:
+            discard_state = json.load(state_file)
+        self.assertEqual(discard_state['pending_paths'][0]['source_path'], 'temp/fruit_005')
+        self.assertTrue(discard_state['pending_paths'][0]['blocked_in_temp'])
+
+    def test_idle_state_retries_and_cleans_deferred_discard(self):
+        fruit_dir = self.dataset_root / 'temp' / 'fruit_009'
+        fruit_dir.mkdir(parents=True)
+        (fruit_dir / 'img_01.jpg').write_bytes(b'image')
+        views._write_discard_state({'pending_paths': [{
+            'fruit_id': 'fruit_009',
+            'source_path': 'temp/fruit_009',
+            'cleanup_path': 'temp/fruit_009',
+            'blocked_in_temp': True,
+            'recorded_at': '2026-07-10 00:00:00',
+        }]})
+        views.APP_STATE['discard_cleanup_last_monotonic'] = None
+
+        response = self.client.get('/api/state/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(fruit_dir.exists())
+        self.assertEqual(response.json()['status'], 'idle')
+        self.assertTrue(response.json()['can_manual_capture'])
+        self.assertEqual(views._read_discard_state()['pending_paths'], [])
+
     def test_capture_timing_defaults_persist_and_are_acknowledged_by_esp32(self):
         initial = self.client.get('/api/state/').json()
         self.assertEqual(initial['capture_timing'], {
-            'first_station_settle_ms': 300,
-            'servo_settle_ms': 300,
-            'fruit_settle_ms': 300,
-            'final_gate_return_delay_ms': 300,
+            'first_station_settle_ms': 200,
+            'servo_settle_ms': 200,
+            'fruit_settle_ms': 200,
+            'final_gate_return_delay_ms': 200,
         })
         self.assertEqual(initial['capture_timing_revision'], 1)
 
@@ -447,7 +528,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(payload['capture_timing']['fruit_settle_ms'], 450)
         self.assertEqual(payload['capture_timing_status'], 'waiting_esp32')
 
-        with (self.dataset_root / 'capture_timing.json').open('r', encoding='utf-8') as timing_file:
+        with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
             saved = json.load(timing_file)
         self.assertEqual(saved['revision'], 2)
         self.assertEqual(saved['capture_timing']['servo_settle_ms'], 400)
@@ -470,6 +551,56 @@ class DataCollectionFlowTests(SimpleTestCase):
         reloaded = self.client.get('/api/state/').json()
         self.assertEqual(reloaded['capture_timing_revision'], 2)
         self.assertEqual(reloaded['capture_timing']['servo_settle_ms'], 400)
+
+    def test_capture_timing_migrates_legacy_dataset_file_to_single_runtime_path(self):
+        self.capture_timing_path.unlink()
+        legacy_path = self.dataset_root / 'capture_timing.json'
+        legacy_payload = {
+            'revision': 10,
+            'capture_timing': {
+                'first_station_settle_ms': 200,
+                'servo_settle_ms': 250,
+                'fruit_settle_ms': 300,
+                'final_gate_return_delay_ms': 350,
+            },
+        }
+        legacy_path.write_text(json.dumps(legacy_payload), encoding='utf-8')
+        views.reset_runtime_state_for_tests()
+
+        views._ensure_dataset_structure()
+
+        self.assertFalse(legacy_path.exists())
+        self.assertTrue(self.capture_timing_path.exists())
+        with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
+            migrated = json.load(timing_file)
+        self.assertEqual(migrated, legacy_payload)
+        self.assertEqual(views.APP_STATE['capture_timing_revision'], 10)
+
+    def test_capture_timing_reuses_one_runtime_file_for_multiple_updates(self):
+        first = self._post_json('/api/capture_timing/', {
+            'first_station_settle_ms': 250,
+            'servo_settle_ms': 250,
+            'fruit_settle_ms': 250,
+            'final_gate_return_delay_ms': 250,
+        })
+        self.assertEqual(first.status_code, 200)
+
+        second = self._post_json('/api/capture_timing/', {
+            'first_station_settle_ms': 300,
+            'servo_settle_ms': 350,
+            'fruit_settle_ms': 400,
+            'final_gate_return_delay_ms': 450,
+        })
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()['capture_timing_revision'], 3)
+        self.assertFalse((self.dataset_root / 'capture_timing.json').exists())
+        self.assertEqual(
+            sorted(path.name for path in self.capture_timing_path.parent.iterdir()),
+            ['capture_timing.json'],
+        )
+        with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
+            saved = json.load(timing_file)
+        self.assertEqual(saved['capture_timing']['final_gate_return_delay_ms'], 450)
 
     def test_capture_timing_rejects_invalid_step_and_active_session_update(self):
         invalid = self._post_json('/api/capture_timing/', {

@@ -83,20 +83,20 @@ HC-SR04 的 Echo 是 `5 V` 邏輯輸出，接到 ESP32 GPIO 前必須經過分�
 
 - HC-SR04 觸發距離：`6.0 cm`
 - HC-SR04 重新待命距離：`8.0 cm`
-- `servo_settle_ms = 300`
-- `fruit_settle_ms = 300`
-- 第 1 站停穩測試值：`300 ms`
-- 第 3 站放行後歸位前額外等待：`300 ms`
+- `servo_settle_ms = 200`
+- `fruit_settle_ms = 200`
+- 第 1 站停穩校正值：`200 ms`
+- 第 3 站放行後歸位前額外等待：`200 ms`
 - Echo 等待上限：`12000 us`；完整 `sensor_read_us` 的 firmware warning 門檻約為 `12100 us`。
 
-四項設定由 Dashboard 管理，推薦預設皆為 `300 ms`。Django 會將設定與 revision 持久化到 `capture_timing.json`，ESP32 只在 idle 時套用並回報 `timing_config_applied`；每顆 fruit 開始後使用自己的 timing snapshot，避免流程中混用設定。這些數值可依照片模糊、百香果滾動速度與機構摩擦狀況微調。
+四項設定由 Dashboard 管理，推薦校正值皆為 `200 ms`。Django 會將最後套用的完整設定與 revision 原子覆寫到固定的 `runtime_config/capture_timing.json`，不放入 dataset、也不保留歷史版本；ESP32 只在 idle 時套用並回報 `timing_config_applied`。每顆 fruit 開始後使用自己的 timing snapshot，避免流程中混用設定。舊版 `dataset/capture_timing.json` 會在首次升級時遷移後移除。
 
 ## 5. Django 頁面與 API 角色
 
 主要頁面：
 
 - `/camera/`：手機相機頁，負責即時影像、輪詢拍攝請求、單張拍攝與上傳。
-- `/dashboard/`：電腦控制頁，負責手動觸發、流程狀態、可調整的拍攝停穩設定、三張 `4:3` 照片預覽／彈窗、分類與刪除。
+- `/dashboard/`：電腦控制頁，負責手動觸發、流程狀態、可調整的拍攝停穩設定、三張直式 `3:4` 照片預覽／彈窗、分類與刪除。
 
 主要 API 角色：
 

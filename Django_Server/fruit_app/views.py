@@ -38,10 +38,10 @@ MAX_CAPTURE_INTERVAL_MS = 3000
 HOME_ANGLE = 0
 RELEASE_ANGLE = 90
 # Conservative defaults that still preserve the first-station fast path.
-FIRST_STATION_SETTLE_MS = 300
-SERVO_SETTLE_MS = 300
-FRUIT_SETTLE_MS = 300
-FINAL_GATE_RETURN_DELAY_MS = 300
+FIRST_STATION_SETTLE_MS = 200
+SERVO_SETTLE_MS = 200
+FRUIT_SETTLE_MS = 200
+FINAL_GATE_RETURN_DELAY_MS = 200
 CAPTURE_TIMING_RECOMMENDED = {
     'first_station_settle_ms': FIRST_STATION_SETTLE_MS,
     'servo_settle_ms': SERVO_SETTLE_MS,
@@ -58,6 +58,7 @@ HARDWARE_STEP_TIMEOUT_SECONDS = 20
 CAMERA_UPLOAD_TIMEOUT_SECONDS = 45
 FILE_OPERATION_RETRIES = 8
 FILE_OPERATION_RETRY_DELAY_SECONDS = 0.15
+DISCARD_CLEANUP_RETRY_INTERVAL_SECONDS = 30
 UPLOAD_STAGING_SUFFIX = '.uploading'
 CLIENT_TIMING_KEYS = (
     # Current camera page timestamps.
@@ -121,6 +122,7 @@ APP_STATE = {
     'capture_timing_applied_revision': 0,
     'capture_timing_applied_at': None,
     'capture_timing_loaded_path': None,
+    'discard_cleanup_last_monotonic': None,
     'status': 'idle',
     'message': '等待手機連線與手動拍攝。',
 }
@@ -690,27 +692,30 @@ def discard_api(request):
             return _json_error('目前沒有可刪除的暫存資料。', status=409)
 
         fruit_dir = _temp_dir() / fruit_id
-        delete_warnings = []
-        if fruit_dir.exists():
-            try:
-                _safe_rmtree(fruit_dir)
-            except DatasetFileBusyError as exc:
-                if _is_reusable_temp_dir(fruit_dir):
-                    delete_warnings.append(str(exc))
-                else:
-                    APP_STATE['pending_capture'] = False
-                    APP_STATE['status'] = 'delete_failed'
-                    APP_STATE['message'] = str(exc)
-                    payload = _state_payload(extra={'delete_warnings': [str(exc)]})
-                    return JsonResponse(payload, status=409)
-
-        if delete_warnings:
-            message = f'{fruit_id} 已解除目前狀態；空資料夾暫時刪不掉，之後會自動重用或再清理。'
-        else:
+        discard_result = _discard_temp_fruit(fruit_dir, fruit_id)
+        discard_mode = discard_result['mode']
+        if discard_mode == 'deleted':
             message = f'{fruit_id} 已刪除，counter 不會自動增加。'
+        elif discard_mode == 'quarantined':
+            message = f'{fruit_id} 暫時無法刪除，已隔離到 _delete_pending，現在可繼續拍攝。'
+        else:
+            message = (
+                f'{fruit_id} 暫時被其他程式占用，已標記為待清理並跳過此 ID；'
+                f'下一筆將從 {discard_result["next_fruit_id"]} 開始。'
+            )
         _clear_active_state(message, status='idle')
-        _record_transition('fruit_discarded', fruit_id=fruit_id)
-        payload = _state_payload(extra={'discarded_fruit_id': fruit_id, 'delete_warnings': delete_warnings})
+        _record_transition(
+            'fruit_discarded',
+            fruit_id=fruit_id,
+            details={'discard_mode': discard_mode},
+        )
+        payload = _state_payload(extra={
+            'discarded_fruit_id': fruit_id,
+            'discard_mode': discard_mode,
+            'discard_cleanup_pending': discard_mode != 'deleted',
+            'discard_cleanup_path': discard_result.get('cleanup_path'),
+            'next_fruit_id': discard_result.get('next_fruit_id') or _format_fruit_id(_read_counter()),
+        })
     return JsonResponse(payload)
 
 
@@ -861,6 +866,7 @@ def reset_runtime_state_for_tests():
             'capture_timing_applied_revision': 0,
             'capture_timing_applied_at': None,
             'capture_timing_loaded_path': None,
+            'discard_cleanup_last_monotonic': None,
             'status': 'idle',
             'message': '等待手機連線與手動拍攝。',
         })
@@ -895,6 +901,10 @@ def _counter_path():
 
 
 def _capture_timing_path():
+    return Path(settings.CAPTURE_TIMING_CONFIG_PATH)
+
+
+def _legacy_capture_timing_path():
     return _dataset_root() / 'capture_timing.json'
 
 
@@ -910,6 +920,10 @@ def _delete_pending_dir():
     return _dataset_root() / '_delete_pending'
 
 
+def _discard_state_path():
+    return _dataset_root() / 'discard_state.json'
+
+
 def _ensure_dataset_structure():
     root = _dataset_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -920,6 +934,7 @@ def _ensure_dataset_structure():
         _write_counter(1)
     _ensure_capture_timing_config()
     _ensure_metadata_header()
+    _retry_deferred_discards_if_due()
 
 
 def _request_data(request):
@@ -988,18 +1003,18 @@ def _normalise_capture_timing(raw_timing, *, require_all):
     return timing
 
 
-def _read_capture_timing_config():
-    default_timing = dict(CAPTURE_TIMING_RECOMMENDED)
+def _read_capture_timing_config(path):
+    path = Path(path)
     try:
-        with _capture_timing_path().open('r', encoding='utf-8') as timing_file:
+        with path.open('r', encoding='utf-8') as timing_file:
             data = json.load(timing_file)
         timing = _normalise_capture_timing(data.get('capture_timing'), require_all=True)
         revision = _safe_int(data.get('revision'))
         if revision is None or revision < 1:
             raise ValueError('invalid timing revision')
-        return timing, revision, False
+        return timing, revision
     except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError, ValueError, CaptureCommandError):
-        return default_timing, 1, True
+        return None
 
 
 def _write_capture_timing_config(timing, revision):
@@ -1022,14 +1037,30 @@ def _ensure_capture_timing_config():
     if APP_STATE.get('capture_timing_loaded_path') == path_key:
         return
 
-    timing, revision, needs_write = _read_capture_timing_config()
+    loaded_config = _read_capture_timing_config(path)
+    if loaded_config is None:
+        loaded_config = _read_capture_timing_config(_legacy_capture_timing_path())
+        if loaded_config is None:
+            loaded_config = (dict(CAPTURE_TIMING_RECOMMENDED), 1)
+        _write_capture_timing_config(*loaded_config)
+
+    timing, revision = loaded_config
     APP_STATE['capture_timing'] = timing
     APP_STATE['capture_timing_revision'] = revision
     APP_STATE['capture_timing_applied_revision'] = 0
     APP_STATE['capture_timing_applied_at'] = None
     APP_STATE['capture_timing_loaded_path'] = path_key
-    if needs_write:
-        _write_capture_timing_config(timing, revision)
+    _remove_legacy_capture_timing_config()
+
+
+def _remove_legacy_capture_timing_config():
+    legacy_path = _legacy_capture_timing_path()
+    if legacy_path == _capture_timing_path() or not legacy_path.exists():
+        return
+    try:
+        _safe_unlink(legacy_path)
+    except DatasetFileBusyError as exc:
+        print(f'無法移除舊版停穩設定檔 {legacy_path}：{exc}', flush=True)
 
 
 def _capture_timing_status():
@@ -1069,6 +1100,8 @@ def _next_available_number(start_number):
 
 def _fruit_id_exists(fruit_id):
     temp_fruit_dir = _temp_dir() / fruit_id
+    if temp_fruit_dir.exists() and _is_deferred_discard_path(temp_fruit_dir):
+        return True
     if (
         temp_fruit_dir.exists()
         and not _is_ignored_reset_path(temp_fruit_dir)
@@ -1683,6 +1716,8 @@ def _has_unclassified_temp_fruit():
     for fruit_dir in temp_dir.glob('fruit_*'):
         if not fruit_dir.is_dir() or not FRUIT_ID_PATTERN.match(fruit_dir.name):
             continue
+        if _is_deferred_discard_path(fruit_dir):
+            continue
         if _is_ignored_reset_path(fruit_dir):
             continue
         if not _is_reusable_temp_dir(fruit_dir):
@@ -1913,7 +1948,11 @@ def _sync_active_state_with_filesystem():
 
     temp_fruit_dirs = sorted(
         path for path in _temp_dir().glob('fruit_*')
-        if path.is_dir() and FRUIT_ID_PATTERN.match(path.name)
+        if (
+            path.is_dir()
+            and FRUIT_ID_PATTERN.match(path.name)
+            and not _is_deferred_discard_path(path)
+        )
     )
     non_empty_dirs = []
     removed_empty = False
@@ -2131,6 +2170,151 @@ def _safe_rmtree(path):
             last_error = exc
             time.sleep(FILE_OPERATION_RETRY_DELAY_SECONDS)
     raise DatasetFileBusyError(f'無法刪除 {path}，可能正被瀏覽器預覽、檔案總管或其他程式使用。請關閉相關視窗後再試。') from last_error
+
+
+def _discard_temp_fruit(fruit_dir, fruit_id):
+    fruit_dir = Path(fruit_dir)
+    if not fruit_dir.exists():
+        return {'mode': 'deleted', 'cleanup_path': None, 'next_fruit_id': None}
+
+    try:
+        _safe_rmtree(fruit_dir)
+        if not fruit_dir.exists():
+            return {'mode': 'deleted', 'cleanup_path': None, 'next_fruit_id': None}
+        raise DatasetFileBusyError(f'刪除 {fruit_dir} 後資料夾仍存在。')
+    except DatasetFileBusyError as delete_error:
+        target = _unique_delete_pending_path(
+            fruit_dir,
+            reason=datetime.now().strftime('discard_%Y%m%d_%H%M%S'),
+        )
+        try:
+            _safe_move(fruit_dir, target)
+        except DatasetFileBusyError:
+            _record_discard_cleanup(fruit_dir, fruit_id=fruit_id, blocked_in_temp=True)
+            next_fruit_id = _advance_counter_after_deferred_discard(fruit_id)
+            return {
+                'mode': 'deferred_cleanup',
+                'cleanup_path': _dataset_relative_path(fruit_dir),
+                'next_fruit_id': next_fruit_id,
+                'warning': str(delete_error),
+            }
+
+        if fruit_dir.exists():
+            _record_discard_cleanup(fruit_dir, fruit_id=fruit_id, blocked_in_temp=True)
+            next_fruit_id = _advance_counter_after_deferred_discard(fruit_id)
+            return {
+                'mode': 'deferred_cleanup',
+                'cleanup_path': _dataset_relative_path(fruit_dir),
+                'next_fruit_id': next_fruit_id,
+                'warning': str(delete_error),
+            }
+
+        _record_discard_cleanup(
+            fruit_dir,
+            fruit_id=fruit_id,
+            cleanup_path=target,
+            blocked_in_temp=False,
+        )
+        return {
+            'mode': 'quarantined',
+            'cleanup_path': _dataset_relative_path(target),
+            'next_fruit_id': None,
+            'warning': str(delete_error),
+        }
+
+
+def _advance_counter_after_deferred_discard(fruit_id):
+    fruit_number = _fruit_number(fruit_id) or _read_counter()
+    next_number = _next_available_number(max(_read_counter(), fruit_number + 1))
+    _write_counter(next_number)
+    return _format_fruit_id(next_number)
+
+
+def _read_discard_state():
+    try:
+        with _discard_state_path().open('r', encoding='utf-8') as state_file:
+            data = json.load(state_file)
+    except (FileNotFoundError, json.JSONDecodeError, TypeError):
+        return {'pending_paths': []}
+
+    pending_paths = data.get('pending_paths') if isinstance(data, dict) else None
+    if not isinstance(pending_paths, list):
+        pending_paths = []
+    return {
+        'pending_paths': [
+            entry for entry in pending_paths
+            if (
+                isinstance(entry, dict)
+                and _is_safe_dataset_relative_path(entry.get('source_path'))
+                and _is_safe_dataset_relative_path(entry.get('cleanup_path'))
+            )
+        ],
+    }
+
+
+def _write_discard_state(data):
+    _discard_state_path().parent.mkdir(parents=True, exist_ok=True)
+    with _discard_state_path().open('w', encoding='utf-8') as state_file:
+        json.dump(data, state_file, ensure_ascii=False, indent=2)
+        state_file.write('\n')
+
+
+def _record_discard_cleanup(source_path, *, fruit_id, cleanup_path=None, blocked_in_temp):
+    source_relative_path = _dataset_relative_path(source_path)
+    cleanup_relative_path = _dataset_relative_path(cleanup_path or source_path)
+    state = _read_discard_state()
+    entries = [
+        entry for entry in state['pending_paths']
+        if entry.get('source_path') != source_relative_path
+    ]
+    entries.append({
+        'fruit_id': fruit_id,
+        'source_path': source_relative_path,
+        'cleanup_path': cleanup_relative_path,
+        'blocked_in_temp': bool(blocked_in_temp),
+        'recorded_at': _now_string(),
+    })
+    _write_discard_state({'pending_paths': entries})
+
+
+def _is_safe_dataset_relative_path(value):
+    if not isinstance(value, str) or not value.strip():
+        return False
+    path = Path(value)
+    return not path.is_absolute() and '..' not in path.parts
+
+
+def _is_deferred_discard_path(path):
+    relative_path = _dataset_relative_path(path)
+    return any(
+        entry.get('blocked_in_temp') and entry.get('source_path') == relative_path
+        for entry in _read_discard_state()['pending_paths']
+    )
+
+
+def _retry_deferred_discards_if_due():
+    last_attempt = APP_STATE.get('discard_cleanup_last_monotonic')
+    now = time.monotonic()
+    if last_attempt is not None and now - last_attempt < DISCARD_CLEANUP_RETRY_INTERVAL_SECONDS:
+        return
+    APP_STATE['discard_cleanup_last_monotonic'] = now
+
+    state = _read_discard_state()
+    remaining_entries = []
+    for entry in state['pending_paths']:
+        cleanup_path = _dataset_root() / entry.get('cleanup_path', '')
+        if not cleanup_path.exists():
+            continue
+        try:
+            if cleanup_path.is_dir():
+                _safe_rmtree(cleanup_path)
+            else:
+                _safe_unlink(cleanup_path)
+        except DatasetFileBusyError:
+            remaining_entries.append(entry)
+
+    if remaining_entries != state['pending_paths']:
+        _write_discard_state({'pending_paths': remaining_entries})
 
 
 def _safe_unlink(path):

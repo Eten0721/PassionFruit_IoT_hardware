@@ -27,17 +27,17 @@
 - `commandPollIntervalMS = 5000`
 - `startSequenceCommandPollIntervalMS = 100`
 - `activeCommandPollIntervalMS = 120`
-- `servo_settle_ms = 300`
-- `fruit_settle_ms = 300`
-- `firstStationSettleMS = 300`
-- `finalGateReturnDelayMS = 300`
+- `servo_settle_ms = 200`
+- `fruit_settle_ms = 200`
+- `firstStationSettleMS = 200`
+- `finalGateReturnDelayMS = 200`
 - `autoTriggerReportTimeoutMS = 1000`
 - `commandHttpTimeoutMS = 1500`
 - `reportHttpTimeoutMS = 5000`
 - `FirmwareConfig::kEnableAutoStation1FastPath = true`
 - `FirmwareConfig::kEchoPulseTimeoutUS = 12000UL`
 
-四個停穩設定預設皆為 `300 ms`，由 Dashboard 的 `POST /api/capture_timing/` 管理並持久化為 `capture_timing.json`。設定僅能在 Django 為 `idle` 時以完整四欄更新；值必須是 `50 ms` 的倍數，範圍為 `50` 到 `3000 ms`，最終歸位延遲可為 `0 ms`。Django 以 revision 下發設定，ESP32 僅在 idle、沒有流程或 pending report 且所有 Gate home 時套用，並回報 `timing_config_applied`。
+四個停穩設定推薦校正值皆為 `200 ms`，由 Dashboard 的 `POST /api/capture_timing/` 管理並持久化為固定單一的 `runtime_config/capture_timing.json`。設定僅能在 Django 為 `idle` 時以完整四欄更新；值必須是 `50 ms` 的倍數，範圍為 `50` 到 `3000 ms`，最終歸位延遲可為 `0 ms`。Django 以 revision 下發設定，ESP32 僅在 idle、沒有流程或 pending report 且所有 Gate home 時套用，並回報 `timing_config_applied`。每次更新只原子覆寫同一檔案，重啟後仍使用最後一版數值。
 
 每顆 fruit 開始後，ESP32 會 snapshot 四項 timing；`servo_settle_ms` 與 `fruit_settle_ms` 只用於硬體動作與果實停穩，不用來判斷手機是否拍攝完成，也不可在流程中覆寫。
 
@@ -86,7 +86,7 @@ HC-SR04 Echo 接到 ESP32 前必須降壓至 `3.3 V` 邏輯；正常目標為 �
 9. 第 3 站重複：手機上傳 `img_03.jpg`，Django 建立 `release_gate_3`。
 10. ESP32 放行 Gate 3，等待百香果滾出，再額外等待 `finalGateReturnDelayMS`，三顆馬達歸位。
 11. ESP32 回報 `capture_sequence_finished`，必須帶 `release_gate_3` 的 `command_id`。
-12. Dashboard 以固定 `4:3` 縮圖顯示三張照片，點擊可在網頁內以原始比例彈窗預覽，等待使用者分類或刪除。
+12. Dashboard 以固定直式 `3:4` 縮圖顯示三張照片，點擊可在網頁內以原始比例彈窗預覽，等待使用者分類或刪除。
 
 command id 規則：
 
@@ -109,7 +109,7 @@ Django 是是否允許開始新 fruit 的唯一狀態來源。
 
 當 `auto_trigger_enabled=0` 時，`hcsr04_trigger` 回 `200 ignored`。ESP32 收到 ignored 後清除 pending，等待感測器重新待命；不應建立新 fruit，也不應覆蓋既有 motor command。
 
-使用者按「跳過／刪除」成功後，Django 必須清除 temp fruit 的流程狀態並回到 `idle`，讓自動／手動觸發立即重新可用；若檔案仍被占用，則回傳結構化錯誤而不假裝流程已解除。
+使用者按「跳過／刪除」後，Django 會先嘗試實體刪除；若檔案仍被占用，則隔離到 `_delete_pending`，隔離也失敗時持久標記為待清理並跳過該 fruit ID。三種結果皆有結構化回應，流程會安全回到 `idle`，讓自動／手動觸發立即重新可用。
 
 若 `hcsr04_trigger` 重送時 Django 已在 `waiting_esp32_start` 且既有 `start_sequence`，Django 回 `duplicate_trigger_waiting_start_sequence` 並保留既有 `motor_command`，ESP32 可據此進入 fast polling 或直接執行 response 內的 `start_sequence`。
 

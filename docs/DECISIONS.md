@@ -83,13 +83,13 @@ Django 是流程狀態中心；手機與 ESP32 透過輪詢或回報同步狀態
 ### 影響
 
 - Django command payload 與 ESP32 fallback 常數需同步。
-- 第 3 站 `release_gate_3` 後，ESP32 先等待 `finalGateReturnDelayMS = 300`，再讓三顆馬達歸位。
+- 第 3 站 `release_gate_3` 後，ESP32 先等待 `finalGateReturnDelayMS = 200`，再讓三顆馬達歸位。
 
 ## 2026-07-10：站點停穩時間改由 Dashboard 管理
 
 ### 決策
 
-第 1 站、伺服放行後、到下一站與最終歸位的推薦預設皆為 `300 ms`。Django 將完整 timing profile 與 revision 持久化到 `capture_timing.json`，ESP32 僅在 idle、沒有流程或 pending report 且 Gate home 時套用，然後回報 `timing_config_applied`。
+第 1 站、伺服放行後、到下一站與最終歸位的推薦校正值皆為 `200 ms`。Django 將完整 timing profile 與 revision 持久化到固定單一的 `runtime_config/capture_timing.json`，每次僅原子覆寫最新版本；ESP32 僅在 idle、沒有流程或 pending report 且 Gate home 時套用，然後回報 `timing_config_applied`。
 
 ### 原因
 
@@ -240,11 +240,11 @@ firmware 目前只在 Serial 輸出 `hcsr04_trigger_detected` 的裝置端時間
 - 刪除成功後自動與手動觸發立即重新可用。
 - 檔案無法安全刪除時維持結構化失敗回應，不可錯誤宣告為 idle。
 
-## 2026-07-10：三站縮圖固定比例並採原生彈窗預覽
+## 2026-07-10：三站縮圖採直式比例並採原生彈窗預覽
 
 ### 決策
 
-Dashboard 縮圖以可鍵盤操作的 button 顯示固定 `4:3` cover；點擊後使用原生 `<dialog>` 以 `object-fit: contain` 顯示原始比例照片。
+Dashboard 縮圖以可鍵盤操作的 button 顯示固定直式 `3:4` cover；點擊後使用原生 `<dialog>` 以 `object-fit: contain` 顯示原始比例照片。
 
 ### 原因
 
@@ -254,3 +254,35 @@ Dashboard 縮圖以可鍵盤操作的 button 顯示固定 `4:3` cover；點擊�
 
 - 使用者可按 `Esc`、關閉按鈕或點擊彈窗背景離開預覽。
 - 刪除或分類前會先關閉彈窗並釋放縮圖檔案 handle，避免 Windows 檔案占用。
+
+## 2026-07-10：刪除受阻時隔離資料並保持採集可用
+
+### 決策
+
+跳過／刪除先嘗試實體刪除。若 Windows 檔案占用導致刪除失敗，先搬移至 `_delete_pending`；若搬移也失敗，將原 temp 路徑記錄在 `discard_state.json`，跳過該 fruit ID 並定期重試清理。
+
+### 原因
+
+未分類 temp fruit 會鎖住自動觸發。不能因瀏覽器、檔案總管或其他程式暫時占用照片，就讓 ESP32 長期收到 `server_status=uploaded` 與 `auto_trigger_enabled=0`。
+
+### 影響
+
+- `/api/discard/` 會回傳 `deleted`、`quarantined` 或 `deferred_cleanup`。
+- 待清理資料不會被 Django 恢復成 active fruit，也不會阻擋下一顆；搬移也失敗時會改用下一個 fruit ID。
+- WebRTC 無影像軌時收合 `16:9` 預覽區，避免 Dashboard 留下空白。
+
+## 2026-07-11：停穩設定使用固定單一 runtime 設定檔
+
+### 決策
+
+四項推薦校正值固定為 `200 ms`。最後一次由 Dashboard 套用的完整 timing profile 與 revision 持久化於 `Django_Server/runtime_config/capture_timing.json`，每次只以原子覆寫更新同一份檔案；舊版 `dataset/capture_timing.json` 首次升級時遷移後移除。
+
+### 原因
+
+校正值必須跨 Django 重啟保留，但 runtime 設定不應混入 dataset，也不應累積多份版本檔案。
+
+### 影響
+
+- `Config.h` 與 Django 推薦值提供首次刷入／設定檔遺失時的 `200 ms` fallback。
+- Dashboard 日後修改仍跨重啟保留最後一版數值，並維持 revision ACK 與每顆 fruit 的 timing snapshot。
+- runtime 設定目錄不納入 Git；不影響照片、metadata 或分類資料。
