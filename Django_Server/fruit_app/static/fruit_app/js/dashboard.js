@@ -396,18 +396,18 @@ const remoteVideo = document.getElementById('remote-video');
 
     function recommendedCaptureTiming(data = lastState || {}) {
         return data.capture_timing_recommended || {
-            first_station_settle_ms: 200,
+            first_station_settle_ms: 300,
             servo_settle_ms: 200,
-            fruit_settle_ms: 200,
-            final_gate_return_delay_ms: 200,
+            fruit_settle_ms: 350,
+            final_gate_return_delay_ms: 300,
         };
     }
 
     function setTimingInputs(timing) {
-        timingFirstStationInput.value = timing.first_station_settle_ms ?? 200;
+        timingFirstStationInput.value = timing.first_station_settle_ms ?? 300;
         timingServoInput.value = timing.servo_settle_ms ?? 200;
-        timingFruitInput.value = timing.fruit_settle_ms ?? 200;
-        timingFinalReturnInput.value = timing.final_gate_return_delay_ms ?? 200;
+        timingFruitInput.value = timing.fruit_settle_ms ?? 350;
+        timingFinalReturnInput.value = timing.final_gate_return_delay_ms ?? 300;
     }
 
     function timingStatusText(data) {

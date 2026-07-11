@@ -26,9 +26,9 @@ constexpr uint32_t kStartSequenceCommandPollIntervalMS = 100UL;
 constexpr uint32_t kAwaitReleaseCommandPollIntervalMS = 50UL;
 
 constexpr uint32_t kServoSettleMS = 200UL;
-constexpr uint32_t kFruitSettleMS = 200UL;
-constexpr uint32_t kFirstStationSettleMS = 200UL;
-constexpr uint32_t kFinalGateReturnDelayMS = 200UL;
+constexpr uint32_t kFruitSettleMS = 350UL;
+constexpr uint32_t kFirstStationSettleMS = 300UL;
+constexpr uint32_t kFinalGateReturnDelayMS = 300UL;
 
 constexpr uint32_t kReportRetryIntervalMS = 1000UL;
 constexpr uint32_t kAutoTriggerReportRetryIntervalMS = 1000UL;

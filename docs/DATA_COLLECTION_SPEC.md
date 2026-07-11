@@ -28,16 +28,16 @@
 - `startSequenceCommandPollIntervalMS = 100`
 - `awaitReleaseCommandPollIntervalMS = 50`
 - `servo_settle_ms = 200`
-- `fruit_settle_ms = 200`
-- `firstStationSettleMS = 200`
-- `finalGateReturnDelayMS = 200`
+- `fruit_settle_ms = 350`
+- `firstStationSettleMS = 300`
+- `finalGateReturnDelayMS = 300`
 - `autoTriggerReportTimeoutMS = 1000`
 - `commandHttpTimeoutMS = 1500`
 - `reportHttpTimeoutMS = 5000`
 - `FirmwareConfig::kEnableAutoStation1FastPath = true`
 - `FirmwareConfig::kEchoPulseTimeoutUS = 12000UL`
 
-四個停穩設定推薦校正值皆為 `200 ms`，由 Dashboard 的 `POST /api/capture_timing/` 管理並持久化為固定單一的 `runtime_config/capture_timing.json`。設定僅能在 Django 為 `idle` 時以完整四欄更新；值必須是 `50 ms` 的倍數，範圍為 `50` 到 `3000 ms`，最終歸位延遲可為 `0 ms`。Django 以 revision 下發設定，ESP32 僅在 idle、沒有流程或 pending report 且所有 Gate home 時套用，並回報 `timing_config_applied`。每次更新只原子覆寫同一檔案，重啟後仍使用最後一版數值。
+四個停穩設定的實測推薦值依序為 `300 / 200 / 350 / 300 ms`，由 Dashboard 的 `POST /api/capture_timing/` 管理並持久化為固定單一的 `runtime_config/capture_timing.json`。設定僅能在 Django 為 `idle` 時以完整四欄更新；值必須是 `50 ms` 的倍數，範圍為 `50` 到 `3000 ms`，最終歸位延遲可為 `0 ms`。Django 以 revision 下發設定，ESP32 僅在 idle、沒有流程或 pending report 且所有 Gate home 時套用，並回報 `timing_config_applied`。每次更新只原子覆寫同一檔案，重啟後仍使用最後一版數值。
 
 每顆 fruit 開始後，ESP32 會 snapshot 四項 timing；`servo_settle_ms` 與 `fruit_settle_ms` 只用於硬體動作與果實停穩，不用來判斷手機是否拍攝完成，也不可在流程中覆寫。
 

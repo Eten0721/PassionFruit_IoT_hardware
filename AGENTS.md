@@ -55,7 +55,7 @@ Django 已將可獨立責任抽出為 `capture_session.py`、`dataset_store.py` 
 - `HOME_ANGLE = 0`：攔截／歸位角度。
 - `RELEASE_ANGLE = 90`：放行角度。
 - HC-SR04 目前觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`。
-- Dashboard 拍攝停穩設定的推薦校正值皆為 `200 ms`：`first_station_settle_ms`、`servo_settle_ms`、`fruit_settle_ms`、`final_gate_return_delay_ms`。`Config.h` 只保留斷線／首次刷入時的 fallback。
+- Dashboard 拍攝停穩設定的推薦校正值依序為：`first_station_settle_ms = 300`、`servo_settle_ms = 200`、`fruit_settle_ms = 350`、`final_gate_return_delay_ms = 300`（單位皆為 `ms`）。`Config.h` 只保留斷線／首次刷入時的 fallback。
 - `POST /api/capture_timing/` 只能在 Django 為 `idle`、沒有 active fruit 或 motor command 時更新完整四項設定；數值必須為 `50 ms` 的倍數，範圍為 `50` 到 `3000 ms`，最終歸位延遲可為 `0 ms`。
 - Django 以 `Django_Server/runtime_config/capture_timing.json` 持久化 timing revision；每次 Dashboard 更新只原子覆寫此固定單一檔案，舊版 `dataset/capture_timing.json` 首次升級時會遷移後移除。ESP32 必須僅在 idle 且所有 Gate home 時套用，並回報 `timing_config_applied`。流程中不得覆寫目前 fruit 已 snapshot 的 timing。
 - 成功跳過／刪除 temp fruit 後必須透過 `_clear_active_state(..., status='idle')` 清除等待計時器、馬達命令、capture token 與 fast-path 狀態，讓下一顆可立即開始。

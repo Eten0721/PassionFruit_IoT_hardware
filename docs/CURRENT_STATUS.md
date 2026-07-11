@@ -37,10 +37,10 @@
 - HC-SR04 觸發距離：`6.0 cm`。
 - HC-SR04 重新待命距離：`8.0 cm`。
 - `servo_settle_ms = 200`。
-- `fruit_settle_ms = 200`。
-- 第 1 站停穩：`200 ms`。
-- 第 3 站放行後歸位前額外等待：`200 ms`。
-- 四項 Dashboard 推薦校正值皆為 `200 ms`；可在 idle 時以 `50 ms` 為步進調整至最多 `3000 ms`。最後一版調整會跨重啟保留，且舊版 dataset timing 檔會遷移後移除。
+- `fruit_settle_ms = 350`。
+- 第 1 站停穩：`300 ms`。
+- 第 3 站放行後歸位前額外等待：`300 ms`。
+- 四項 Dashboard 實測推薦值依序為 `300 / 200 / 350 / 300 ms`；可在 idle 時以 `50 ms` 為步進調整至最多 `3000 ms`。目前 runtime revision `16` 已套用相同設定；最後一版調整會跨重啟保留，且舊版 dataset timing 檔會遷移後移除。
 - ESP32 idle command polling：`5000 ms`。
 - 等待 `start_sequence` command polling：`100 ms`。
 - 等待 `release_gate` command polling：`50 ms`；伺服移動、果實停穩與 report pending 階段不輪詢 command。

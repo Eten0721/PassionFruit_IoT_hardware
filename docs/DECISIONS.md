@@ -83,13 +83,13 @@ Django 是流程狀態中心；手機與 ESP32 透過輪詢或回報同步狀態
 ### 影響
 
 - Django command payload 與 ESP32 fallback 常數需同步。
-- 第 3 站 `release_gate_3` 後，ESP32 先等待 `finalGateReturnDelayMS = 200`，再讓三顆馬達歸位。
+- 第 3 站 `release_gate_3` 後，ESP32 先等待 `finalGateReturnDelayMS`，再讓三顆馬達歸位；當時初始值為 `200 ms`，目前實測推薦值已調整為 `300 ms`。
 
 ## 2026-07-10：站點停穩時間改由 Dashboard 管理
 
 ### 決策
 
-第 1 站、伺服放行後、到下一站與最終歸位的推薦校正值皆為 `200 ms`。Django 將完整 timing profile 與 revision 持久化到固定單一的 `runtime_config/capture_timing.json`，每次僅原子覆寫最新版本；ESP32 僅在 idle、沒有流程或 pending report 且 Gate home 時套用，然後回報 `timing_config_applied`。
+第 1 站、伺服放行後、到下一站與最終歸位的初始推薦校正值皆為 `200 ms`。Django 將完整 timing profile 與 revision 持久化到固定單一的 `runtime_config/capture_timing.json`，每次僅原子覆寫最新版本；ESP32 僅在 idle、沒有流程或 pending report 且 Gate home 時套用，然後回報 `timing_config_applied`。這組初始值已於 2026-07-11 依實機校正結果更新。
 
 ### 原因
 
@@ -211,7 +211,7 @@ ESP32 只在 idle、等待 `start_sequence`、等待 `release_gate` 時輪詢 co
 
 - 手機 active polling 改為 `50 ms`，但仍維持 single in-flight 與背景暫停規則。
 - 前景檔案重試限制約 `100 ms`；失敗時沿用 upload retry、`409` 或 deferred cleanup。
-- 四項機構 timing 預設仍為 `200 ms`，不得因本次軟體最佳化直接縮短。
+- 當時四項機構 timing 預設仍為 `200 ms`，不得因本次軟體最佳化直接縮短；後續實機校正不受此限制。
 
 ## 2026-07-10：HC-SR04 Echo 必須降壓後接 ESP32
 
@@ -293,7 +293,7 @@ Dashboard 縮圖以可鍵盤操作的 button 顯示固定直式 `3:4` cover；�
 
 ### 決策
 
-四項推薦校正值固定為 `200 ms`。最後一次由 Dashboard 套用的完整 timing profile 與 revision 持久化於 `Django_Server/runtime_config/capture_timing.json`，每次只以原子覆寫更新同一份檔案；舊版 `dataset/capture_timing.json` 首次升級時遷移後移除。
+當時四項推薦校正值固定為 `200 ms`。最後一次由 Dashboard 套用的完整 timing profile 與 revision 持久化於 `Django_Server/runtime_config/capture_timing.json`，每次只以原子覆寫更新同一份檔案；舊版 `dataset/capture_timing.json` 首次升級時遷移後移除。推薦值後續依實機校正結果更新，持久化方式不變。
 
 ### 原因
 
@@ -301,6 +301,22 @@ Dashboard 縮圖以可鍵盤操作的 button 顯示固定直式 `3:4` cover；�
 
 ### 影響
 
-- `Config.h` 與 Django 推薦值提供首次刷入／設定檔遺失時的 `200 ms` fallback。
+- `Config.h` 與 Django 推薦值提供首次刷入／設定檔遺失時的 fallback；目前數值依序為 `300 / 200 / 350 / 300 ms`。
 - Dashboard 日後修改仍跨重啟保留最後一版數值，並維持 revision ACK 與每顆 fruit 的 timing snapshot。
 - runtime 設定目錄不納入 Git；不影響照片、metadata 或分類資料。
+
+## 2026-07-11：依實機結果更新停穩推薦值
+
+### 決策
+
+四項初始推薦值更新為：第 1 站停穩 `300 ms`、伺服穩定 `200 ms`、到站停穩 `350 ms`、最終歸位延遲 `300 ms`。Django、Dashboard fallback 與 ESP32 firmware fallback 使用相同數值；runtime revision `16` 已套用這組設定。
+
+### 原因
+
+實機測試顯示，第 1 站與後續到站需要較長的停穩時間，最終放行也需要保留足夠時間讓果實離開閘門範圍。伺服本身使用 `200 ms` 已可穩定完成動作，因此維持不變。
+
+### 影響
+
+- 新環境、首次刷入或 runtime 設定遺失時，會使用 `300 / 200 / 350 / 300 ms` 作為安全起點。
+- Dashboard 仍可在 idle 時以原有範圍與步進調整，revision ACK 與每顆 fruit 的 timing snapshot 規則不變。
+- 延遲只用於硬體動作與果實停穩，不取代 Django 確認照片保存成功的交握規則。

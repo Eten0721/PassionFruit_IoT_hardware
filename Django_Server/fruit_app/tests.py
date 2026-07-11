@@ -50,7 +50,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(command['station_index'], 1)
         self.assertEqual(command['release_angle'], 90)
         self.assertEqual(command['servo_settle_ms'], 200)
-        self.assertEqual(command['fruit_settle_ms'], 200)
+        self.assertEqual(command['fruit_settle_ms'], 350)
 
         station_1 = self._report('station_1_ready', station_index=1, command_id=command['command_id']).json()
         self.assertTrue(station_1['capture_requested'])
@@ -140,7 +140,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(command['fruit_id'], 'fruit_042')
         self.assertEqual(command['release_angle'], 90)
         self.assertEqual(command['servo_settle_ms'], 200)
-        self.assertEqual(command['fruit_settle_ms'], 200)
+        self.assertEqual(command['fruit_settle_ms'], 350)
 
     def test_hcsr04_trigger_is_ignored_when_active_fruit_exists(self):
         first_response = self._report('hcsr04_trigger')
@@ -194,7 +194,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(command['command'], 'start_sequence')
         self.assertEqual(command['release_angle'], '90')
         self.assertEqual(command['servo_settle_ms'], '200')
-        self.assertEqual(command['fruit_settle_ms'], '200')
+        self.assertEqual(command['fruit_settle_ms'], '350')
 
     def test_hcsr04_trigger_is_ignored_when_temp_fruit_exists(self):
         fruit_dir = self.dataset_root / 'temp' / 'fruit_001'
@@ -511,10 +511,10 @@ class DataCollectionFlowTests(SimpleTestCase):
     def test_capture_timing_defaults_persist_and_are_acknowledged_by_esp32(self):
         initial = self.client.get('/api/state/').json()
         self.assertEqual(initial['capture_timing'], {
-            'first_station_settle_ms': 200,
+            'first_station_settle_ms': 300,
             'servo_settle_ms': 200,
-            'fruit_settle_ms': 200,
-            'final_gate_return_delay_ms': 200,
+            'fruit_settle_ms': 350,
+            'final_gate_return_delay_ms': 300,
         })
         self.assertEqual(initial['capture_timing_revision'], 1)
 

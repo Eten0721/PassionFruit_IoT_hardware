@@ -52,6 +52,7 @@ model_training/
 *.mov
 *.avi
 !hardware_notes/*.png
+!docs/images/hardware-development/*.png
 
 # YOLO / ML training outputs and model weights
 model_training/**/runs/
