@@ -29,6 +29,13 @@ ESP32_REPORT_KEYS = (
     'capture_timing_status',
     'capture_timing_revision',
     'capture_timing_applied_revision',
+    'sorter_status',
+    'sorter_command_id',
+    'sorter_fruit_id',
+    'sorter_label',
+    'sorter_error',
+    'sorter_busy',
+    'sorter_command_queued',
 )
 
 

@@ -143,3 +143,5 @@ DATASET_ROOT = BASE_DIR / 'dataset'
 # Dashboard 停穩時間的單一持久化設定。此檔案不屬於 dataset，避免與照片資料混在一起。
 RUNTIME_CONFIG_ROOT = BASE_DIR / 'runtime_config'
 CAPTURE_TIMING_CONFIG_PATH = RUNTIME_CONFIG_ROOT / 'capture_timing.json'
+MOTOR_COMMAND_SEQUENCE_PATH = RUNTIME_CONFIG_ROOT / 'motor_command_sequence.json'
+ENABLE_CLASSIFICATION_SORTER = True

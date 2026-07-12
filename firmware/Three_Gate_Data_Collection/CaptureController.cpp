@@ -12,6 +12,7 @@ void CaptureController::begin() {
   gates_.moveAll(FirmwareConfig::kHomeAngle);
 
   const uint32_t currentTime = millis();
+  classifier_.begin(currentTime);
   appliedTiming_ = defaultTimingConfig();
   motionPhase_ = MotionPhase::kBootHomeSettling;
   phaseDeadlineAt_ = currentTime + appliedTiming_.servoSettleMS;
@@ -34,6 +35,8 @@ void CaptureController::tick() {
   const uint32_t currentTime = millis();
   api_.ensureWiFi(currentTime);
 
+  classifier_.tick(currentTime);
+  collectClassifierResult();
   advanceMotion(currentTime);
   if (applyPendingTimingConfig(currentTime)) {
     return;
@@ -190,6 +193,10 @@ bool CaptureController::shouldStartAutoTrigger(
   }
   if (sequenceActive_) {
     reason = "blocked_by_sequence_active";
+    return false;
+  }
+  if (classifierCommandActive_ || classifier_.busy()) {
+    reason = "classifier_busy";
     return false;
   }
   if (!triggerArmed_) {
@@ -496,11 +503,13 @@ bool CaptureController::flushPendingReport(uint32_t currentTime) {
       false,
       false,
       false,
-      pendingReport_.timingRevision);
+      pendingReport_.timingRevision,
+      pendingReport_.classificationCode,
+      pendingReport_.includeStationIndex);
   printReportSummary(pendingReport_.event, result);
 
   if (!result.isSuccess()) {
-    Serial.println("Station report failed. It will be retried without advancing gates.");
+    Serial.println("ESP32 report failed. It will be retried without repeating motion.");
     return true;
   }
 
@@ -523,7 +532,9 @@ void CaptureController::queueReport(
     int stationIndex,
     int commandId,
     const String& message,
-    uint32_t timingRevision) {
+    uint32_t timingRevision,
+    const String& classificationCode,
+    bool includeStationIndex) {
   if (pendingReport_.active) {
     Serial.println("WARN attempted to overwrite an unsent ESP32 report.");
     return;
@@ -535,6 +546,8 @@ void CaptureController::queueReport(
   pendingReport_.commandId = commandId;
   pendingReport_.message = message;
   pendingReport_.timingRevision = timingRevision;
+  pendingReport_.classificationCode = classificationCode;
+  pendingReport_.includeStationIndex = includeStationIndex;
   pendingReport_.lastAttemptAt = 0;
   printTiming(event + String("_queued"));
 }
@@ -553,6 +566,28 @@ void CaptureController::handlePendingReportSuccess(const String& event) {
     clearActiveTiming();
     return;
   }
+  if (event == "classification_sorter_completed" ||
+      event == "classification_sorter_failed") {
+    classifierCommandActive_ = false;
+    activeCommand_ = MotorCommand();
+    return;
+  }
+}
+
+void CaptureController::collectClassifierResult() {
+  if (!classifier_.hasResult() || pendingReport_.active) {
+    return;
+  }
+  const ClassifierController::Result result = classifier_.takeResult();
+  queueReport(
+      result.success ? "classification_sorter_completed"
+                     : "classification_sorter_failed",
+      0,
+      result.commandId,
+      result.reason,
+      0,
+      result.classificationCode,
+      false);
 }
 
 TimingConfig CaptureController::defaultTimingConfig() const {
@@ -579,6 +614,7 @@ bool CaptureController::timingConfigIsValid(const TimingConfig& timing) const {
 
 bool CaptureController::timingConfigCanApply() const {
   return motionPhase_ == MotionPhase::kIdle && !sequenceActive_ &&
+         !classifierCommandActive_ && !classifier_.busy() &&
          !autoTrigger_.active() && !pendingReport_.active && gates_.atHome();
 }
 
@@ -719,6 +755,24 @@ void CaptureController::handleCommand(
   Serial.print(" station ");
   Serial.println(command.stationIndex);
 
+  if (classifierCommandActive_ && command.command != "classify_fruit") {
+    logCommandRejected(command, "classifier_busy");
+    return;
+  }
+
+  if (command.command == "classify_fruit") {
+    if (sequenceActive_ || motionPhase_ != MotionPhase::kIdle) {
+      queueClassifierFailure(command, "capture_sequence_active");
+      return;
+    }
+    if (classifierCommandActive_ || classifier_.busy()) {
+      logCommandRejected(command, "classifier_busy");
+      return;
+    }
+    startClassifier(command, currentTime);
+    return;
+  }
+
   if (command.command == "start_sequence") {
     if (sequenceActive_) {
       queueMotorError(command, "start_sequence_while_sequence_active");
@@ -734,6 +788,64 @@ void CaptureController::handleCommand(
   }
 
   queueMotorError(command, "unknown_command");
+}
+
+void CaptureController::startClassifier(
+    const MotorCommand& command,
+    uint32_t currentTime) {
+  classifierCommandActive_ = true;
+  executingCommandId_ = command.commandId;
+  activeCommand_ = command;
+  setAutoTriggerEnabled(false, "classifier_busy");
+
+  if (!FirmwareConfig::kEnableClassificationSorter) {
+    queueClassifierFailure(command, "classifier_disabled");
+    return;
+  }
+
+  String reason;
+  if (!classifier_.start(
+          command.commandId,
+          command.classificationCode,
+          currentTime,
+          reason)) {
+    queueClassifierFailure(command, reason.length() > 0 ? reason : "classifier_busy");
+    return;
+  }
+
+  Serial.print("Classifier command #");
+  Serial.print(command.commandId);
+  Serial.print(" code=");
+  Serial.println(command.classificationCode);
+}
+
+void CaptureController::queueClassifierFailure(
+    const MotorCommand& command,
+    const String& reason) {
+  classifierCommandActive_ = true;
+  executingCommandId_ = command.commandId;
+  activeCommand_ = command;
+  setAutoTriggerEnabled(false, "classifier_error");
+  logCommandRejected(command, reason);
+  queueReport(
+      "classification_sorter_failed",
+      0,
+      command.commandId,
+      reason,
+      0,
+      command.classificationCode,
+      false);
+}
+
+void CaptureController::logCommandRejected(
+    const MotorCommand& command,
+    const String& reason) const {
+  Serial.print("Command rejected: id=");
+  Serial.print(command.commandId);
+  Serial.print(" type=");
+  Serial.print(command.command);
+  Serial.print(" reason=");
+  Serial.println(reason);
 }
 
 void CaptureController::startSequence(

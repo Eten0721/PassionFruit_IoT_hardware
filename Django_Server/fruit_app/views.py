@@ -14,11 +14,17 @@ from django.utils.http import http_date
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
-from . import api_payloads, capture_session, capture_timing, dataset_store, webrtc_signaling
+from . import api_payloads, capture_session, capture_timing, dataset_store, motor_commands, webrtc_signaling
 from .runtime_state import RuntimeState
 
 
 LABELS = ['上中等', '下等', '廢棄', '加工']
+CLASSIFICATION_CODES = {
+    '上中等': 'high_medium',
+    '下等': 'low',
+    '加工': 'processing',
+    '廢棄': 'discard',
+}
 IMAGE_COUNT = 3
 IMAGE_FILENAMES = [f'img_{idx:02d}.jpg' for idx in range(1, IMAGE_COUNT + 1)]
 FRUIT_ID_PATTERN = re.compile(r'^fruit_(\d{3,})$')
@@ -57,6 +63,8 @@ ESP32_ONLINE_WINDOW_SECONDS = 20
 ESP32_START_TIMEOUT_SECONDS = 10
 HARDWARE_STEP_TIMEOUT_SECONDS = 20
 CAMERA_UPLOAD_TIMEOUT_SECONDS = 45
+SORTER_PENDING_TIMEOUT_SECONDS = 30
+SORTER_RUNNING_TIMEOUT_SECONDS = 30
 FILE_OPERATION_RETRIES = 2
 FILE_OPERATION_RETRY_DELAY_SECONDS = 0.05
 DISCARD_CLEANUP_RETRY_INTERVAL_SECONDS = 30
@@ -124,6 +132,14 @@ APP_STATE = RuntimeState({
     'capture_timing_loaded_path': None,
     'discard_cleanup_last_monotonic': None,
     'dataset_operation': None,
+    'sorter_status': 'idle',
+    'sorter_command_id': None,
+    'sorter_fruit_id': None,
+    'sorter_label': None,
+    'sorter_classification_code': None,
+    'sorter_error': None,
+    'sorter_started_monotonic': None,
+    'sorter_deadline_monotonic': None,
     'status': 'idle',
     'message': '等待手機連線與手動拍攝。',
 })
@@ -304,6 +320,12 @@ def manual_capture_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
         _sync_active_state_with_filesystem()
+        if _sorter_busy():
+            return _json_error(
+                '硬體分類器正在執行，完成或逾時前不可開始下一次拍攝。',
+                status=409,
+                reason='classifier_busy',
+            )
         if not _esp32_is_online():
             return _json_error(
                 'ESP32 尚未連線或已超過 20 秒未輪詢，請確認正式三閘門 firmware 已啟動。',
@@ -346,6 +368,7 @@ def esp32_command_api(request):
         _mark_esp32_poll()
         _sync_active_state_with_filesystem()
         payload = _esp32_command_payload()
+        _mark_sorter_running_if_dispatched(payload)
 
     if request.GET.get('format') == 'text':
         return HttpResponse(_format_command_text(payload), content_type='text/plain; charset=utf-8')
@@ -416,6 +439,13 @@ def esp32_report_api(request):
                 return _json_error(exc.message, status=exc.status, reason=exc.reason, extra={'ok': False})
             return JsonResponse(_compact_esp32_payload(payload))
 
+        if event in ('classification_sorter_completed', 'classification_sorter_failed'):
+            try:
+                payload = _handle_sorter_report(event, data, command_id)
+            except CaptureCommandError as exc:
+                return _json_error(exc.message, status=exc.status, reason=exc.reason, extra={'ok': False})
+            return JsonResponse(_compact_esp32_payload(payload))
+
         if event == 'motor_error':
             message = data.get('message') or 'ESP32 回報馬達動作失敗。'
             _set_error_state('motor_error', message)
@@ -432,6 +462,12 @@ def recapture_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
         _sync_active_state_with_filesystem()
+        if _sorter_busy():
+            return _json_error(
+                '硬體分類器正在執行，完成或逾時前不可重新拍攝。',
+                status=409,
+                reason='classifier_busy',
+            )
         if APP_STATE['status'] == 'uploading':
             return _json_error('照片正在上傳中，請等待上傳完成後再重新拍攝。', status=409)
         if not _esp32_is_online():
@@ -672,27 +708,17 @@ def classify_api(request):
             APP_STATE.finish_dataset_operation(operation_token)
             return _json_error('分類完成時 fruit 已變更，已保留資料供人工確認。', status=409, reason='stale_operation')
         APP_STATE.finish_dataset_operation(operation_token)
-        APP_STATE['pending_capture'] = False
-        APP_STATE['active_fruit_id'] = None
-        APP_STATE['capture_time'] = None
-        APP_STATE['source'] = None
-        APP_STATE['fast_path_trigger_id'] = None
-        APP_STATE['fast_path_fruit_id'] = None
-        APP_STATE['fast_path_capture_token'] = None
-        APP_STATE['active_station_index'] = None
-        APP_STATE['station_statuses'] = {}
-        APP_STATE['motor_command'] = None
-        APP_STATE['last_error_reason'] = None
-        APP_STATE['status'] = 'classified'
-        APP_STATE['message'] = f'{fruit_id} 已分類為「{label}」。'
-        _reset_timing_state(keep_interval=True)
+        _clear_classified_dataset_state(fruit_id, label)
         _record_transition('fruit_classified', fruit_id=fruit_id, details={'label': label})
+        sorter_result = _queue_sorter_command(fruit_id, label)
         payload = {
             'status': 'success',
+            'data_classified': True,
             'fruit_id': fruit_id,
             'label': label,
             'path': relative_path,
             'next_fruit_id': _format_fruit_id(_read_counter()),
+            **sorter_result,
         }
     return JsonResponse(payload)
 
@@ -763,6 +789,12 @@ def reset_dataset_api(request):
             return _json_error('已有 dataset 檔案操作進行中，請稍後再試。', status=409, reason='dataset_busy')
         if APP_STATE['status'] == 'uploading':
             return _json_error('照片正在上傳中，請等待上傳完成後再重置 dataset。', status=409)
+        if _sorter_busy():
+            return _json_error(
+                '硬體分類器正在執行，完成或逾時前不可重置 dataset。',
+                status=409,
+                reason='classifier_busy',
+            )
         operation_token = APP_STATE.begin_dataset_operation('reset', APP_STATE.get('active_fruit_id'))
         APP_STATE['message'] = '正在重置 dataset。'
 
@@ -779,9 +811,9 @@ def reset_dataset_api(request):
             return _json_error('重置完成時狀態已變更。', status=409, reason='stale_operation')
         APP_STATE.finish_dataset_operation(operation_token)
         _clear_active_state('dataset 已重置，下一筆資料將從 fruit_001 開始。', status='idle')
+        _reset_sorter_state()
         APP_STATE['capture_token'] = 0
         APP_STATE['capture_interval_ms'] = DEFAULT_CAPTURE_INTERVAL_MS
-        APP_STATE['motor_command_id'] = 0
         APP_STATE['transition_trace'] = []
         APP_STATE['trace_sequence'] = 0
         _reset_timing_state(keep_interval=True)
@@ -928,6 +960,14 @@ def reset_runtime_state_for_tests():
             'capture_timing_loaded_path': None,
             'discard_cleanup_last_monotonic': None,
             'dataset_operation': None,
+            'sorter_status': 'idle',
+            'sorter_command_id': None,
+            'sorter_fruit_id': None,
+            'sorter_label': None,
+            'sorter_classification_code': None,
+            'sorter_error': None,
+            'sorter_started_monotonic': None,
+            'sorter_deadline_monotonic': None,
             'status': 'idle',
             'message': '等待手機連線與手動拍攝。',
         })
@@ -964,6 +1004,10 @@ def _counter_path():
 
 def _capture_timing_path():
     return Path(settings.CAPTURE_TIMING_CONFIG_PATH)
+
+
+def _motor_command_sequence_path():
+    return Path(settings.MOTOR_COMMAND_SEQUENCE_PATH)
 
 
 def _legacy_capture_timing_path():
@@ -1236,6 +1280,16 @@ def _append_metadata(fruit_id, label, capture_time, relative_path, note, fruit_d
 
 def _create_capture_session(source):
     _sync_active_state_with_filesystem()
+    if _sorter_busy():
+        raise CaptureCommandError(
+            '硬體分類器正在執行，完成或逾時前不可開始下一次拍攝。',
+            reason='classifier_busy',
+        )
+    if APP_STATE.get('motor_command'):
+        raise CaptureCommandError(
+            '單一 motor command slot 目前已有命令，不能開始拍攝。',
+            reason='sorter_command_slot_busy',
+        )
     if APP_STATE['active_fruit_id']:
         raise CaptureCommandError(
             '目前已有未分類的暫存資料，請先分類或刪除。',
@@ -1504,14 +1558,215 @@ def _start_existing_capture_session(fruit_id, source, message):
     _set_motor_command('start_sequence', station_index=1)
 
 
-def _set_motor_command(command, station_index=None):
+def _clear_classified_dataset_state(fruit_id, label):
+    existing_command = APP_STATE.get('motor_command')
+    APP_STATE['pending_capture'] = False
+    APP_STATE['active_fruit_id'] = None
+    APP_STATE['capture_time'] = None
+    APP_STATE['source'] = None
+    APP_STATE['fast_path_trigger_id'] = None
+    APP_STATE['fast_path_fruit_id'] = None
+    APP_STATE['fast_path_capture_token'] = None
+    APP_STATE['active_station_index'] = None
+    APP_STATE['station_statuses'] = {}
+    APP_STATE['last_error_reason'] = None
+    APP_STATE['status'] = 'classified'
+    APP_STATE['message'] = f'{fruit_id} 已分類為「{label}」。'
+    if not existing_command:
+        _clear_wait_timer()
+        _reset_timing_state(keep_interval=True)
+
+
+def _queue_sorter_command(fruit_id, label):
+    classification_code = CLASSIFICATION_CODES[label]
+    if not getattr(settings, 'ENABLE_CLASSIFICATION_SORTER', True):
+        _set_sorter_failed(fruit_id, label, classification_code, 'sorter_disabled')
+        return _sorter_queue_result(False)
+
+    try:
+        command = _set_motor_command(
+            'classify_fruit',
+            fruit_id=fruit_id,
+            classification_code=classification_code,
+        )
+    except CaptureCommandError as exc:
+        _set_sorter_failed(fruit_id, label, classification_code, exc.reason)
+        return _sorter_queue_result(False)
+
+    now = time.monotonic()
+    APP_STATE['sorter_status'] = 'pending'
+    APP_STATE['sorter_command_id'] = command['command_id']
+    APP_STATE['sorter_fruit_id'] = fruit_id
+    APP_STATE['sorter_label'] = label
+    APP_STATE['sorter_classification_code'] = classification_code
+    APP_STATE['sorter_error'] = None
+    APP_STATE['sorter_started_monotonic'] = None
+    APP_STATE['sorter_deadline_monotonic'] = now + SORTER_PENDING_TIMEOUT_SECONDS
+    APP_STATE['message'] = f'{fruit_id} 資料已分類，等待 ESP32 執行硬體分類器。'
+    _record_transition(
+        'classification_sorter_queued',
+        fruit_id=fruit_id,
+        command_id=command['command_id'],
+        details={'label': label, 'classification_code': classification_code},
+    )
+    return _sorter_queue_result(True)
+
+
+def _set_sorter_failed(fruit_id, label, classification_code, reason):
+    APP_STATE['sorter_status'] = 'failed'
+    APP_STATE['sorter_command_id'] = None
+    APP_STATE['sorter_fruit_id'] = fruit_id
+    APP_STATE['sorter_label'] = label
+    APP_STATE['sorter_classification_code'] = classification_code
+    APP_STATE['sorter_error'] = reason
+    APP_STATE['sorter_started_monotonic'] = None
+    APP_STATE['sorter_deadline_monotonic'] = None
+    APP_STATE['message'] = f'{fruit_id} 資料已分類，但硬體分類命令建立失敗：{reason}'
+    _record_transition(
+        'classification_sorter_queue_failed',
+        fruit_id=fruit_id,
+        details={'classification_code': classification_code, 'reason': reason},
+    )
+
+
+def _reset_sorter_state():
+    APP_STATE['sorter_status'] = 'idle'
+    APP_STATE['sorter_command_id'] = None
+    APP_STATE['sorter_fruit_id'] = None
+    APP_STATE['sorter_label'] = None
+    APP_STATE['sorter_classification_code'] = None
+    APP_STATE['sorter_error'] = None
+    APP_STATE['sorter_started_monotonic'] = None
+    APP_STATE['sorter_deadline_monotonic'] = None
+
+
+def _sorter_queue_result(queued):
+    return {
+        'sorter_command_queued': bool(queued),
+        **_sorter_state_payload(),
+    }
+
+
+def _sorter_state_payload():
+    return {
+        'sorter_status': APP_STATE.get('sorter_status', 'idle'),
+        'sorter_command_id': APP_STATE.get('sorter_command_id'),
+        'sorter_fruit_id': APP_STATE.get('sorter_fruit_id'),
+        'sorter_label': APP_STATE.get('sorter_label'),
+        'sorter_error': APP_STATE.get('sorter_error'),
+        'sorter_busy': _sorter_busy(),
+        'sorter_command_queued': bool(
+            APP_STATE.get('sorter_command_id')
+            and APP_STATE.get('sorter_status') in ('pending', 'running')
+        ),
+    }
+
+
+def _sorter_busy():
+    return APP_STATE.get('sorter_status') in ('pending', 'running')
+
+
+def _mark_sorter_running_if_dispatched(payload):
+    if payload.get('command') != 'classify_fruit':
+        return
+    if APP_STATE.get('sorter_status') != 'pending':
+        return
+    if payload.get('command_id') != APP_STATE.get('sorter_command_id'):
+        return
+    now = time.monotonic()
+    APP_STATE['sorter_status'] = 'running'
+    APP_STATE['sorter_started_monotonic'] = now
+    APP_STATE['sorter_deadline_monotonic'] = now + SORTER_RUNNING_TIMEOUT_SECONDS
+    APP_STATE['message'] = f'{APP_STATE.get("sorter_fruit_id")} 的硬體分類器執行中。'
+    _record_transition(
+        'classification_sorter_running',
+        fruit_id=APP_STATE.get('sorter_fruit_id'),
+        command_id=APP_STATE.get('sorter_command_id'),
+    )
+
+
+def _handle_sorter_report(event, data, command_id):
+    expected_command_id = APP_STATE.get('sorter_command_id')
+    classification_code = (data.get('classification_code') or '').strip()
+    expected_code = APP_STATE.get('sorter_classification_code')
+    terminal = APP_STATE.get('sorter_status') in ('completed', 'failed', 'timeout')
+    if terminal and command_id == expected_command_id:
+        return _state_payload(extra={
+            'ok': True,
+            'event': event,
+            'ignored': True,
+            'duplicate': True,
+            'reason': 'sorter_terminal_state',
+        })
+    if command_id != expected_command_id or not expected_command_id:
+        raise CaptureCommandError(
+            '分類器回報的 command_id 與目前 sorter 命令不符。',
+            reason='command_id_mismatch',
+        )
+    if classification_code != expected_code:
+        raise CaptureCommandError(
+            '分類器回報的 classification_code 與目前命令不符。',
+            reason='classification_code_mismatch',
+        )
+
+    current_command = APP_STATE.get('motor_command') or {}
+    if (
+        current_command.get('command') != 'classify_fruit'
+        or current_command.get('command_id') != command_id
+    ):
+        raise CaptureCommandError(
+            '目前 motor command slot 不是這筆分類命令。',
+            reason='sorter_command_slot_mismatch',
+        )
+
+    fruit_id = APP_STATE.get('sorter_fruit_id')
+    APP_STATE['motor_command'] = None
+    APP_STATE['sorter_deadline_monotonic'] = None
+    if event == 'classification_sorter_completed':
+        APP_STATE['sorter_status'] = 'completed'
+        APP_STATE['sorter_error'] = None
+        APP_STATE['message'] = f'{fruit_id} 的硬體分類器控制流程已完成。'
+    else:
+        reason = (data.get('message') or 'classifier_failed').strip()
+        APP_STATE['sorter_status'] = 'failed'
+        APP_STATE['sorter_error'] = reason
+        APP_STATE['message'] = f'{fruit_id} 的硬體分類器失敗：{reason}'
+    _clear_wait_timer()
+    _record_transition(
+        event,
+        fruit_id=fruit_id,
+        command_id=command_id,
+        details={'classification_code': classification_code, 'sorter_error': APP_STATE.get('sorter_error')},
+    )
+    return _state_payload(extra={'ok': True, 'event': event})
+
+
+def _set_motor_command(command, station_index=None, *, fruit_id=None, classification_code=None):
+    if APP_STATE.get('motor_command'):
+        raise CaptureCommandError(
+            '單一 motor command slot 目前已有命令，不能覆蓋。',
+            reason='sorter_command_slot_busy',
+        )
+
+    try:
+        command_id = motor_commands.allocate(
+            _motor_command_sequence_path(),
+            APP_STATE.get('motor_command_id', 0),
+        )
+    except motor_commands.CommandSequenceError as exc:
+        raise CaptureCommandError(
+            str(exc),
+            status=503,
+            reason='motor_command_id_persist_failed',
+        ) from exc
+
     timing = APP_STATE['capture_timing']
-    APP_STATE['motor_command_id'] += 1
+    APP_STATE['motor_command_id'] = command_id
     APP_STATE['motor_command'] = {
-        'command_id': APP_STATE['motor_command_id'],
+        'command_id': command_id,
         'command': command,
         'station_index': station_index,
-        'fruit_id': APP_STATE['active_fruit_id'],
+        'fruit_id': fruit_id if fruit_id is not None else APP_STATE['active_fruit_id'],
         'home_angle': HOME_ANGLE,
         'release_angle': RELEASE_ANGLE,
         'timing_revision': APP_STATE['capture_timing_revision'],
@@ -1521,13 +1776,16 @@ def _set_motor_command(command, station_index=None):
         'final_gate_return_delay_ms': timing['final_gate_return_delay_ms'],
         'created_at': _now_string(),
     }
+    if classification_code:
+        APP_STATE['motor_command']['classification_code'] = classification_code
     _start_wait_timer()
     _record_transition(
         'motor_command_issued',
         station_index=station_index,
-        command_id=APP_STATE['motor_command_id'],
+        command_id=command_id,
         details={'command': command},
     )
+    return APP_STATE['motor_command']
 
 
 def _set_release_command(station_index):
@@ -1657,6 +1915,15 @@ def _esp32_command_payload():
     }
     command = None if APP_STATE.get('dataset_operation') else APP_STATE.get('motor_command')
     if command:
+        if command['command'] == 'classify_fruit':
+            return {
+                **base_payload,
+                'command': command['command'],
+                'command_id': command['command_id'],
+                'fruit_id': command['fruit_id'] or '',
+                'classification_code': command.get('classification_code') or '',
+                'message': APP_STATE['message'],
+            }
         return {
             **base_payload,
             'command': command['command'],
@@ -1731,6 +1998,8 @@ def _handle_timing_config_applied(data):
 def _auto_trigger_enabled():
     if APP_STATE.get('dataset_operation'):
         return False
+    if _sorter_busy():
+        return False
     if APP_STATE.get('active_fruit_id'):
         return False
     if APP_STATE.get('motor_command'):
@@ -1741,6 +2010,8 @@ def _auto_trigger_enabled():
 def _auto_trigger_disabled_reason():
     if APP_STATE.get('dataset_operation'):
         return 'dataset_operation_in_progress'
+    if _sorter_busy():
+        return 'classifier_busy'
     motor_command = APP_STATE.get('motor_command') or {}
     if (
         APP_STATE.get('status') == 'waiting_esp32_start'
@@ -1774,22 +2045,28 @@ def _has_unclassified_temp_fruit():
 
 def _format_command_text(payload):
     lines = []
-    for key in [
+    keys = [
         'status',
         'server_status',
         'auto_trigger_enabled',
         'command',
         'command_id',
-        'station_index',
         'fruit_id',
-        'home_angle',
-        'release_angle',
-        'timing_revision',
-        'first_station_settle_ms',
-        'servo_settle_ms',
-        'fruit_settle_ms',
-        'final_gate_return_delay_ms',
-    ]:
+    ]
+    if payload.get('command') == 'classify_fruit':
+        keys.append('classification_code')
+    else:
+        keys.extend([
+            'station_index',
+            'home_angle',
+            'release_angle',
+            'timing_revision',
+            'first_station_settle_ms',
+            'servo_settle_ms',
+            'fruit_settle_ms',
+            'final_gate_return_delay_ms',
+        ])
+    for key in keys:
         lines.append(f'{key}={payload.get(key, "")}')
     return '\n'.join(lines) + '\n'
 
@@ -1821,6 +2098,7 @@ def _clear_wait_timer():
 def _apply_session_timeouts():
     if APP_STATE.get('dataset_operation'):
         return
+    _apply_sorter_timeout()
     if not APP_STATE['active_fruit_id'] or not APP_STATE.get('wait_started_monotonic'):
         return
     elapsed = time.monotonic() - APP_STATE['wait_started_monotonic']
@@ -1831,6 +2109,32 @@ def _apply_session_timeouts():
         _set_error_state('hardware_timeout', '硬體流程逾時，請檢查 SG90 閘門、ESP32 回報與百香果是否卡住。')
     elif status == 'waiting_camera' and elapsed > CAMERA_UPLOAD_TIMEOUT_SECONDS:
         _set_error_state('camera_upload_timeout', '手機超過 45 秒未完成當站照片上傳，請檢查手機相機頁與網路連線。')
+
+
+def _apply_sorter_timeout():
+    if not _sorter_busy():
+        return
+    deadline = APP_STATE.get('sorter_deadline_monotonic')
+    if deadline is None or time.monotonic() <= deadline:
+        return
+
+    previous_status = APP_STATE['sorter_status']
+    command_id = APP_STATE.get('sorter_command_id')
+    current_command = APP_STATE.get('motor_command') or {}
+    if current_command.get('command_id') == command_id:
+        APP_STATE['motor_command'] = None
+    reason = 'esp32_timeout' if previous_status == 'pending' else 'classifier_timeout'
+    APP_STATE['sorter_status'] = 'timeout'
+    APP_STATE['sorter_error'] = reason
+    APP_STATE['sorter_deadline_monotonic'] = None
+    APP_STATE['message'] = f'{APP_STATE.get("sorter_fruit_id")} 的硬體分類器逾時：{reason}'
+    _clear_wait_timer()
+    _record_transition(
+        'classification_sorter_timeout',
+        fruit_id=APP_STATE.get('sorter_fruit_id'),
+        command_id=command_id,
+        details={'reason': reason, 'previous_status': previous_status},
+    )
 
 
 def _set_error_state(reason, message):
@@ -1920,6 +2224,7 @@ def _state_payload(extra=None):
         'trace': list(APP_STATE.get('transition_trace') or []),
         'dataset_path': str(_dataset_root()),
         'dataset_operation': APP_STATE.dataset_operation_payload(),
+        **_sorter_state_payload(),
     }
     if extra:
         payload.update(extra)

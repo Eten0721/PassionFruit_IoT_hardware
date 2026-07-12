@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "Config.h"
+#include "ClassifierController.h"
 #include "DjangoApiClient.h"
 #include "DistanceSensor.h"
 #include "GateController.h"
@@ -43,6 +44,8 @@ class CaptureController {
     int commandId;
     String message;
     uint32_t timingRevision;
+    String classificationCode;
+    bool includeStationIndex;
     uint32_t lastAttemptAt;
 
     PendingReport()
@@ -52,6 +55,8 @@ class CaptureController {
           commandId(0),
           message(""),
           timingRevision(0),
+          classificationCode(""),
+          includeStationIndex(true),
           lastAttemptAt(0) {}
   };
 
@@ -79,6 +84,7 @@ class CaptureController {
   DistanceSensor sensor_{FirmwareConfig::kUltrasonicTrigPin,
                          FirmwareConfig::kUltrasonicEchoPin};
   GateController gates_;
+  ClassifierController classifier_;
   DjangoApiClient api_;
 
   MotionPhase motionPhase_ = MotionPhase::kBootHomeSettling;
@@ -86,6 +92,7 @@ class CaptureController {
   MotorCommand activeCommand_;
   int activeStationIndex_ = 0;
   bool sequenceActive_ = false;
+  bool classifierCommandActive_ = false;
   TimingConfig appliedTiming_;
   TimingConfig pendingTiming_;
   TimingConfig activeTiming_;
@@ -129,8 +136,11 @@ class CaptureController {
       int stationIndex,
       int commandId,
       const String& message,
-      uint32_t timingRevision = 0);
+      uint32_t timingRevision = 0,
+      const String& classificationCode = "",
+      bool includeStationIndex = true);
   void handlePendingReportSuccess(const String& event);
+  void collectClassifierResult();
 
   TimingConfig defaultTimingConfig() const;
   bool timingConfigIsValid(const TimingConfig& timing) const;
@@ -145,6 +155,9 @@ class CaptureController {
   void handleCommand(const MotorCommand& command, uint32_t currentTime);
   void startSequence(const MotorCommand& command, uint32_t currentTime);
   void releaseGate(const MotorCommand& command, uint32_t currentTime);
+  void startClassifier(const MotorCommand& command, uint32_t currentTime);
+  void queueClassifierFailure(const MotorCommand& command, const String& reason);
+  void logCommandRejected(const MotorCommand& command, const String& reason) const;
   void queueMotorError(const MotorCommand& command, const String& reason);
   void setAutoTriggerEnabled(bool enabled, const String& serverStatus);
   void registerCommandFailure(int httpCode);

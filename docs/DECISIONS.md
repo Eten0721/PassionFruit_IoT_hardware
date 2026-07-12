@@ -1,5 +1,26 @@
 # 決策紀錄
 
+## 2026-07-12：人工資料分類成功後才驅動 MG996R
+
+### 決策
+
+三站拍攝、Gate 3 放行、三閘門歸位與 `capture_sequence_finished` 維持原流程。使用者之後在 Dashboard 完成中文資料分類，Django 才以同一個 motor command slot 下發 `classify_fruit`，由 GPIO `25` 的 MG996R 執行實體分類。
+
+分類命令只傳固定 ASCII code，不傳 GPIO、角度或 PWM。MG996R 無位置回授，completed 僅代表控制時序完成。硬體失敗、離線或 timeout 均不回滾資料夾、metadata 或 counter。
+
+### 原因
+
+- 資料一致性優先，硬體分類不得成為照片分類 transaction 的前置條件。
+- MG996R 不得改變已驗證的第三站安全交握。
+- 單一命令槽必須互斥，避免 sorter 與下一顆拍攝互相覆蓋。
+
+### 影響
+
+- Sorter 使用獨立的 `idle／pending／running／completed／failed／timeout` 狀態。
+- Pending／running 期間停用 HC-SR04、自動／手動拍攝、recapture、第二筆分類與 dataset reset。
+- Command ID 原子持久化，dataset reset 不歸零。
+- Firmware 以非阻塞 `ClassifierController` 控制 GPIO `25`，錯誤復原不呼叫 `GateController`。
+
 ## 2026-07-06：資料採集流程改為三段 SG90 閘門停止拍攝
 
 ### 決策

@@ -30,6 +30,7 @@ struct MotorCommand {
   TimingConfig timing;
   bool hasTimingConfig;
   String serverStatus;
+  String classificationCode;
 
   MotorCommand()
       : command("none"),
@@ -43,7 +44,8 @@ struct MotorCommand {
         hasAutoTriggerEnabled(false),
         timing(),
         hasTimingConfig(false),
-        serverStatus("") {}
+        serverStatus(""),
+        classificationCode("") {}
 };
 
 struct HttpResult {

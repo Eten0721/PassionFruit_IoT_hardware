@@ -29,6 +29,7 @@ ESP32 firmware
   -> HC-SR04 自動觸發
   -> 輪詢 Django motor command
   -> 控制 3 顆 SG90 閘門
+  -> 人工分類後控制 GPIO25 的 MG996R 分類器
   -> 回報 station ready / finished
 ```
 
@@ -62,6 +63,8 @@ Django 的單程序 runtime state／operation token 位於 `runtime_state.py`，
 9. ESP32 放行第 3 閘門，等待百香果滾出後三顆馬達歸位，回報 `capture_sequence_finished`。
 10. 使用者在 dashboard 確認照片並分類。
 
+資料分類成功後，Django 才在同一個 motor command slot 建立 `classify_fruit`。MG996R 依固定 ASCII code 前往分類角度、保持後回到 `85°`，再回報完成或具體失敗原因。此後段流程不參與第 3 站拍攝、Gate 3 放行、三閘門歸位或 `capture_sequence_finished`。
+
 手機是否完成拍攝一律以 Django 收到並保存照片為準，不使用固定延遲猜測手機狀態。
 
 ## 4. 硬體基準
@@ -73,6 +76,7 @@ Django 的單程序 runtime state／operation token 位於 `runtime_state.py`，
 - Gate 3：GPIO `21`
 - HC-SR04 Trig：GPIO `26`
 - HC-SR04 Echo：GPIO `27`
+- MG996R 分類器：GPIO `25`，Home `85°`；必須使用獨立外部電源並與 ESP32 共地。
 
 HC-SR04 的 Echo 是 `5 V` 邏輯輸出，接到 ESP32 GPIO 前必須經過分壓或邏輯電平轉換；正常目標為 ≤ `3.3 V`，絕不可超過 `3.6 V`。接線與量測方式見 `hardware_notes/HC-SR04_ESP32_3V3_安全檢查.md`。
 
@@ -109,6 +113,7 @@ HC-SR04 的 Echo 是 `5 V` 邏輯輸出，接到 ESP32 GPIO 前必須經過分�
 - `POST /api/upload_images/`：手機上傳單站照片。
 - `GET /api/esp32/command/?format=text`：ESP32 輪詢 Django motor command。
 - `POST /api/esp32/report/`：ESP32 回報 `timing_config_applied`、`hcsr04_station_1_ready`、`hcsr04_trigger`、`station_1_ready`、`station_2_ready`、`station_3_ready`、`capture_sequence_finished`。
+- `GET /api/esp32/command/` 亦可在人工資料分類成功後下發不含角度與 GPIO 的 `classify_fruit`；同一 report endpoint 接收 `classification_sorter_completed`／`classification_sorter_failed`。
 
 ESP32 是 HTTPS client，Django 不主動呼叫 ESP32。
 

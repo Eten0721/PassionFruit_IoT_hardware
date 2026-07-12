@@ -27,7 +27,9 @@ class DjangoApiClient {
       bool includeStationSafetyFields = false,
       bool gatesHome = false,
       bool stationSettled = false,
-      uint32_t timingRevision = 0);
+      uint32_t timingRevision = 0,
+      const String& classificationCode = "",
+      bool includeStationIndex = true);
 
   MotorCommand parseCommandText(const String& body) const;
   bool parseStartSequenceFromResponse(const String& body, MotorCommand& command) const;

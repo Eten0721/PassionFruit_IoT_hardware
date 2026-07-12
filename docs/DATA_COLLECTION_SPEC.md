@@ -13,6 +13,7 @@
 - 拍攝請求：Django 狀態中通知手機拍攝某站照片。
 - 照片上傳完成：Django 接收到該站照片並保存成功。
 - 馬達命令：ESP32 從 Django 輪詢取得的 `start_sequence` 或 `release_gate` 命令。
+- 分類器命令：人工資料分類成功後，透過同一命令槽下發的 `classify_fruit`；只帶 `command_id`、fruit id 與固定 ASCII code。
 - 站點就緒：ESP32 回報百香果已在某站可拍攝。
 
 ## 硬體與 timing 參數
@@ -87,6 +88,19 @@ HC-SR04 Echo 接到 ESP32 前必須降壓至 `3.3 V` 邏輯；正常目標為 �
 10. ESP32 放行 Gate 3，等待百香果滾出，再額外等待 `finalGateReturnDelayMS`，三顆馬達歸位。
 11. ESP32 回報 `capture_sequence_finished`，必須帶 `release_gate_3` 的 `command_id`。
 12. Dashboard 以固定直式 `3:4` 縮圖顯示三張照片，點擊可在網頁內以原始比例彈窗預覽，等待使用者分類或刪除。
+
+## 人工分類器流程
+
+1. `capture_sequence_finished` 完成後，使用者才可按中文分類按鈕。
+2. Django 先搬移資料夾、寫入 `metadata.csv`、推進 counter 並清除 active dataset 狀態。
+3. 中文 label 映射為 `high_medium`、`low`、`processing` 或 `discard`，再建立 `classify_fruit`。
+4. MG996R 在 GPIO `25` 前往 `25°／55°／115°／145°`，保持 `1000 ms` 後回到 Home `85°` 並穩定 `500 ms`。
+5. ESP32 回報完成或失敗；任何硬體錯誤都不回滾已分類資料。
+6. Sorter pending／running 期間，同一 motor command slot 不得被新拍攝或另一筆分類覆蓋。
+
+`classify_fruit` 不帶 `station_index`、GPIO、角度或 PWM。Sorter report 不帶 `station_index`，但必須帶相同 `command_id` 與 `classification_code`。
+
+Sorter 狀態獨立使用 `idle／pending／running／completed／failed／timeout`，不得覆蓋既有拍攝 `status`。等待 ESP32 與執行後 timeout 均為 `30 秒`；firmware 自身動作 timeout 為 `5000 ms`。
 
 command id 規則：
 

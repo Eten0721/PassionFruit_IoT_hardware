@@ -1,8 +1,8 @@
 # 目前狀態
 
-更新日期：2026-07-10
+更新日期：2026-07-12
 
-目前版本進度：`v1.1.6, 首站捷徑與採集流程加速重構`
+目前版本進度：`v1.2.0, MG996R 人工分類器整合`
 
 ## 已完成
 
@@ -29,11 +29,15 @@
 - Dashboard 已可顯示三站狀態、照片預覽、分類與刪除操作。
 - WebRTC 即時預覽已可運作，但不是拍攝流程的必要條件。
 - `metadata.csv` 採用三站欄位：`station_01_ok`、`station_02_ok`、`station_03_ok`。
+- 人工資料分類成功後，Django 會在既有單一 motor command slot 建立 `classify_fruit`；ESP32 使用 GPIO `25` 的 MG996R 完成實體分類並回報結果。
+- Sorter 狀態與拍攝主狀態分離；pending／running 期間會鎖住下一次自動與手動拍攝，失敗或逾時不回滾照片資料。
+- Motor command ID 已原子持久化於 `runtime_config/motor_command_sequence.json`，Django 重啟與 dataset reset 不會重用最後一筆 ID。
 
 ## 目前硬體與 timing
 
 - `HOME_ANGLE = 0`：攔截／歸位。
 - `RELEASE_ANGLE = 90`：放行。
+- MG996R：GPIO `25`，Home `85°`，上中等 `25°`、下等 `55°`、加工 `115°`、廢棄 `145°`；保持 `1000 ms`、歸位穩定 `500 ms`、timeout `5000 ms`。
 - HC-SR04 觸發距離：`6.0 cm`。
 - HC-SR04 重新待命距離：`8.0 cm`。
 - `servo_settle_ms = 200`。
@@ -73,10 +77,10 @@
 
 本版已完成的自動化驗證：
 
-- Django `fruit_app`：`45` 項測試通過。
+- Django `fruit_app`：`57` 項測試通過。
 - 相機與 dashboard static JavaScript syntax check 通過。
 - `git diff --check` 通過。
-- 正式 firmware 已以 `esp32:esp32:esp32` 編譯通過。
+- 正式 firmware 已以 `esp32:esp32:esp32` 編譯通過；整合第四顆 Servo 後 Flash 約 `82%`、RAM 約 `15%`。
 
 Django 測試指令：
 

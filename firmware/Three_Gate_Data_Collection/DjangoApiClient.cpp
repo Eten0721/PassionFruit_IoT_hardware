@@ -91,13 +91,21 @@ HttpResult DjangoApiClient::postReport(
     bool includeStationSafetyFields,
     bool gatesHome,
     bool stationSettled,
-    uint32_t timingRevision) {
+    uint32_t timingRevision,
+    const String& classificationCode,
+    bool includeStationIndex) {
   String body;
   body.reserve(160 + ((event.length() + message.length() + triggerId.length()) * 3));
   body = "event=" + encodeFormValue(event);
-  body += "&station_index=" + String(stationIndex);
+  if (includeStationIndex) {
+    body += "&station_index=" + String(stationIndex);
+  }
   body += "&command_id=" + String(commandId);
   body += "&message=" + encodeFormValue(message);
+
+  if (classificationCode.length() > 0) {
+    body += "&classification_code=" + encodeFormValue(classificationCode);
+  }
 
   if (triggerId.length() > 0) {
     body += "&trigger_id=" + encodeFormValue(triggerId);
@@ -136,6 +144,7 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
   command.autoTriggerEnabled = autoTriggerValue == "1" || autoTriggerValue == "true";
   command.hasAutoTriggerEnabled = autoTriggerValue.length() > 0;
   command.serverStatus = readTextValue(body, "server_status");
+  command.classificationCode = readTextValue(body, "classification_code");
 
   if (command.command.length() == 0) {
     command.command = "none";

@@ -8,6 +8,10 @@ const remoteVideo = document.getElementById('remote-video');
     const imageCountEl = document.getElementById('image-count');
     const esp32StatusEl = document.getElementById('esp32-status');
     const motorCommandEl = document.getElementById('motor-command');
+    const sorterStatusEl = document.getElementById('sorter-status');
+    const sorterFruitEl = document.getElementById('sorter-fruit');
+    const sorterLabelEl = document.getElementById('sorter-label');
+    const sorterErrorEl = document.getElementById('sorter-error');
     const stationStatusEls = [
         document.getElementById('station-1-status'),
         document.getElementById('station-2-status'),
@@ -56,6 +60,7 @@ const remoteVideo = document.getElementById('remote-video');
     let lastThumbnailManifest = '';
     let timingInputsDirty = false;
     let timingUpdateInFlight = false;
+    let classificationInFlight = false;
     const stateIdlePollMs = 1000;
     const stateActivePollMs = 500;
     const webrtcPollMs = 1000;
@@ -211,7 +216,7 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     function statePollDelay(data) {
-        if (data && data.active_fruit_id) {
+        if (data && (data.active_fruit_id || data.sorter_busy)) {
             return stateActivePollMs;
         }
         return stateIdlePollMs;
@@ -276,6 +281,10 @@ const remoteVideo = document.getElementById('remote-video');
         motorCommandEl.textContent = motorCommand.command && motorCommand.command !== 'none'
             ? `${motorCommand.command} #${motorCommand.command_id || 0}`
             : 'none';
+        sorterStatusEl.textContent = sorterStatusText(data.sorter_status);
+        sorterFruitEl.textContent = data.sorter_fruit_id || '無';
+        sorterLabelEl.textContent = data.sorter_label || '無';
+        sorterErrorEl.textContent = data.sorter_error || '無';
         renderStationStatuses(data.station_statuses || {});
         errorReasonEl.textContent = data.last_error_reason || '無';
         setMessage(data.message || '');
@@ -285,11 +294,24 @@ const remoteVideo = document.getElementById('remote-video');
         renderTransitionTrace(data);
 
         classifyButtons.forEach((button) => {
-            button.disabled = !data.can_classify;
+            button.disabled = classificationInFlight || data.sorter_busy || !data.can_classify;
         });
-        discardButton.disabled = !data.can_discard;
-        manualCaptureButton.disabled = !data.can_manual_capture;
-        recaptureButton.disabled = !data.can_recapture;
+        discardButton.disabled = classificationInFlight || !data.can_discard;
+        manualCaptureButton.disabled = data.sorter_busy || !data.can_manual_capture;
+        recaptureButton.disabled = data.sorter_busy || !data.can_recapture;
+        resetDatasetButton.disabled = data.sorter_busy;
+    }
+
+    function sorterStatusText(status) {
+        const labels = {
+            idle: '閒置',
+            pending: '等待 ESP32',
+            running: 'MG996R 執行中',
+            completed: '控制流程完成',
+            failed: '硬體分類器失敗',
+            timeout: '硬體分類器逾時',
+        };
+        return labels[status] || status || '閒置';
     }
 
     function renderStationStatuses(stationStatuses) {
@@ -647,6 +669,13 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     async function classify(label) {
+        if (classificationInFlight) {
+            return;
+        }
+        classificationInFlight = true;
+        if (lastState) {
+            renderState(lastState);
+        }
         try {
             await releaseThumbnailsBeforeFileOperation();
             const payload = await postJson('/api/classify/', {
@@ -654,7 +683,11 @@ const remoteVideo = document.getElementById('remote-video');
                 note: noteInput.value.trim(),
             });
             noteInput.value = '';
-            setMessage(`${payload.fruit_id} 已分類到 ${payload.path}。${warningText(payload)}`);
+            if (payload.sorter_command_queued) {
+                setMessage(`${payload.fruit_id} 已分類到 ${payload.path}，等待 ESP32 執行硬體分類器。${warningText(payload)}`);
+            } else {
+                setMessage(`${payload.fruit_id} 資料分類已完成，但硬體分類命令建立失敗：${payload.sorter_error || 'sorter_command_queue_failed'}。`);
+            }
             await refreshState();
         } catch (error) {
             if (error.payload) {
@@ -662,6 +695,9 @@ const remoteVideo = document.getElementById('remote-video');
                 renderState(error.payload);
             }
             setMessage(`分類失敗：${error.message}`);
+        } finally {
+            classificationInFlight = false;
+            await refreshState();
         }
     }
 

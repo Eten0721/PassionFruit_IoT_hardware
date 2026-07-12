@@ -17,9 +17,11 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.dataset_root = Path(self.temp_dir.name)
         self.capture_timing_path = self.dataset_root / 'runtime_config' / 'capture_timing.json'
+        self.motor_command_sequence_path = self.dataset_root / 'runtime_config' / 'motor_command_sequence.json'
         self.settings_override = override_settings(
             DATASET_ROOT=self.dataset_root,
             CAPTURE_TIMING_CONFIG_PATH=self.capture_timing_path,
+            MOTOR_COMMAND_SEQUENCE_PATH=self.motor_command_sequence_path,
         )
         self.settings_override.enable()
         views.reset_runtime_state_for_tests()
@@ -222,8 +224,191 @@ class DataCollectionFlowTests(SimpleTestCase):
         response = self._post_json('/api/classify/', {'label': views.LABELS[0]})
         self.assertEqual(response.status_code, 200)
 
+        self._complete_sorter()
+
         command = self._esp32_command_text()
         self.assertEqual(command['auto_trigger_enabled'], '1')
+
+    def test_all_labels_map_to_ascii_sorter_commands_without_hardware_fields(self):
+        expected_codes = {
+            '上中等': 'high_medium',
+            '下等': 'low',
+            '加工': 'processing',
+            '廢棄': 'discard',
+        }
+        for index, (label, expected_code) in enumerate(expected_codes.items(), start=1):
+            fruit_id = f'fruit_{index:03d}'
+            self._complete_auto_session(fruit_id)
+            response = self._post_json('/api/classify/', {'label': label})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload['data_classified'])
+            self.assertTrue(payload['sorter_command_queued'])
+            self.assertEqual(payload['sorter_status'], 'pending')
+
+            command = self._esp32_command()
+            self.assertEqual(command['command'], 'classify_fruit')
+            self.assertEqual(command['classification_code'], expected_code)
+            self.assertNotIn('station_index', command)
+            self.assertNotIn('home_angle', command)
+            self.assertNotIn('release_angle', command)
+            self.assertNotIn('servo_settle_ms', command)
+            self.assertNotIn('gpio', command)
+            text_command = self._esp32_command_text()
+            self.assertEqual(text_command['classification_code'], expected_code)
+            self.assertNotIn('station_index', text_command)
+            self.assertNotIn('home_angle', text_command)
+            self._complete_sorter()
+
+        with (self.dataset_root / 'metadata.csv').open('r', encoding='utf-8-sig', newline='') as csv_file:
+            rows = list(csv.DictReader(csv_file))
+        self.assertEqual([row['label'] for row in rows], list(expected_codes))
+
+    def test_classification_succeeds_offline_and_sorter_blocks_new_capture(self):
+        self._complete_auto_session('fruit_001')
+        views.APP_STATE['last_esp32_poll_monotonic'] = None
+
+        response = self._post_json('/api/classify/', {'label': '加工'})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['data_classified'])
+        self.assertTrue(payload['sorter_command_queued'])
+        self.assertEqual(payload['sorter_status'], 'pending')
+        self.assertTrue((self.dataset_root / '加工' / 'fruit_001').exists())
+
+        manual = self._post_json('/api/manual_capture/')
+        self.assertEqual(manual.status_code, 409)
+        self.assertEqual(manual.json()['reason'], 'classifier_busy')
+        trigger = self._report('hcsr04_trigger')
+        self.assertTrue(trigger.json()['ignored'])
+        self.assertEqual(trigger.json()['reason'], 'classifier_busy')
+        reset = self._post_json('/api/reset_dataset/')
+        self.assertEqual(reset.status_code, 409)
+        self.assertEqual(reset.json()['reason'], 'classifier_busy')
+
+    def test_data_stays_classified_when_sorter_slot_is_busy(self):
+        self._complete_auto_session('fruit_001')
+        with views.STATE_LOCK:
+            views.APP_STATE['motor_command'] = {
+                'command': 'release_gate',
+                'command_id': 999,
+                'station_index': 3,
+                'fruit_id': 'fruit_001',
+            }
+
+        response = self._post_json('/api/classify/', {'label': '下等'})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['data_classified'])
+        self.assertFalse(payload['sorter_command_queued'])
+        self.assertEqual(payload['sorter_error'], 'sorter_command_slot_busy')
+        self.assertEqual(views.APP_STATE['motor_command']['command_id'], 999)
+        self.assertTrue((self.dataset_root / '下等' / 'fruit_001' / 'img_03.jpg').exists())
+
+    def test_failed_data_classification_never_creates_sorter_command(self):
+        invalid = self._post_json('/api/classify/', {'label': '未知'})
+        self.assertEqual(invalid.status_code, 400)
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertEqual(views.APP_STATE['sorter_status'], 'idle')
+
+        partial_dir = self.dataset_root / 'temp' / 'fruit_001'
+        partial_dir.mkdir(parents=True)
+        (partial_dir / 'img_01.jpg').write_bytes(b'partial')
+        incomplete = self._post_json('/api/classify/', {'label': '上中等'})
+        self.assertEqual(incomplete.status_code, 409)
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertEqual(views.APP_STATE['sorter_status'], 'idle')
+
+    def test_sorter_failure_timeout_and_late_report_never_rollback_dataset(self):
+        self._complete_auto_session('fruit_001')
+        classified = self._post_json('/api/classify/', {'label': '廢棄'}).json()
+        command = self._esp32_command()
+        failed = self._report(
+            'classification_sorter_failed',
+            command_id=command['command_id'],
+            classification_code=command['classification_code'],
+            message='classifier_attach_failed',
+        )
+        self.assertEqual(failed.status_code, 200)
+        self.assertEqual(failed.json()['sorter_status'], 'failed')
+        self.assertTrue((self.dataset_root / '廢棄' / classified['fruit_id']).exists())
+
+        self._complete_auto_session('fruit_002')
+        second = self._post_json('/api/classify/', {'label': '上中等'}).json()
+        timeout_command = views.APP_STATE['motor_command'].copy()
+        views.APP_STATE['sorter_deadline_monotonic'] = 0
+        timed_out = self.client.get('/api/state/').json()
+        self.assertEqual(timed_out['sorter_status'], 'timeout')
+        self.assertEqual(timed_out['sorter_error'], 'esp32_timeout')
+        self.assertTrue((self.dataset_root / '上中等' / second['fruit_id']).exists())
+
+        late = self._report(
+            'classification_sorter_completed',
+            command_id=timeout_command['command_id'],
+            classification_code=timeout_command['classification_code'],
+            message='classification_sorter_completed',
+        )
+        self.assertEqual(late.status_code, 200)
+        self.assertTrue(late.json()['ignored'])
+        self.assertEqual(late.json()['sorter_status'], 'timeout')
+
+    def test_running_sorter_timeout_uses_classifier_timeout_reason(self):
+        self._complete_auto_session('fruit_001')
+        self._post_json('/api/classify/', {'label': '加工'})
+        command = self._esp32_command()
+        self.assertEqual(views.APP_STATE['sorter_status'], 'running')
+        views.APP_STATE['sorter_deadline_monotonic'] = 0
+
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(state['sorter_status'], 'timeout')
+        self.assertEqual(state['sorter_error'], 'classifier_timeout')
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertTrue((self.dataset_root / '加工' / 'fruit_001').exists())
+
+        late = self._report(
+            'classification_sorter_failed',
+            command_id=command['command_id'],
+            classification_code=command['classification_code'],
+            message='classifier_timeout',
+        )
+        self.assertEqual(late.status_code, 200)
+        self.assertTrue(late.json()['ignored'])
+
+    def test_duplicate_classification_writes_one_row_and_one_sorter_command(self):
+        self._complete_auto_session('fruit_001')
+        first = self._post_json('/api/classify/', {'label': '上中等'})
+        second = self._post_json('/api/classify/', {'label': '上中等'})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(views.APP_STATE['motor_command']['command_id'], first.json()['sorter_command_id'])
+        with (self.dataset_root / 'metadata.csv').open('r', encoding='utf-8-sig', newline='') as csv_file:
+            self.assertEqual(len(list(csv.DictReader(csv_file))), 1)
+
+    def test_motor_command_id_persists_across_runtime_and_dataset_reset(self):
+        with views.STATE_LOCK:
+            first = views._set_motor_command('start_sequence', station_index=1).copy()
+            views.APP_STATE['motor_command'] = None
+        views.reset_runtime_state_for_tests()
+        views._ensure_dataset_structure()
+        with views.STATE_LOCK:
+            second = views._set_motor_command('start_sequence', station_index=1).copy()
+            views.APP_STATE['motor_command'] = None
+        self.assertGreater(second['command_id'], first['command_id'])
+
+        reset = self._post_json('/api/reset_dataset/')
+        self.assertEqual(reset.status_code, 200)
+        with views.STATE_LOCK:
+            third = views._set_motor_command('start_sequence', station_index=1).copy()
+            views.APP_STATE['motor_command'] = None
+        self.assertGreater(third['command_id'], second['command_id'])
+
+    def test_corrupt_motor_command_sequence_refuses_new_command(self):
+        self.motor_command_sequence_path.parent.mkdir(parents=True, exist_ok=True)
+        self.motor_command_sequence_path.write_text('{broken', encoding='utf-8')
+        with views.STATE_LOCK:
+            with self.assertRaises(views.CaptureCommandError) as raised:
+                views._set_motor_command('start_sequence', station_index=1)
+        self.assertEqual(raised.exception.reason, 'motor_command_id_persist_failed')
 
     def test_auto_trigger_is_enabled_after_discard(self):
         response = self._report('hcsr04_trigger')
@@ -665,6 +850,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         response = self._post_json('/api/classify/', {'label': '加工', 'note': 'reset test'})
         self.assertEqual(response.status_code, 200)
         self.assertTrue((self.dataset_root / '加工' / 'fruit_007').exists())
+
+        self._complete_sorter()
 
         response = self._post_json('/api/reset_dataset/')
         self.assertEqual(response.status_code, 200)
@@ -1118,6 +1305,62 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertNotIn('<style>', camera)
         self.assertNotIn('<style>', dashboard)
 
+    def test_firmware_classifier_contract_is_non_blocking_and_isolated(self):
+        firmware_root = Path(__file__).resolve().parents[2] / 'firmware' / 'Three_Gate_Data_Collection'
+        config = (firmware_root / 'Config.h').read_text(encoding='utf-8')
+        classifier_header = (firmware_root / 'ClassifierController.h').read_text(encoding='utf-8')
+        classifier_source = (firmware_root / 'ClassifierController.cpp').read_text(encoding='utf-8')
+        api_source = (firmware_root / 'DjangoApiClient.cpp').read_text(encoding='utf-8')
+        capture_source = (firmware_root / 'CaptureController.cpp').read_text(encoding='utf-8')
+
+        for contract in (
+            'kGatePins[kGateCount] = {18, 19, 21}',
+            'kClassifierPin = 25',
+            'kClassifierHomeAngle = 85',
+            'kClassifierHighMediumAngle = 25',
+            'kClassifierLowAngle = 55',
+            'kClassifierProcessingAngle = 115',
+            'kClassifierDiscardAngle = 145',
+            'kClassifierHoldMS = 1000UL',
+            'kClassifierHomeSettleMS = 500UL',
+            'kClassifierTimeoutMS = 5000UL',
+        ):
+            self.assertIn(contract, config)
+        for code in ('high_medium', 'low', 'processing', 'discard'):
+            self.assertIn(f'code == "{code}"', classifier_source)
+        for state in (
+            'kUninitialized',
+            'kBootHomeSettling',
+            'kIdleHome',
+            'kHoldingClassificationPosition',
+            'kReturningHome',
+            'kHomeSettling',
+            'kErrorReturningHome',
+            'kPermanentInitializationError',
+        ):
+            self.assertIn(state, classifier_header)
+        self.assertNotIn('GateController', classifier_header + classifier_source)
+        self.assertNotIn('delay(', classifier_source)
+        self.assertIn('readTextValue(body, "station_index").toInt()', api_source)
+        self.assertIn('classification_sorter_completed', capture_source)
+        self.assertIn('classification_sorter_failed', capture_source)
+
+    def test_dashboard_has_sorter_status_and_single_in_flight_guard(self):
+        project_root = Path(__file__).resolve().parents[2]
+        dashboard_js = (
+            project_root / 'Django_Server' / 'fruit_app' / 'static' / 'fruit_app' / 'js' / 'dashboard.js'
+        ).read_text(encoding='utf-8')
+        dashboard_html = (
+            project_root / 'Django_Server' / 'fruit_app' / 'templates' / 'dashboard.html'
+        ).read_text(encoding='utf-8')
+        self.assertIn('let classificationInFlight = false', dashboard_js)
+        self.assertIn('if (classificationInFlight)', dashboard_js)
+        self.assertIn('data.sorter_busy', dashboard_js)
+        self.assertIn("pending: '等待 ESP32'", dashboard_js)
+        self.assertIn("running: 'MG996R 執行中'", dashboard_js)
+        self.assertIn('id="sorter-status"', dashboard_html)
+        self.assertIn('id="sorter-error"', dashboard_html)
+
     def _post_json(self, url, payload=None):
         return self.client.post(
             url,
@@ -1200,3 +1443,15 @@ class DataCollectionFlowTests(SimpleTestCase):
         command = self._esp32_command()
         response = self._report('capture_sequence_finished', command_id=command['command_id'])
         self.assertEqual(response.status_code, 200)
+
+    def _complete_sorter(self, event='classification_sorter_completed', message=None):
+        command = self._esp32_command()
+        self.assertEqual(command['command'], 'classify_fruit')
+        response = self._report(
+            event,
+            command_id=command['command_id'],
+            classification_code=command['classification_code'],
+            message=message or event,
+        )
+        self.assertEqual(response.status_code, 200)
+        return response.json()
