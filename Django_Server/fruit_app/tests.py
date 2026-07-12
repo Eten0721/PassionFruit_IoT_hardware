@@ -782,6 +782,18 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertContains(camera_response, '/static/fruit_app/js/camera.js')
         self.assertEqual(camera_response['Cache-Control'], 'no-store, max-age=0')
 
+    def test_dashboard_renders_calibrated_timing_defaults(self):
+        response = self.client.get('/dashboard/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="timing-first-station" type="number" min="50" max="3000" step="50" inputmode="numeric" value="300"')
+        self.assertContains(response, 'id="timing-servo" type="number" min="50" max="3000" step="50" inputmode="numeric" value="200"')
+        self.assertContains(response, 'id="timing-fruit" type="number" min="50" max="3000" step="50" inputmode="numeric" value="350"')
+        self.assertContains(response, 'id="timing-final-return" type="number" min="0" max="3000" step="50" inputmode="numeric" value="300"')
+        self.assertContains(response, '推薦：300 ms', count=2)
+        self.assertContains(response, '推薦：200 ms', count=1)
+        self.assertContains(response, '推薦：350 ms', count=1)
+
     def test_fast_station_one_report_opens_camera_without_start_sequence(self):
         response = self._report(
             'hcsr04_station_1_ready',

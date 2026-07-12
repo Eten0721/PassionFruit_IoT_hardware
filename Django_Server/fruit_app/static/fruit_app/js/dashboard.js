@@ -461,7 +461,7 @@ const remoteVideo = document.getElementById('remote-video');
     function restoreRecommendedTiming() {
         setTimingInputs(recommendedCaptureTiming());
         timingInputsDirty = true;
-        setMessage('已填入校正預設 200 ms，按下「套用停穩設定」後才會儲存。');
+        setMessage('已填入校正預設 300／200／350／300 ms，按下「套用停穩設定」後才會儲存。');
     }
 
     async function applyCaptureTiming() {
