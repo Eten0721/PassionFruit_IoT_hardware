@@ -133,6 +133,8 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
       readTextValue(body, "first_station_settle_ms");
   const String finalGateReturnDelayValue =
       readTextValue(body, "final_gate_return_delay_ms");
+  const String idleCommandPollIntervalValue =
+      readTextValue(body, "idle_command_poll_interval_ms");
 
   command.command = readTextValue(body, "command");
   command.commandId = readTextValue(body, "command_id").toInt();
@@ -166,14 +168,17 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
       firstStationSettleValue.length() > 0 &&
       servoSettleValue.length() > 0 &&
       fruitSettleValue.length() > 0 &&
-      finalGateReturnDelayValue.length() > 0) {
+      finalGateReturnDelayValue.length() > 0 &&
+      idleCommandPollIntervalValue.length() > 0) {
     const long revision = timingRevisionValue.toInt();
     const long firstStationSettleMS = firstStationSettleValue.toInt();
     const long servoSettleMS = servoSettleValue.toInt();
     const long fruitSettleMS = fruitSettleValue.toInt();
     const long finalGateReturnDelayMS = finalGateReturnDelayValue.toInt();
+    const long idleCommandPollIntervalMS = idleCommandPollIntervalValue.toInt();
     if (revision >= 0 && firstStationSettleMS > 0 && servoSettleMS > 0 &&
-        fruitSettleMS > 0 && finalGateReturnDelayMS >= 0) {
+        fruitSettleMS > 0 && finalGateReturnDelayMS >= 0 &&
+        idleCommandPollIntervalMS > 0) {
       command.timing.revision = static_cast<uint32_t>(revision);
       command.timing.firstStationSettleMS =
           static_cast<uint32_t>(firstStationSettleMS);
@@ -181,6 +186,8 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
       command.timing.fruitSettleMS = static_cast<uint32_t>(fruitSettleMS);
       command.timing.finalGateReturnDelayMS =
           static_cast<uint32_t>(finalGateReturnDelayMS);
+      command.timing.idleCommandPollIntervalMS =
+          static_cast<uint32_t>(idleCommandPollIntervalMS);
       command.hasTimingConfig = true;
       command.servoSettleMS = static_cast<int>(servoSettleMS);
       command.fruitSettleMS = static_cast<int>(fruitSettleMS);
@@ -222,6 +229,8 @@ bool DjangoApiClient::parseStartSequenceFromResponse(
       motorCommand, "first_station_settle_ms", -1);
   const int finalGateReturnDelayMS = readJsonInt(
       motorCommand, "final_gate_return_delay_ms", -1);
+  const int idleCommandPollIntervalMS = readJsonInt(
+      motorCommand, "idle_command_poll_interval_ms", -1);
   command.serverStatus = "waiting_esp32_start";
 
   if (command.stationIndex <= 0) {
@@ -235,7 +244,7 @@ bool DjangoApiClient::parseStartSequenceFromResponse(
   }
   if (timingRevision >= 0 && firstStationSettleMS > 0 &&
       command.servoSettleMS > 0 && command.fruitSettleMS > 0 &&
-      finalGateReturnDelayMS >= 0) {
+      finalGateReturnDelayMS >= 0 && idleCommandPollIntervalMS > 0) {
     command.timing.revision = static_cast<uint32_t>(timingRevision);
     command.timing.firstStationSettleMS =
         static_cast<uint32_t>(firstStationSettleMS);
@@ -245,6 +254,8 @@ bool DjangoApiClient::parseStartSequenceFromResponse(
         static_cast<uint32_t>(command.fruitSettleMS);
     command.timing.finalGateReturnDelayMS =
         static_cast<uint32_t>(finalGateReturnDelayMS);
+    command.timing.idleCommandPollIntervalMS =
+        static_cast<uint32_t>(idleCommandPollIntervalMS);
     command.hasTimingConfig = true;
   }
   return true;

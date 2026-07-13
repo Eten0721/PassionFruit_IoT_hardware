@@ -23,6 +23,7 @@ def normalise(
     step_ms: int,
     minimum_ms: int,
     maximum_ms: int,
+    field_limits: dict[str, tuple[int, int]] | None = None,
 ) -> dict[str, int]:
     raw_timing = raw_timing if isinstance(raw_timing, dict) else {}
     timing: dict[str, int] = {}
@@ -44,9 +45,12 @@ def normalise(
             ) from None
 
         field_minimum = 0 if field == 'final_gate_return_delay_ms' else minimum_ms
-        if value < field_minimum or value > maximum_ms:
+        field_maximum = maximum_ms
+        if field_limits and field in field_limits:
+            field_minimum, field_maximum = field_limits[field]
+        if value < field_minimum or value > field_maximum:
             raise TimingValidationError(
-                f'{field} 必須介於 {field_minimum} 到 {maximum_ms} ms。',
+                f'{field} 必須介於 {field_minimum} 到 {field_maximum} ms。',
                 'capture_timing_out_of_range',
             )
         if value % step_ms != 0:
@@ -58,16 +62,29 @@ def normalise(
     return timing
 
 
-def read(path: Path, normalise_profile) -> tuple[dict[str, int], int] | None:
+def read(
+    path: Path,
+    normalise_profile,
+    *,
+    migration_defaults: dict[str, int] | None = None,
+) -> tuple[dict[str, int], int, bool] | None:
     path = Path(path)
     try:
         with path.open('r', encoding='utf-8') as timing_file:
             data = json.load(timing_file)
-        timing = normalise_profile(data.get('capture_timing'))
+        raw_timing = data.get('capture_timing')
+        raw_timing = dict(raw_timing) if isinstance(raw_timing, dict) else raw_timing
+        migrated = False
+        if isinstance(raw_timing, dict):
+            for field, default_value in (migration_defaults or {}).items():
+                if field not in raw_timing:
+                    raw_timing[field] = default_value
+                    migrated = True
+        timing = normalise_profile(raw_timing)
         revision = int(data.get('revision'))
         if revision < 1:
             raise ValueError('invalid timing revision')
-        return timing, revision
+        return timing, revision, migrated
     except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError, ValueError, TimingValidationError):
         return None
 

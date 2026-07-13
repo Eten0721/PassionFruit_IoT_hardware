@@ -95,20 +95,20 @@ HC-SR04 的 Echo 是 `5 V` 邏輯輸出，接到 ESP32 GPIO 前必須經過分�
 - 第 3 站放行後歸位前額外等待：`300 ms`
 - Echo 等待上限：`12000 us`；完整 `sensor_read_us` 的 firmware warning 門檻約為 `12100 us`。
 
-四項設定由 Dashboard 管理，目前實測推薦值依序為 `300 / 200 / 350 / 300 ms`，分別對應第 1 站停穩、伺服穩定、到站停穩與最終歸位延遲。Django 會將最後套用的完整設定與 revision 原子覆寫到固定的 `runtime_config/capture_timing.json`，不放入 dataset、也不保留歷史版本；ESP32 只在 idle 時套用並回報 `timing_config_applied`。每顆 fruit 開始後使用自己的 timing snapshot，避免流程中混用設定。舊版 `dataset/capture_timing.json` 會在首次升級時遷移後移除。
+五項設定由 Dashboard 管理，目前推薦值依序為 `300 / 200 / 350 / 300 / 250 ms`，分別對應第 1 站停穩、伺服穩定、到站停穩、最終歸位延遲與 ESP32 閒置命令輪詢。Django 會將最後套用的完整設定與 revision 原子覆寫到固定的 `runtime_config/capture_timing.json`，不放入 dataset、也不保留歷史版本；ESP32 只在 idle 時套用並回報 `timing_config_applied`。前四項由每顆 fruit snapshot，idle polling 則控制閒置時取得新命令的頻率。舊版四欄設定會保留原值、自動補入 `250 ms` 並提高 revision。
 
 ## 5. Django 頁面與 API 角色
 
 主要頁面：
 
 - `/camera/`：手機相機頁，負責即時影像、輪詢拍攝請求、單張拍攝與上傳。
-- `/dashboard/`：電腦控制頁，負責手動觸發、流程狀態、可調整的拍攝停穩設定、三張直式 `3:4` 照片預覽／彈窗、分類與刪除。
+- `/dashboard/`：電腦控制頁，負責手動觸發、流程狀態、可調整的拍攝停穩與 idle command polling 設定、三張直式 `3:4` 照片預覽／彈窗、分類與刪除。
 
 主要 API 角色：
 
 - `GET /api/state/`：dashboard 讀取完整拍攝、資料集、控制與 transition trace 狀態。
 - `GET /api/camera/state/`：手機讀取精簡且禁止快取的 state，主要包含 `revision`、fruit、token、站點與 `capture_requested`，並保留 `status`、`active_fruit_id`、`pending_capture` 與 nested `capture` 相容欄位。此高頻路徑只讀記憶體狀態與套用 timeout，不執行 dataset 掃描或 metadata／counter I/O。
-- `POST /api/capture_timing/`：在 idle 時以完整四項 `*_ms` 設定更新下一顆 fruit 的硬體停穩參數。
+- `POST /api/capture_timing/`：在 idle 時更新四項硬體停穩參數與 `idle_command_poll_interval_ms`；舊 client 省略新欄位時沿用目前值。
 - `POST /api/capture_started/`：手機 best-effort 回報開始拍攝 timing；回報失敗不可阻塞相片擷取或上傳。
 - `POST /api/upload_images/`：手機上傳單站照片。
 - `GET /api/esp32/command/?format=text`：ESP32 輪詢 Django motor command。
@@ -127,6 +127,7 @@ ESP32 是 HTTPS client，Django 不主動呼叫 ESP32。
 - 若 `hcsr04_trigger` response 內含 `motor_command.command=start_sequence`，ESP32 直接執行，不多等一次 command polling。
 - 若 `hcsr04_trigger` POST timeout，ESP32 會先進入 fast command polling 嘗試取得 Django 已建立的 `start_sequence`，不立即回到 idle polling。
 - ESP32 等待 `release_gate` 時以 `50 ms` 輪詢；伺服移動、果實停穩與 report pending 階段停止 command polling，避免無效 HTTPS GET。
+- ESP32 一般 idle command polling 預設為 `250 ms`，可由 Dashboard 在 `100～5000 ms` 間調整；數值越小，人工分類命令越快被取得，但持續 HTTPS 請求越頻繁。
 - ESP32 report response 只保留 firmware 協定欄位；dashboard 專用圖片、labels、trace 與完整 timing 不再透過硬體回報端點傳送。
 - 重複 `hcsr04_trigger` 必須冪等，不建立新的 fruit，也不覆蓋既有 motor command。
 - HC-SR04 單次 Echo 等待上限為 `12 ms`；Wi-Fi 重連與伺服 phase 以 deadline 驅動，不得在主迴圈使用多秒同步等待。
@@ -181,9 +182,9 @@ dataset/
 
 ## 9. AI 整合方向
 
-AI 推論與後段分類器目前暫緩，等待三站資料採集流程穩定後再整合。預期方向仍包含：
+MG996R 實體分類器目前已可由人工分類按鈕控制；AI 推論與自動決策仍暫緩，等待三站資料採集流程穩定後，再把 AI 結果接到既有 `classify_fruit` 命令。預期方向仍包含：
 
 - 百香果 ROI 偵測或裁切。
 - 表面瑕疵與外觀特徵判斷。
 - 大小特徵，前提是拍攝平面與距離固定。
-- 後段分類器，例如 XGBoost / Random Forest。
+- 後段決策模型，例如 XGBoost / Random Forest。

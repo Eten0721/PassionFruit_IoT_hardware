@@ -1,5 +1,23 @@
 # 決策紀錄
 
+## 2026-07-13：分類按鈕延遲以可調 idle command polling 控制
+
+### 決策
+
+將 ESP32 一般 idle command polling 從固定 `5000 ms` 改為 `capture_timing.json` 中的 `idle_command_poll_interval_ms`，預設 `250 ms`，可在 Dashboard 以 `50 ms` 步進調整於 `100～5000 ms`。等待 `start_sequence` 的 `100 ms` 與等待 `release_gate` 的 `50 ms` 維持不變。
+
+### 原因
+
+- Django 無法主動推送命令到 ESP32；人工分類命令的主要延遲是 idle polling，而非 MG996R 動作時序。
+- 沿用既有 timing revision 與 ACK，可避免增加第二套 runtime 設定協定。
+- 較短間隔能降低按鈕到作動延遲，但必須讓使用者自行權衡 HTTPS 請求頻率。
+
+### 影響
+
+- 舊版四欄 timing JSON 會保留原值、補入 `250 ms` 並提高 revision，確保 ESP32 重新套用。
+- `classify_fruit` 仍不攜帶 GPIO、角度、PWM、`station_index` 或 timing 欄位。
+- MG996R 的保持、歸位與 timeout，以及三個 SG90 的 phase 均不改變。
+
 ## 2026-07-12：人工資料分類成功後才驅動 MG996R
 
 ### 決策

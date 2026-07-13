@@ -597,6 +597,7 @@ TimingConfig CaptureController::defaultTimingConfig() const {
   timing.servoSettleMS = FirmwareConfig::kServoSettleMS;
   timing.fruitSettleMS = FirmwareConfig::kFruitSettleMS;
   timing.finalGateReturnDelayMS = FirmwareConfig::kFinalGateReturnDelayMS;
+  timing.idleCommandPollIntervalMS = FirmwareConfig::kIdleCommandPollIntervalMS;
   return timing;
 }
 
@@ -609,7 +610,10 @@ bool CaptureController::timingConfigIsValid(const TimingConfig& timing) const {
          timing.servoSettleMS <= kMaximumSettleMS &&
          timing.fruitSettleMS >= kMinimumSettleMS &&
          timing.fruitSettleMS <= kMaximumSettleMS &&
-         timing.finalGateReturnDelayMS <= kMaximumSettleMS;
+         timing.finalGateReturnDelayMS <= kMaximumSettleMS &&
+         timing.idleCommandPollIntervalMS >= 100UL &&
+         timing.idleCommandPollIntervalMS <= 5000UL &&
+         timing.idleCommandPollIntervalMS % 50UL == 0;
 }
 
 bool CaptureController::timingConfigCanApply() const {
@@ -655,7 +659,9 @@ bool CaptureController::applyPendingTimingConfig(uint32_t currentTime) {
   Serial.print(" fruit=");
   Serial.print(appliedTiming_.fruitSettleMS);
   Serial.print(" final=");
-  Serial.println(appliedTiming_.finalGateReturnDelayMS);
+  Serial.print(appliedTiming_.finalGateReturnDelayMS);
+  Serial.print(" idle_poll=");
+  Serial.println(appliedTiming_.idleCommandPollIntervalMS);
   queueReport(
       "timing_config_applied",
       0,
@@ -736,7 +742,7 @@ uint32_t CaptureController::currentCommandPollInterval() const {
   if (motionPhase_ == MotionPhase::kWaitingForCommand) {
     return FirmwareConfig::kAwaitReleaseCommandPollIntervalMS;
   }
-  return FirmwareConfig::kIdleCommandPollIntervalMS;
+  return appliedTiming_.idleCommandPollIntervalMS;
 }
 
 void CaptureController::handleCommand(

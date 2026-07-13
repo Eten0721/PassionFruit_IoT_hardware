@@ -49,16 +49,21 @@ FIRST_STATION_SETTLE_MS = 300
 SERVO_SETTLE_MS = 200
 FRUIT_SETTLE_MS = 350
 FINAL_GATE_RETURN_DELAY_MS = 300
+IDLE_COMMAND_POLL_INTERVAL_MS = 250
 CAPTURE_TIMING_RECOMMENDED = {
     'first_station_settle_ms': FIRST_STATION_SETTLE_MS,
     'servo_settle_ms': SERVO_SETTLE_MS,
     'fruit_settle_ms': FRUIT_SETTLE_MS,
     'final_gate_return_delay_ms': FINAL_GATE_RETURN_DELAY_MS,
+    'idle_command_poll_interval_ms': IDLE_COMMAND_POLL_INTERVAL_MS,
 }
 CAPTURE_TIMING_FIELDS = tuple(CAPTURE_TIMING_RECOMMENDED)
 CAPTURE_TIMING_STEP_MS = 50
 CAPTURE_TIMING_MIN_MS = 50
 CAPTURE_TIMING_MAX_MS = 3000
+CAPTURE_TIMING_FIELD_LIMITS = {
+    'idle_command_poll_interval_ms': (100, 5000),
+}
 ESP32_ONLINE_WINDOW_SECONDS = 20
 ESP32_START_TIMEOUT_SECONDS = 10
 HARDWARE_STEP_TIMEOUT_SECONDS = 20
@@ -270,7 +275,12 @@ def capture_timing_api(request):
             )
 
         try:
-            timing = _normalise_capture_timing(data, require_all=True)
+            timing_data = dict(data)
+            timing_data.setdefault(
+                'idle_command_poll_interval_ms',
+                APP_STATE['capture_timing']['idle_command_poll_interval_ms'],
+            )
+            timing = _normalise_capture_timing(timing_data, require_all=True)
         except CaptureCommandError as exc:
             return _json_error(exc.message, status=exc.status, reason=exc.reason)
 
@@ -1091,6 +1101,7 @@ def _normalise_capture_timing(raw_timing, *, require_all):
             step_ms=CAPTURE_TIMING_STEP_MS,
             minimum_ms=CAPTURE_TIMING_MIN_MS,
             maximum_ms=CAPTURE_TIMING_MAX_MS,
+            field_limits=CAPTURE_TIMING_FIELD_LIMITS,
         )
     except capture_timing.TimingValidationError as exc:
         raise CaptureCommandError(exc.message, status=400, reason=exc.reason) from None
@@ -1101,6 +1112,9 @@ def _read_capture_timing_config(path):
         return capture_timing.read(
             Path(path),
             lambda raw: _normalise_capture_timing(raw, require_all=True),
+            migration_defaults={
+                'idle_command_poll_interval_ms': IDLE_COMMAND_POLL_INTERVAL_MS,
+            },
         )
     except CaptureCommandError:
         return None
@@ -1117,13 +1131,19 @@ def _ensure_capture_timing_config():
         return
 
     loaded_config = _read_capture_timing_config(path)
+    needs_write = False
     if loaded_config is None:
         loaded_config = _read_capture_timing_config(_legacy_capture_timing_path())
         if loaded_config is None:
-            loaded_config = (dict(CAPTURE_TIMING_RECOMMENDED), 1)
-        _write_capture_timing_config(*loaded_config)
+            loaded_config = (dict(CAPTURE_TIMING_RECOMMENDED), 1, False)
+        needs_write = True
 
-    timing, revision = loaded_config
+    timing, revision, migrated = loaded_config
+    if migrated:
+        revision += 1
+        needs_write = True
+    if needs_write:
+        _write_capture_timing_config(timing, revision)
     APP_STATE['capture_timing'] = timing
     APP_STATE['capture_timing_revision'] = revision
     APP_STATE['capture_timing_applied_revision'] = 0
@@ -1774,6 +1794,7 @@ def _set_motor_command(command, station_index=None, *, fruit_id=None, classifica
         'servo_settle_ms': timing['servo_settle_ms'],
         'fruit_settle_ms': timing['fruit_settle_ms'],
         'final_gate_return_delay_ms': timing['final_gate_return_delay_ms'],
+        'idle_command_poll_interval_ms': timing['idle_command_poll_interval_ms'],
         'created_at': _now_string(),
     }
     if classification_code:
@@ -1940,6 +1961,10 @@ def _esp32_command_payload():
                 'final_gate_return_delay_ms',
                 timing['final_gate_return_delay_ms'],
             ),
+            'idle_command_poll_interval_ms': command.get(
+                'idle_command_poll_interval_ms',
+                timing['idle_command_poll_interval_ms'],
+            ),
             'message': APP_STATE['message'],
         }
     return {
@@ -1955,6 +1980,7 @@ def _esp32_command_payload():
         'servo_settle_ms': timing['servo_settle_ms'],
         'fruit_settle_ms': timing['fruit_settle_ms'],
         'final_gate_return_delay_ms': timing['final_gate_return_delay_ms'],
+        'idle_command_poll_interval_ms': timing['idle_command_poll_interval_ms'],
         'message': APP_STATE['message'],
     }
 
@@ -2065,6 +2091,7 @@ def _format_command_text(payload):
             'servo_settle_ms',
             'fruit_settle_ms',
             'final_gate_return_delay_ms',
+            'idle_command_poll_interval_ms',
         ])
     for key in keys:
         lines.append(f'{key}={payload.get(key, "")}')
@@ -2217,6 +2244,7 @@ def _state_payload(extra=None):
         'servo_settle_ms': APP_STATE['capture_timing']['servo_settle_ms'],
         'fruit_settle_ms': APP_STATE['capture_timing']['fruit_settle_ms'],
         'final_gate_return_delay_ms': APP_STATE['capture_timing']['final_gate_return_delay_ms'],
+        'idle_command_poll_interval_ms': APP_STATE['capture_timing']['idle_command_poll_interval_ms'],
         **_capture_timing_state_payload(),
         'timing': _timing_payload(),
         'transition_trace': list(APP_STATE.get('transition_trace') or []),

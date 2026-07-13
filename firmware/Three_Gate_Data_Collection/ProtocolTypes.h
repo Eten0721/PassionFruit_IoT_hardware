@@ -8,13 +8,15 @@ struct TimingConfig {
   uint32_t servoSettleMS;
   uint32_t fruitSettleMS;
   uint32_t finalGateReturnDelayMS;
+  uint32_t idleCommandPollIntervalMS;
 
   TimingConfig()
       : revision(0),
         firstStationSettleMS(0),
         servoSettleMS(0),
         fruitSettleMS(0),
-        finalGateReturnDelayMS(0) {}
+        finalGateReturnDelayMS(0),
+        idleCommandPollIntervalMS(0) {}
 };
 
 struct MotorCommand {

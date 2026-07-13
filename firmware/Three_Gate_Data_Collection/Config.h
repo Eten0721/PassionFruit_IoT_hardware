@@ -27,7 +27,7 @@ constexpr uint32_t kDistancePrintIntervalMS = 500UL;
 constexpr uint32_t kTriggerDebugIntervalMS = 1000UL;
 constexpr uint32_t kCooldownMS = 3000UL;
 
-constexpr uint32_t kIdleCommandPollIntervalMS = 5000UL;
+constexpr uint32_t kIdleCommandPollIntervalMS = 250UL;
 constexpr uint32_t kStartSequenceCommandPollIntervalMS = 100UL;
 constexpr uint32_t kAwaitReleaseCommandPollIntervalMS = 50UL;
 

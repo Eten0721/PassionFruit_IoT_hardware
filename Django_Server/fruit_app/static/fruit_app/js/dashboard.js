@@ -35,11 +35,13 @@ const remoteVideo = document.getElementById('remote-video');
     const timingServoInput = document.getElementById('timing-servo');
     const timingFruitInput = document.getElementById('timing-fruit');
     const timingFinalReturnInput = document.getElementById('timing-final-return');
+    const timingIdleCommandPollInput = document.getElementById('timing-idle-command-poll');
     const timingInputs = [
         timingFirstStationInput,
         timingServoInput,
         timingFruitInput,
         timingFinalReturnInput,
+        timingIdleCommandPollInput,
     ];
     const timingConfigStatus = document.getElementById('timing-config-status');
     const applyTimingButton = document.getElementById('btn-apply-timing');
@@ -422,6 +424,7 @@ const remoteVideo = document.getElementById('remote-video');
             servo_settle_ms: 200,
             fruit_settle_ms: 350,
             final_gate_return_delay_ms: 300,
+            idle_command_poll_interval_ms: 250,
         };
     }
 
@@ -430,6 +433,7 @@ const remoteVideo = document.getElementById('remote-video');
         timingServoInput.value = timing.servo_settle_ms ?? 200;
         timingFruitInput.value = timing.fruit_settle_ms ?? 350;
         timingFinalReturnInput.value = timing.final_gate_return_delay_ms ?? 300;
+        timingIdleCommandPollInput.value = timing.idle_command_poll_interval_ms ?? 250;
     }
 
     function timingStatusText(data) {
@@ -463,10 +467,10 @@ const remoteVideo = document.getElementById('remote-video');
         timingConfigStatus.textContent = timingStatusText(data);
     }
 
-    function readTimingInput(input, key, minimum) {
+    function readTimingInput(input, key, minimum, maximum = 3000) {
         const value = Number(input.value);
-        if (!Number.isInteger(value) || value < minimum || value > 3000 || value % 50 !== 0) {
-            throw new Error(`${key} 必須介於 ${minimum} 到 3000 ms，且以 50 ms 為間距。`);
+        if (!Number.isInteger(value) || value < minimum || value > maximum || value % 50 !== 0) {
+            throw new Error(`${key} 必須介於 ${minimum} 到 ${maximum} ms，且以 50 ms 為間距。`);
         }
         return value;
     }
@@ -477,13 +481,19 @@ const remoteVideo = document.getElementById('remote-video');
             servo_settle_ms: readTimingInput(timingServoInput, '伺服穩定時間', 50),
             fruit_settle_ms: readTimingInput(timingFruitInput, '到站停穩時間', 50),
             final_gate_return_delay_ms: readTimingInput(timingFinalReturnInput, '最終歸位延遲', 0),
+            idle_command_poll_interval_ms: readTimingInput(
+                timingIdleCommandPollInput,
+                'ESP32 閒置命令輪詢間隔',
+                100,
+                5000,
+            ),
         };
     }
 
     function restoreRecommendedTiming() {
         setTimingInputs(recommendedCaptureTiming());
         timingInputsDirty = true;
-        setMessage('已填入校正預設 300／200／350／300 ms，按下「套用停穩設定」後才會儲存。');
+        setMessage('已填入校正預設 300／200／350／300／250 ms，按下「套用停穩設定」後才會儲存。');
     }
 
     async function applyCaptureTiming() {

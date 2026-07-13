@@ -19,7 +19,7 @@
 
 目前資料採集流程已從「滾動中連拍 6 張」改為「三段 SG90 閘門停止拍攝 3 張」。舊版六連拍只保留為歷史背景，不得作為新功能的主要實作方向。
 
-截至 `v1.1.6`，照片蒐集系統已完成三站停止拍攝的最小可用流程與首站加速重構：Django 中央狀態機、手機單張輪詢拍攝、ESP32 三閘門控制、三張照片採集、`trigger_id` 首站捷徑冪等處理、transition trace 與照片原子保存皆可運作。
+截至 `v1.2.1`，系統已完成三站停止拍攝、首站加速、人工分類與 MG996R 實體分類整合：Django 中央狀態機、手機單張輪詢拍攝、ESP32 三閘門控制、三張照片採集、`trigger_id` 首站捷徑冪等處理、transition trace、照片原子保存、單一 motor command slot 互斥、持久化 command ID 與可調整的閒置命令輪詢皆可運作。
 
 首張照片加速以「受守門的自動首站捷徑」為預設策略。它只壓縮第 1 站前的 HTTPS 控制往返，不得改變「站點停穩 → 手機單張照片保存成功 → 放行下一閘門」的安全規則。
 
@@ -47,23 +47,29 @@ Django 手動拍攝流程只取代 HC-SR04 的開始請求，不可繞過 ESP32 
 - `ProtocolTypes.h`：馬達命令與 HTTP 結果型別。
 - `DistanceSensor.*`：HC-SR04 Trigger／Echo 讀值。
 - `GateController.*`：SG90 閘門與角度追蹤。
+- `ClassifierController.*`：MG996R 分類角度、歸位與非阻塞狀態機。
 - `DjangoApiClient.*`：Wi-Fi、HTTPS、keep-alive 與協定解析。
-- `CaptureController.*`：三站狀態機、首站捷徑、回退與 pending retry。
+- `CaptureController.*`：三站狀態機、首站捷徑、回退、分類命令互斥與 pending retry。
 
 Django 已將可獨立責任抽出為 `capture_session.py`、`dataset_store.py` 與 `webrtc_signaling.py`；`views.py` 仍負責 HTTP 整合與資料集生命週期，後續修改時應優先擴充對應模組，不要誤稱為已完全薄化的 view 層。
 
 - `HOME_ANGLE = 0`：攔截／歸位角度。
 - `RELEASE_ANGLE = 90`：放行角度。
+- MG996R 使用 GPIO `25`，Home 為 `85°`；上中等、下等、加工、廢棄分別為 `25°`、`55°`、`115°`、`145°`。分類位置保持 `1000 ms`，歸位穩定 `500 ms`，動作 timeout 為 `5000 ms`。
 - HC-SR04 目前觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`。
-- Dashboard 拍攝停穩設定的推薦校正值依序為：`first_station_settle_ms = 300`、`servo_settle_ms = 200`、`fruit_settle_ms = 350`、`final_gate_return_delay_ms = 300`（單位皆為 `ms`）。`Config.h` 只保留斷線／首次刷入時的 fallback。
-- `POST /api/capture_timing/` 只能在 Django 為 `idle`、沒有 active fruit 或 motor command 時更新完整四項設定；數值必須為 `50 ms` 的倍數，範圍為 `50` 到 `3000 ms`，最終歸位延遲可為 `0 ms`。
+- Dashboard timing profile 的推薦值依序為：`first_station_settle_ms = 300`、`servo_settle_ms = 200`、`fruit_settle_ms = 350`、`final_gate_return_delay_ms = 300`、`idle_command_poll_interval_ms = 250`（單位皆為 `ms`）。`Config.h` 只保留斷線／首次刷入時的 fallback。
+- `POST /api/capture_timing/` 只能在 Django 為 `idle`、沒有 active fruit 或 motor command 時更新完整五項設定。所有數值必須為 `50 ms` 的倍數；四項機構 timing 的上限為 `3000 ms`，最終歸位延遲可為 `0 ms`，idle command polling 範圍為 `100～5000 ms`。
 - Django 以 `Django_Server/runtime_config/capture_timing.json` 持久化 timing revision；每次 Dashboard 更新只原子覆寫此固定單一檔案，舊版 `dataset/capture_timing.json` 首次升級時會遷移後移除。ESP32 必須僅在 idle 且所有 Gate home 時套用，並回報 `timing_config_applied`。流程中不得覆寫目前 fruit 已 snapshot 的 timing。
 - 成功跳過／刪除 temp fruit 後必須透過 `_clear_active_state(..., status='idle')` 清除等待計時器、馬達命令、capture token 與 fast-path 狀態，讓下一顆可立即開始。
-- ESP32 command polling：idle 約 `5000 ms`，等待 `start_sequence` 約 `100 ms`，流程進行中約 `120 ms`。
+- ESP32 command polling：idle 預設 `250 ms` 且可由 Dashboard 調整，等待 `start_sequence` 固定 `100 ms`，等待 `release_gate` 固定 `50 ms`；伺服移動、果實停穩與 report pending 階段不輪詢 command。
 - HC-SR04 使用直接 `10 us` Trigger pulse 搭配 `pulseIn(..., 12000UL)`；無回波回傳 `0.0F`。Echo 等待上限為 `12 ms`，完整 `sensor_read_us` warning 門檻約為 `12.1 ms`。
 - Wi-Fi 重連、伺服 phase 與 retry 使用 deadline 驅動；不得在主迴圈以多秒同步等待。
 - HTTPS connect 與 read 都使用 request deadline：自動 trigger／首站捷徑約 `1000 ms`，command GET 約 `1500 ms`，一般 station report 約 `5000 ms`。正常情況重用同 origin HTTP/1.1 TLS 連線；Wi-Fi 斷線、timeout、client 失效或 `Connection: close` 時，必須關閉 client 後安全重建。
-- 手機相機頁使用 `/api/camera/state/` 的 single in-flight polling：idle 約 `250 ms`，有 fruit／拍攝請求約 `75 ms`，實際擷取或上傳期間約 `250 ms`，state request timeout 為 `1000 ms`。頁面進入背景時 polling 會停止，回到前景才重啟，因此手機不可鎖屏或背景化。
+- 手機相機頁使用 `/api/camera/state/` 的 single in-flight polling：idle 約 `250 ms`，有 fruit／拍攝請求約 `50 ms`，實際擷取或上傳期間約 `250 ms`，state request timeout 為 `1000 ms`。頁面進入背景時 polling 會停止，回到前景才重啟，因此手機不可鎖屏或背景化。
+
+人工分類成功後，Django 才會將中文分類映射為固定 ASCII code，並嘗試建立 `classify_fruit`。Sorter 為 pending／running 時必須鎖住自動觸發、手動拍攝、recapture、reset 與第二筆分類命令；硬體失敗或 timeout 不得回滾已搬移的照片、metadata 或 counter。ESP32 只依 command ID 去重實體動作，report retry 不得讓 MG996R 重複轉動。
+
+MG996R 必須使用獨立外部電源並與 ESP32 共地，不得由 ESP32 供電。分類器目前沒有位置回授，因此 completed 只代表控制時序完成並成功回報，不代表已量測到機械實際到位。
 
 `hcsr04_trigger` POST 回應若已包含 `motor_command.command=start_sequence` 與 `command_id`，ESP32 會直接執行 `start_sequence`，不再多等一次 command polling。若 `hcsr04_trigger` POST timeout，ESP32 會先進入 fast command polling 嘗試找回 Django 已建立的 `start_sequence`，並保留 pending retry 作為容錯。
 
@@ -90,7 +96,7 @@ HC-SR04 的 `5 V` Echo 不可直接接 ESP32 GPIO `27`。必須使用分壓或�
 2. 依實測結果微調 `triggerDistanceCM`、`firstStationSettleMS`、`fruit_settle_ms` 與閘門機構位置。
 3. 強化錯誤復原：ESP32 斷線、手機未上傳、錯站照片、重複 trigger、未分類資料鎖定。
 4. 維持 `metadata.csv` 與 `dataset/temp/fruit_XXX/` 到分類資料夾的資料一致性。
-5. 三站資料採集穩定後，再整合 AI 推論與分類器控制。
+5. 維持目前人工分類按鈕與 MG996R 命令協定；三站資料採集穩定後，再將 AI 推論結果接到同一套 `classify_fruit` 流程。
 
 ## Python 執行環境
 

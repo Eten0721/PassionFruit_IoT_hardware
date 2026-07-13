@@ -253,6 +253,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             self.assertNotIn('home_angle', command)
             self.assertNotIn('release_angle', command)
             self.assertNotIn('servo_settle_ms', command)
+            self.assertNotIn('idle_command_poll_interval_ms', command)
             self.assertNotIn('gpio', command)
             text_command = self._esp32_command_text()
             self.assertEqual(text_command['classification_code'], expected_code)
@@ -700,6 +701,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             'servo_settle_ms': 200,
             'fruit_settle_ms': 350,
             'final_gate_return_delay_ms': 300,
+            'idle_command_poll_interval_ms': 250,
         })
         self.assertEqual(initial['capture_timing_revision'], 1)
 
@@ -708,6 +710,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             'servo_settle_ms': 400,
             'fruit_settle_ms': 450,
             'final_gate_return_delay_ms': 300,
+            'idle_command_poll_interval_ms': 400,
         })
         self.assertEqual(configured.status_code, 200)
         payload = configured.json()
@@ -719,6 +722,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             saved = json.load(timing_file)
         self.assertEqual(saved['revision'], 2)
         self.assertEqual(saved['capture_timing']['servo_settle_ms'], 400)
+        self.assertEqual(saved['capture_timing']['idle_command_poll_interval_ms'], 400)
 
         command = self._esp32_command_text()
         self.assertEqual(command['timing_revision'], '2')
@@ -726,6 +730,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(command['servo_settle_ms'], '400')
         self.assertEqual(command['fruit_settle_ms'], '450')
         self.assertEqual(command['final_gate_return_delay_ms'], '300')
+        self.assertEqual(command['idle_command_poll_interval_ms'], '400')
 
         acknowledged = self._report('timing_config_applied', timing_revision=2)
         self.assertEqual(acknowledged.status_code, 200)
@@ -760,8 +765,57 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertTrue(self.capture_timing_path.exists())
         with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
             migrated = json.load(timing_file)
-        self.assertEqual(migrated, legacy_payload)
-        self.assertEqual(views.APP_STATE['capture_timing_revision'], 10)
+        self.assertEqual(migrated['revision'], 11)
+        self.assertEqual(migrated['capture_timing'], {
+            **legacy_payload['capture_timing'],
+            'idle_command_poll_interval_ms': 250,
+        })
+        self.assertEqual(views.APP_STATE['capture_timing_revision'], 11)
+
+    def test_capture_timing_upgrades_existing_four_field_runtime_file(self):
+        legacy_runtime_timing = {
+            'first_station_settle_ms': 450,
+            'servo_settle_ms': 500,
+            'fruit_settle_ms': 550,
+            'final_gate_return_delay_ms': 600,
+        }
+        self.capture_timing_path.write_text(json.dumps({
+            'revision': 7,
+            'capture_timing': legacy_runtime_timing,
+        }), encoding='utf-8')
+        views.reset_runtime_state_for_tests()
+
+        state = self.client.get('/api/state/').json()
+
+        self.assertEqual(state['capture_timing_revision'], 8)
+        self.assertEqual(state['capture_timing'], {
+            **legacy_runtime_timing,
+            'idle_command_poll_interval_ms': 250,
+        })
+        with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
+            saved = json.load(timing_file)
+        self.assertEqual(saved['revision'], 8)
+        self.assertEqual(saved['capture_timing'], state['capture_timing'])
+
+    def test_idle_command_poll_interval_validates_range_and_step(self):
+        base_timing = {
+            'first_station_settle_ms': 300,
+            'servo_settle_ms': 200,
+            'fruit_settle_ms': 350,
+            'final_gate_return_delay_ms': 300,
+        }
+        for invalid_value in (50, 125, 5050):
+            response = self._post_json('/api/capture_timing/', {
+                **base_timing,
+                'idle_command_poll_interval_ms': invalid_value,
+            })
+            self.assertEqual(response.status_code, 400)
+        valid = self._post_json('/api/capture_timing/', {
+            **base_timing,
+            'idle_command_poll_interval_ms': 5000,
+        })
+        self.assertEqual(valid.status_code, 200)
+        self.assertEqual(valid.json()['capture_timing']['idle_command_poll_interval_ms'], 5000)
 
     def test_capture_timing_reuses_one_runtime_file_for_multiple_updates(self):
         first = self._post_json('/api/capture_timing/', {
@@ -977,6 +1031,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertContains(response, 'id="timing-servo" type="number" min="50" max="3000" step="50" inputmode="numeric" value="200"')
         self.assertContains(response, 'id="timing-fruit" type="number" min="50" max="3000" step="50" inputmode="numeric" value="350"')
         self.assertContains(response, 'id="timing-final-return" type="number" min="0" max="3000" step="50" inputmode="numeric" value="300"')
+        self.assertContains(response, 'id="timing-idle-command-poll" type="number" min="100" max="5000" step="50" inputmode="numeric" value="250"')
         self.assertContains(response, '推薦：300 ms', count=2)
         self.assertContains(response, '推薦：200 ms', count=1)
         self.assertContains(response, '推薦：350 ms', count=1)
@@ -1324,6 +1379,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             'kClassifierHoldMS = 1000UL',
             'kClassifierHomeSettleMS = 500UL',
             'kClassifierTimeoutMS = 5000UL',
+            'kIdleCommandPollIntervalMS = 250UL',
         ):
             self.assertIn(contract, config)
         for code in ('high_medium', 'low', 'processing', 'discard'):
@@ -1344,6 +1400,10 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn('readTextValue(body, "station_index").toInt()', api_source)
         self.assertIn('classification_sorter_completed', capture_source)
         self.assertIn('classification_sorter_failed', capture_source)
+        self.assertIn('return appliedTiming_.idleCommandPollIntervalMS;', capture_source)
+        self.assertIn('timing.idleCommandPollIntervalMS >= 100UL', capture_source)
+        self.assertIn('timing.idleCommandPollIntervalMS <= 5000UL', capture_source)
+        self.assertIn('readTextValue(body, "idle_command_poll_interval_ms")', api_source)
 
     def test_dashboard_has_sorter_status_and_single_in_flight_guard(self):
         project_root = Path(__file__).resolve().parents[2]
