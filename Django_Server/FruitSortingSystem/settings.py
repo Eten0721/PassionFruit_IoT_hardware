@@ -14,8 +14,14 @@ from pathlib import Path
 import os
 import importlib.util
 
+from dotenv import load_dotenv
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Local development settings live at the repository root. Existing process
+# environment variables take precedence over values from this ignored file.
+load_dotenv(BASE_DIR.parent / '.env')
 
 
 # Quick-start development settings - unsuitable for production

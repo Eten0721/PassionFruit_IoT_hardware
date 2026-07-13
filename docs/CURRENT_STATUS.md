@@ -2,10 +2,12 @@
 
 更新日期：2026-07-13
 
-目前版本進度：`v1.2.1, 新增可調整的 MG996R 命令輪詢間隔`
+目前版本進度：`v1.2.2, README 快速部署與 .env Django 密鑰設定`
 
 ## 已完成
 
+- 根目錄 `README.md` 已精簡為同學電腦可快速復現的 Windows 部署指南，包含 Python `3.10.20`、Conda／`venv`、iPhone 熱點固定 IP `172.20.10.3`、Windows 防火牆與同學家 Wi-Fi 備案。
+- Django 已透過 `python-dotenv` 自動載入 repository 根目錄的 `.env`；本機 Django 密鑰、Wi-Fi 密碼與 firmware `secrets.h` 仍由 `.gitignore` 排除，不會納入版本控制。
 - 資料採集流程已從「滾動中連拍 6 張」切換為「三段 SG90 閘門停止拍攝 3 張」。
 - Django 三站中央狀態機已完成。
 - Dashboard 手動拍攝入口已完成，且不繞過 ESP32 閘門流程。
