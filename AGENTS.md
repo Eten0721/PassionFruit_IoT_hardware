@@ -19,7 +19,7 @@
 
 目前資料採集流程已從「滾動中連拍 6 張」改為「三段 SG90 閘門停止拍攝 3 張」。舊版六連拍只保留為歷史背景，不得作為新功能的主要實作方向。
 
-截至 `v1.2.2`，系統已完成三站停止拍攝、首站加速、人工分類與 MG996R 實體分類整合：Django 中央狀態機、手機單張輪詢拍攝、ESP32 三閘門控制、三張照片採集、`trigger_id` 首站捷徑冪等處理、transition trace、照片原子保存、單一 motor command slot 互斥、持久化 command ID 與可調整的閒置命令輪詢皆可運作；並補齊 Windows 快速部署 README 與 Django 根目錄 `.env` 載入設定。
+截至 `v1.2.3`，系統已完成三站停止拍攝、首站加速、人工分類與 MG996R 實體分類整合：Django 中央狀態機、手機單張輪詢拍攝、ESP32 三閘門控制、三張照片採集、`trigger_id` 首站捷徑冪等處理、transition trace、照片原子保存、單一 motor command slot 互斥、持久化 command ID 與可調整的閒置命令輪詢皆可運作；並補齊 Windows 快速部署、ESP32 必要依賴與未來 AI 決策層說明。
 
 首張照片加速以「受守門的自動首站捷徑」為預設策略。它只壓縮第 1 站前的 HTTPS 控制往返，不得改變「站點停穩 → 手機單張照片保存成功 → 放行下一閘門」的安全規則。
 
@@ -141,4 +141,4 @@ C:\Users\qoqoo\anaconda3\envs\pf_iot_env\python.exe -m pip install <package>
 - `decision_layer/`：機器學習決策層，例如 XGBoost 相關資料。
 - `hardware_notes/`：硬體實作筆記。
 - `docs/`：repo 文件。
-- `Necessary_library/`：ESP32 周邊功能需要安裝的 library。
+- `Necessary_library/`：ESP32 快速燒錄與必要依賴說明；舊函式庫、安裝檔與編譯產物不納入 Git。

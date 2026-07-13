@@ -122,7 +122,7 @@ python manage.py runsslserver 0.0.0.0:8000
 電腦開啟 Dashboard：
 
 ```text
-https://127.0.0.1:8000/dashboard/
+https://172.20.10.3:8000/dashboard/
 ```
 
 手機開啟相機頁：
@@ -157,7 +157,7 @@ Copy-Item firmware\Three_Gate_Data_Collection\secrets.example.h firmware\Three_G
    - `password`：同學家的 Wi-Fi 密碼
    - `commandUrl`：改成新的電腦 IPv4
    - `reportUrl`：改成新的電腦 IPv4
-6. 使用既有的 ESP32 燒錄環境重新燒入正式 firmware。
+6. 使用既有的 ESP32 燒錄環境重新燒入正式 firmware。若尚未準備燒錄環境，請參閱 [ESP32 快速燒錄準備](Necessary_library/README.md)。
 7. Django 仍執行 `python manage.py runsslserver 0.0.0.0:8000`，不需修改 Django 或 `.env`。
 8. 手機改用新的電腦 IP 開啟 `/camera/`。
 

@@ -37,7 +37,8 @@ Django_Server/dataset/
 Django_Server/runtime_config/
 
 # Project folders not tracked for now
-Necessary_library/
+Necessary_library/*
+!Necessary_library/README.md
 model_training/
 
 # Dataset and raw media

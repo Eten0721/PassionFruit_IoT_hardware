@@ -1,0 +1,11 @@
+# 決策層
+
+`decision_layer/` 預留給未來的機器學習決策流程，例如 XGBoost、Random Forest 或其他分級模型。目前尚未在正式系統中實作 AI 自動推論，Dashboard 仍由使用者按下人工分類按鈕決定結果。
+
+未來決策層應遵守下列整合邊界：
+
+- 輸入可來自三站照片的模型推論、外觀瑕疵、大小或其他結構化特徵。
+- 輸出必須映射至既有分類代碼：`high_medium`、`low`、`processing` 或 `discard`。
+- AI 決策完成後應沿用 Django 的 `classify_fruit` 命令、單一 motor command slot、command ID、sorter 狀態與 timeout 規則。
+- 決策層不可直接控制 ESP32 GPIO、MG996R 角度或 PWM，也不可繞過照片分類、metadata 與 dataset 一致性流程。
+- 模型權重、訓練輸出與 dataset 不納入 Git；正式整合前應另行定義模型版本、信心門檻與人工覆核方式。

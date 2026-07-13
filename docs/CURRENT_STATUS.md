@@ -2,10 +2,12 @@
 
 更新日期：2026-07-13
 
-目前版本進度：`v1.2.2, README 快速部署與 .env Django 密鑰設定`
+目前版本進度：`v1.2.3, 補充決策層與 ESP32 快速部署資源`
 
 ## 已完成
 
+- `Necessary_library/README.md` 已整理目前正式 ESP32 firmware 的快速燒錄需求；舊版 WiFi／Servo／HCSR04 函式庫、Node.js 安裝包、Node-RED flow、SQL 與編譯產物維持本機忽略，不列為正式依賴。
+- `decision_layer/README.md` 已建立未來 AI／XGBoost 決策層的整合邊界；目前仍由人工按鈕產生既有 `classify_fruit` 命令，尚未實作自動推論。
 - 根目錄 `README.md` 已精簡為同學電腦可快速復現的 Windows 部署指南，包含 Python `3.10.20`、Conda／`venv`、iPhone 熱點固定 IP `172.20.10.3`、Windows 防火牆與同學家 Wi-Fi 備案。
 - Django 已透過 `python-dotenv` 自動載入 repository 根目錄的 `.env`；本機 Django 密鑰、Wi-Fi 密碼與 firmware `secrets.h` 仍由 `.gitignore` 排除，不會納入版本控制。
 - 資料採集流程已從「滾動中連拍 6 張」切換為「三段 SG90 閘門停止拍攝 3 張」。
