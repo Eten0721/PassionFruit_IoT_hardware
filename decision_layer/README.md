@@ -8,4 +8,4 @@
 - 輸出必須映射至既有分類代碼：`high_medium`、`low`、`processing` 或 `discard`。
 - AI 決策完成後應沿用 Django 的 `classify_fruit` 命令、單一 motor command slot、command ID、sorter 狀態與 timeout 規則。
 - 決策層不可直接控制 ESP32 GPIO、MG996R 角度或 PWM，也不可繞過照片分類、metadata 與 dataset 一致性流程。
-- 模型權重、訓練輸出與 dataset 不納入 Git；正式整合前應另行定義模型版本、信心門檻與人工覆核方式。
+- 硬體 repository 不追蹤模型權重、訓練輸出或 dataset；模型 repository 僅以 Git LFS 管理已驗收的正式權重，正式整合前必須定義模型版本、信心門檻與人工覆核方式。

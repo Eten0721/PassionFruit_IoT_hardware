@@ -2,11 +2,13 @@
 
 更新日期：2026-07-14
 
-目前版本進度：`v1.2.3, 補充決策層與 ESP32 快速部署資源`
+目前版本進度：`v1.2.5, 文件維護`
 
 ## 已完成
 
-- `v1.2.3` commit 與 annotated tag 已推送至 GitHub；`v1.2.2` 歷史保持不變，沒有重寫遠端 main 或既有 tag。
+- `v1.2.4` 文件更新與 `v1.2.5` 文件維護 commit 已推送至 GitHub；既有 `v1.2.3` annotated tag 與更早歷史保持不變，沒有重寫遠端 main 或既有 tag。
+- 硬體與 Django repository 使用 `Eten0721/PassionFruit_IoT_hardware`；模型訓練、驗證與 Multi-stage Pipeline 由 `fcu-passionfruit-project/ps-quality-detection-system` 獨立維護，正式權重只在模型 repository 以 Git LFS 管理。
+- 本機硬體 workspace 已統一為 `D:\PassionFruit_IoT_hardware\`，模型 workspace 與原始 dataset 分別位於 `D:\ps-quality-detection-system\` 與 `D:\passion-fruit-datasets\`；硬體 repository 不使用 Git submodule，也不追蹤模型權重或照片。
 - `Necessary_library/README.md` 已整理目前正式 ESP32 firmware 的快速燒錄需求；舊版 WiFi／Servo／HCSR04 函式庫、Node.js 安裝包、Node-RED flow、SQL 與編譯產物維持本機忽略，不列為正式依賴。
 - `decision_layer/README.md` 已建立未來 AI／XGBoost 決策層的整合邊界；目前仍由人工按鈕產生既有 `classify_fruit` 命令，尚未實作自動推論。
 - 根目錄 `README.md` 已精簡為同學電腦可快速復現的 Windows 部署指南，包含 Python `3.10.20`、Conda／`venv`、iPhone 熱點固定 IP `172.20.10.3`、Windows 防火牆與同學家 Wi-Fi 備案。

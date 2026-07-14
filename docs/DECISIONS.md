@@ -1,5 +1,26 @@
 # 決策紀錄
 
+## 2026-07-14：模型訓練與硬體系統維持雙 Repository
+
+### 決策
+
+硬體與資料採集系統繼續由 `Eten0721/PassionFruit_IoT_hardware` 維護；YOLO 模型訓練、驗證與 Multi-stage Pipeline 改由團隊 repository `fcu-passionfruit-project/ps-quality-detection-system` 作為唯一來源。原本內嵌在 `model_training/passionFruit/` 的獨立 Git workspace 搬到 `D:\ps-quality-detection-system\`，本硬體 repository 只保留 `model_training/README.md`。
+
+原始照片與 dataset 不進任何 Git repository，本機集中於 `D:\passion-fruit-datasets\` 或團隊共用儲存空間。模型 repository 只使用 Git LFS 管理通過驗收的正式權重，排除 `runs/`、`last.pt`、歷史 checkpoint 與圖片。
+
+### 原因
+
+- 硬體、Django 與 firmware 的版本週期相對穩定；模型訓練會由多位組員頻繁產生實驗、權重與準確率結果，不適合混在同一份 Git 歷史。
+- 完整模型 workspace 原本已是獨立 Git repository，繼續內嵌會造成 nested repository、權限與 staging 混淆。
+- Dataset 約數 GB，Git 不適合保存大量原始影像；模型版本必須透過 manifest、dataset ID、驗證結果與正式權重交接。
+
+### 影響
+
+- 目前不加入 Git submodule；開發期間兩個 repository 以同層 workspace 或明確路徑連接。
+- 模型 repository 未來提供可匯入的 Python package 與結構化檢測結果；硬體 repository 只新增薄 Django adapter，不複製推論實作。
+- AI 不得直接控制 GPIO。檢測結果仍須經決策層映射為 `high_medium`、`low`、`processing` 或 `discard`，再使用既有 `classify_fruit`、command ID 與 sorter 安全規則。
+- 本決策將先前「所有模型權重不納入 Git」細化為：硬體 repository 不納入任何權重；模型 repository 僅以 Git LFS 納入已驗收的正式權重。
+
 ## 2026-07-14：正式 ESP32 部署只列入目前必要依賴
 
 ### 決策

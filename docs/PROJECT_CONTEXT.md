@@ -2,7 +2,7 @@
 
 更新日期：2026-07-14
 
-目前版本：`v1.2.3, 補充決策層與 ESP32 快速部署資源`
+目前版本：`v1.2.5, 文件維護`
 
 ## 1. 專案目標
 
@@ -195,6 +195,12 @@ MG996R 實體分類器目前已可由人工分類按鈕控制；AI 推論與自�
 - 大小特徵，前提是拍攝平面與距離固定。
 - 後段決策模型，例如 XGBoost / Random Forest。
 
+模型訓練與檢測層不再內嵌於本硬體 repository，統一由團隊 repository [`fcu-passionfruit-project/ps-quality-detection-system`](https://github.com/fcu-passionfruit-project/ps-quality-detection-system) 維護。其責任包含 YOLO 訓練、準確率驗證、ROI 裁切、圓形遮罩、灰階 CLAHE、顏色、皺褶、局部瑕疵 pipeline、dataset manifest 與正式模型版本。本 repository 的 [`model_training/README.md`](../model_training/README.md) 只記錄連結與整合邊界。
+
+本機開發採三個互相獨立的位置：硬體 repository 位於 `D:\PassionFruit_IoT_hardware\`，模型 repository 位於 `D:\ps-quality-detection-system\`，原始照片與訓練資料位於 `D:\passion-fruit-datasets\`。目前不使用 Git submodule；待檢測層成為可匯入的 Python package 並建立版本 tag 後，Django 再透過薄 adapter 固定使用指定版本。
+
+模型 repository 應輸出每個站點的 ROI、顏色、皺褶、局部瑕疵、confidence、耗時與模型版本。模型載入失敗、找不到百香果或低信心時，必須保留人工覆核，不能直接驅動 ESP32。
+
 未來決策層的整合邊界記錄於 [`decision_layer/README.md`](../decision_layer/README.md)。模型輸出必須映射為 `high_medium`、`low`、`processing` 或 `discard`，再交由 Django 沿用既有資料分類、單一 motor command slot、command ID、sorter timeout 與 report retry；決策模型不可直接控制 GPIO、MG996R 角度或 PWM。
 
 ## 10. 部署與本機設定
@@ -204,3 +210,4 @@ MG996R 實體分類器目前已可由人工分類按鈕控制；AI 推論與自�
 - 預設 A Plan 使用 iPhone 個人熱點，Django 電腦固定為 `172.20.10.3`。改用其他 Wi-Fi 時，Django 仍綁定 `0.0.0.0:8000`，但必須更新 `secrets.h` 的 SSID、密碼、`commandUrl` 與 `reportUrl`，再重新燒錄 ESP32。
 - ESP32 正式依賴與燒錄步驟見 [`Necessary_library/README.md`](../Necessary_library/README.md)。目前只需要 ESP32 board package 與 `ESP32Servo 3.2.1`；本機舊版 WiFi／Servo／HCSR04、Node.js ZIP、Node-RED flow、SQL 與編譯產物不是正式依賴。
 - `Django_Server/dataset/`、runtime JSON、`.env` 與 `secrets.h` 皆不由 GitHub 備份，部署或移機前必須另行保存需要的資料。
+- 模型訓練 repository、正式模型版本與 dataset 交接規則見 [`model_training/README.md`](../model_training/README.md)；本硬體 repository 不追蹤模型權重或訓練輸出。
