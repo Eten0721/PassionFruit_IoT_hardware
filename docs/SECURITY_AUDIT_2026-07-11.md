@@ -2,6 +2,17 @@
 
 稽核日期：2026-07-11
 
+## 2026-07-14 追蹤狀態
+
+此段為 `v1.2.3` 的後續追蹤，不改寫下方 `2026-07-11` 原始稽核結論。
+
+- Django 已透過 `python-dotenv` 載入 repository 根目錄的 `.env`，本機使用隨機 `DJANGO_SECRET_KEY`，實際 `.env` 由 `.gitignore` 排除。這只改善本機密鑰管理；若 `.env` 缺失，程式仍會使用 development fallback key，且 `DEBUG=True`、`ALLOWED_HOSTS=['*']` 尚未修補，因此原高風險項目仍未關閉。
+- ESP32 仍使用 `WiFiClientSecure::setInsecure()`；Django 多個寫入 API 仍為 `@csrf_exempt` 且沒有裝置或使用者驗證。新增的人工分類、sorter report、timing 與 reset 路徑也屬於相同的可信任區網假設，沒有因 `v1.2.3` 自動獲得保護。
+- MG996R 整合後，正式 `esp32:esp32:esp32` sketch 編譯結果約為 Flash `82%`、RAM `15%`。Flash 餘裕降低，後續功能應避免加入重複 library、大型字串或第二套 JSON 實作。
+- `Necessary_library/README.md` 已將正式依賴收斂為 ESP32 board package 與 `ESP32Servo 3.2.1`；舊 library、Node.js ZIP、SQL 與編譯產物不推送至 GitHub，降低誤用舊元件與 repository 膨脹風險。
+
+上述變更沒有完成正式 deployment hardening。任何對外網路部署前，仍必須完成 TLS 憑證驗證、API authentication、production settings、request／檔案大小限制、JPEG 驗證與受支援 Django 版本升級，並重新執行安全稽核。
+
 ## 範圍與已完成檢查
 
 - 檢閱 `Django_Server/fruit_app/`、Django settings 與正式三閘門 firmware。

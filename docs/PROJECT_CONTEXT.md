@@ -1,5 +1,9 @@
 # 百香果辨識系統專案脈絡
 
+更新日期：2026-07-14
+
+目前版本：`v1.2.3, 補充決策層與 ESP32 快速部署資源`
+
 ## 1. 專案目標
 
 本專案目標是建立百香果照片蒐集、資料集管理與後續 AI 分級辨識流程。現階段重點是先穩定「資料採集」，讓每顆百香果能在固定軌道上停留於三個拍攝站點，各拍攝 1 張照片，形成可分類與可訓練的資料。
@@ -39,7 +43,7 @@ ESP32 firmware
 firmware/Three_Gate_Data_Collection/Three_Gate_Data_Collection.ino
 ```
 
-入口 sketch 只負責初始化與主迴圈；HC-SR04 讀值、閘門 phase、Django HTTPS client 與採集控制分拆為 `Config.h`、`ProtocolTypes.h`、`DistanceSensor.*`、`GateController.*`、`DjangoApiClient.*` 與 `CaptureController.*`，避免把流程狀態散落在多個 `.ino` tab。
+入口 sketch 只負責初始化與主迴圈；HC-SR04 讀值、閘門 phase、MG996R 分類器、Django HTTPS client 與採集控制分拆為 `Config.h`、`ProtocolTypes.h`、`DistanceSensor.*`、`GateController.*`、`ClassifierController.*`、`DjangoApiClient.*` 與 `CaptureController.*`，避免把流程狀態散落在多個 `.ino` tab。
 
 Django 的單程序 runtime state／operation token 位於 `runtime_state.py`，timing 驗證與原子保存位於 `capture_timing.py`，ESP32 response shaping 位於 `api_payloads.py`；`capture_session.py`、`dataset_store.py` 與 `webrtc_signaling.py` 分別負責狀態轉移、dataset primitive／熱路徑 cache 與 signaling。`views.py` 仍保留 HTTP 整合、資料集生命週期與部分狀態機 helper，後續應延續相同責任邊界逐步縮小，不應誤稱為完全薄化。
 
@@ -64,6 +68,8 @@ Django 的單程序 runtime state／operation token 位於 `runtime_state.py`，
 10. 使用者在 dashboard 確認照片並分類。
 
 資料分類成功後，Django 才在同一個 motor command slot 建立 `classify_fruit`。MG996R 依固定 ASCII code 前往分類角度、保持後回到 `85°`，再回報完成或具體失敗原因。此後段流程不參與第 3 站拍攝、Gate 3 放行、三閘門歸位或 `capture_sequence_finished`。
+
+Sorter 使用獨立的 `idle／pending／running／completed／failed／timeout` 狀態。`pending／running` 期間會鎖住 HC-SR04、自動與手動拍攝、recapture、dataset reset 及第二筆分類命令；硬體失敗、ESP32 離線或 timeout 均不回滾已搬移的照片、`metadata.csv` 或 counter。所有 capture 與 sorter command 共用單一命令槽，command ID 由 `runtime_config/motor_command_sequence.json` 原子持久化，Django 重啟與 dataset reset 不會重新使用最後一筆 ID。
 
 手機是否完成拍攝一律以 Django 收到並保存照片為準，不使用固定延遲猜測手機狀態。
 
@@ -188,3 +194,13 @@ MG996R 實體分類器目前已可由人工分類按鈕控制；AI 推論與自�
 - 表面瑕疵與外觀特徵判斷。
 - 大小特徵，前提是拍攝平面與距離固定。
 - 後段決策模型，例如 XGBoost / Random Forest。
+
+未來決策層的整合邊界記錄於 [`decision_layer/README.md`](../decision_layer/README.md)。模型輸出必須映射為 `high_medium`、`low`、`processing` 或 `discard`，再交由 Django 沿用既有資料分類、單一 motor command slot、command ID、sorter timeout 與 report retry；決策模型不可直接控制 GPIO、MG996R 角度或 PWM。
+
+## 10. 部署與本機設定
+
+- Windows 快速部署以根目錄 [`README.md`](../README.md) 為正式入口，基準環境為 Python `3.10.20`。
+- Django 透過 `python-dotenv` 載入 repository 根目錄的 `.env`；本機 `DJANGO_SECRET_KEY` 不納入 Git。
+- 預設 A Plan 使用 iPhone 個人熱點，Django 電腦固定為 `172.20.10.3`。改用其他 Wi-Fi 時，Django 仍綁定 `0.0.0.0:8000`，但必須更新 `secrets.h` 的 SSID、密碼、`commandUrl` 與 `reportUrl`，再重新燒錄 ESP32。
+- ESP32 正式依賴與燒錄步驟見 [`Necessary_library/README.md`](../Necessary_library/README.md)。目前只需要 ESP32 board package 與 `ESP32Servo 3.2.1`；本機舊版 WiFi／Servo／HCSR04、Node.js ZIP、Node-RED flow、SQL 與編譯產物不是正式依賴。
+- `Django_Server/dataset/`、runtime JSON、`.env` 與 `secrets.h` 皆不由 GitHub 備份，部署或移機前必須另行保存需要的資料。

@@ -1,5 +1,41 @@
 # 決策紀錄
 
+## 2026-07-14：正式 ESP32 部署只列入目前必要依賴
+
+### 決策
+
+正式三站與 MG996R firmware 的部署文件以根目錄 `README.md` 與 `Necessary_library/README.md` 為準。必要環境為 Espressif Systems 的 ESP32 board package、`esp32:esp32:esp32` 板型及 `ESP32Servo 3.2.1`；Wi-Fi 由 ESP32 core 提供，HC-SR04 由 firmware 直接控制。
+
+### 原因
+
+- 本機舊版 `WiFi`、`Servo` 與 `HCSR04Ultrasonic` library 不符合目前正式 firmware 的實際依賴。
+- Node.js ZIP、Node-RED flow、SQL、PDF 與舊編譯產物屬於早期實驗資源，若一併上傳會增加 repository 體積並混淆部署流程。
+- 更換 Wi-Fi 或 Django 電腦 IP 時，只需要更新 `secrets.h` 並重新燒錄 ESP32，不需要恢復舊 Node-RED／MySQL 架構。
+
+### 影響
+
+- Git 只追蹤 `Necessary_library/README.md`，其餘舊資源繼續保留在本機並由 `.gitignore` 排除。
+- `secrets.h`、`.env`、dataset 與 runtime JSON 仍不得提交。
+- Windows Django 快速部署維持 Python `3.10.20`、根目錄 `.env`、migration 與 `runsslserver 0.0.0.0:8000`。
+
+## 2026-07-14：未來 AI 決策層沿用既有 classify_fruit 邊界
+
+### 決策
+
+`decision_layer/` 目前只建立整合說明，不啟用自動推論。未來 XGBoost、Random Forest 或其他模型必須將結果映射為 `high_medium`、`low`、`processing` 或 `discard`，再交由 Django 建立既有 `classify_fruit` 命令。
+
+### 原因
+
+- 照片搬移、metadata、counter、單一 motor command slot、command ID 與 sorter timeout 已形成完整的一致性邊界。
+- 讓模型直接控制 GPIO、角度或 PWM，會繞過已驗證的資料分類與硬體互斥規則。
+- 現階段仍以三站資料採集與人工分類的實機穩定性優先。
+
+### 影響
+
+- AI 決策層不可直接呼叫 ESP32 或控制 MG996R。
+- 模型失敗、低信心或無法推論時，應回傳結構化結果並保留人工覆核，不得猜測分類。
+- 模型權重、dataset 與訓練輸出不納入 Git；正式整合前另行定義模型版本與信心門檻。
+
 ## 2026-07-13：分類按鈕延遲以可調 idle command polling 控制
 
 ### 決策

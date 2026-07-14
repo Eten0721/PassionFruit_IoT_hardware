@@ -102,6 +102,10 @@ HC-SR04 Echo 接到 ESP32 前必須降壓至 `3.3 V` 邏輯；正常目標為 �
 
 Sorter 狀態獨立使用 `idle／pending／running／completed／failed／timeout`，不得覆蓋既有拍攝 `status`。等待 ESP32 與執行後 timeout 均為 `30 秒`；firmware 自身動作 timeout 為 `5000 ms`。
 
+照片資料完成分類後才嘗試 queue sorter command。若資料夾搬移、metadata 或 counter 操作失敗，不得建立 `classify_fruit`；若資料已成功分類但命令槽忙碌、command ID 無法持久化或 sorter 功能停用，API 仍回傳資料分類成功，並以 `data_classified=true`、`sorter_command_queued=false` 與具體原因說明硬體命令未建立，不得反向搬回資料或回滾 metadata。
+
+Sorter report 進入既有 pending retry 後，firmware 必須立即消耗一次動作結果；重送 report 不得重新驅動 MG996R。Django 進入 terminal 狀態後收到 late duplicate report 時回傳 `200 ignored`，讓 ESP32 停止重送，但不得把既有 `timeout`、`failed` 或 `completed` 改寫成另一個結果。
+
 command id 規則：
 
 ```text
@@ -110,6 +114,8 @@ release_gate_1 -> station_2_ready 使用 release_gate_1 command_id
 release_gate_2 -> station_3_ready 使用 release_gate_2 command_id
 release_gate_3 -> capture_sequence_finished 使用 release_gate_3 command_id
 ```
+
+每次建立 capture 或 sorter command 前，Django 會讀取記憶體與 `Django_Server/runtime_config/motor_command_sequence.json` 的較大值，加一並原子保存，成功後才公開命令。檔案不存在時從 `1` 開始；格式損壞或寫入失敗時回傳 `motor_command_id_persist_failed` 並拒絕建立命令。Dataset reset 不重設 command ID；目前只持久化序列，不承諾 Django 重啟後恢復正在執行的實體命令。
 
 ## 自動觸發鎖定與冪等
 
@@ -120,8 +126,11 @@ Django 是是否允許開始新 fruit 的唯一狀態來源。
 - 已有 active fruit。
 - `dataset/temp/fruit_XXX/` 有未分類暫存資料。
 - 流程處於 `waiting_esp32_start`、`waiting_camera`、`uploaded`、`incomplete` 或 `error`。
+- Sorter 處於 `pending` 或 `running`，或單一 motor command slot 尚有未清除命令。
 
 當 `auto_trigger_enabled=0` 時，`hcsr04_trigger` 回 `200 ignored`。ESP32 收到 ignored 後清除 pending，等待感測器重新待命；不應建立新 fruit，也不應覆蓋既有 motor command。
+
+Sorter `pending／running` 期間，Dashboard 必須停用手動拍攝與四個分類按鈕；Django 也必須拒絕 manual capture、recapture、dataset reset 與第二筆 sorter command。前端 single in-flight 只能降低連點機率，最終互斥仍由 operation token、active fruit 與單一命令槽 guard 保證。
 
 使用者按「跳過／刪除」後，Django 會先嘗試實體刪除；若檔案仍被占用，則隔離到 `_delete_pending`，隔離也失敗時持久標記為待清理並跳過該 fruit ID。三種結果皆有結構化回應，流程會安全回到 `idle`，讓自動／手動觸發立即重新可用。
 
@@ -136,6 +145,7 @@ Django 是是否允許開始新 fruit 的唯一狀態來源。
 - ESP32 預設只印 response 摘要；若需要完整 Django JSON，才將 `verboseHttpResponseLog` 改為 `true`。
 - Wi-Fi 重連與伺服等待以 deadline 驅動，不在主迴圈同步等待數秒。HC-SR04 無回波時最多阻塞 `12 ms`。
 - HTTPS transport 的 connect 與 read 都使用該 request 的 deadline：自動 trigger `1000 ms`、command `1500 ms`、一般 report `5000 ms`。正常情況重用同 origin HTTP/1.1 TLS 連線，Wi-Fi 斷線、timeout、client 失效或 `Connection: close` 時停止 client 後重建。
+- Sorter 在 ESP32 尚未取走命令時等待 `30 秒`，逾時原因為 `esp32_timeout`；第一次 command GET 取走後重新給 `30 秒` 執行期限，逾時原因為 `classifier_timeout`。Firmware 自身仍以 `5000 ms` 動作 timeout 優先安全歸位並回報。
 
 ## 手機相機頁
 
@@ -177,6 +187,8 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 目前 `capture_count` 預期為 `3`。
 
 ## 驗證指令
+
+Windows Django 快速部署與網路設定見 [`README.md`](../README.md)，ESP32 board、library 與重新燒錄步驟見 [`Necessary_library/README.md`](../Necessary_library/README.md)。
 
 Django 測試：
 
