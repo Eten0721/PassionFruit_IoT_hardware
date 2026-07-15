@@ -1,8 +1,8 @@
 # 百香果辨識系統專案脈絡
 
-更新日期：2026-07-14
+更新日期：2026-07-15
 
-目前版本：`v1.2.5, 文件維護`
+目前版本：`v1.2.6, 重整外部模型工作區與整合文件`
 
 ## 1. 專案目標
 
@@ -195,9 +195,9 @@ MG996R 實體分類器目前已可由人工分類按鈕控制；AI 推論與自�
 - 大小特徵，前提是拍攝平面與距離固定。
 - 後段決策模型，例如 XGBoost / Random Forest。
 
-模型訓練與檢測層不再內嵌於本硬體 repository，統一由團隊 repository [`fcu-passionfruit-project/ps-quality-detection-system`](https://github.com/fcu-passionfruit-project/ps-quality-detection-system) 維護。其責任包含 YOLO 訓練、準確率驗證、ROI 裁切、圓形遮罩、灰階 CLAHE、顏色、皺褶、局部瑕疵 pipeline、dataset manifest 與正式模型版本。本 repository 的 [`model_training/README.md`](../model_training/README.md) 只記錄連結與整合邊界。
+模型訓練與檢測層統一由團隊 repository [`fcu-passionfruit-project/ps-quality-detection-system`](https://github.com/fcu-passionfruit-project/ps-quality-detection-system) 維護。其責任包含 YOLO 訓練、準確率驗證、ROI 裁切、圓形遮罩、灰階 CLAHE、顏色、皺褶、局部瑕疵 pipeline、dataset manifest 與正式模型版本。本機將該獨立 repository 放在 `external/ps-quality-detection-system/`；父層硬體 Git 不追蹤其內容，整合邊界見 [`external/README.md`](../external/README.md)。
 
-本機開發採三個互相獨立的位置：硬體 repository 位於 `D:\PassionFruit_IoT_hardware\`，模型 repository 位於 `D:\ps-quality-detection-system\`，原始照片與訓練資料位於 `D:\passion-fruit-datasets\`。目前不使用 Git submodule；待檢測層成為可匯入的 Python package 並建立版本 tag 後，Django 再透過薄 adapter 固定使用指定版本。
+本機硬體 repository 位於 `D:\PassionFruit_IoT_hardware\`，模型 repository 位於其下的 `external\ps-quality-detection-system\`，原始照片與訓練資料位於 `D:\passion-fruit-datasets\`。模型目錄雖位於硬體工作區內，仍保留獨立 `.git`，且不使用 Git submodule；待檢測層成為可匯入的 Python package 並建立版本 tag 後，Django 再透過薄 adapter 固定使用指定版本。
 
 模型 repository 應輸出每個站點的 ROI、顏色、皺褶、局部瑕疵、confidence、耗時與模型版本。模型載入失敗、找不到百香果或低信心時，必須保留人工覆核，不能直接驅動 ESP32。
 
@@ -210,4 +210,4 @@ MG996R 實體分類器目前已可由人工分類按鈕控制；AI 推論與自�
 - 預設 A Plan 使用 iPhone 個人熱點，Django 電腦固定為 `172.20.10.3`。改用其他 Wi-Fi 時，Django 仍綁定 `0.0.0.0:8000`，但必須更新 `secrets.h` 的 SSID、密碼、`commandUrl` 與 `reportUrl`，再重新燒錄 ESP32。
 - ESP32 正式依賴與燒錄步驟見 [`Necessary_library/README.md`](../Necessary_library/README.md)。目前只需要 ESP32 board package 與 `ESP32Servo 3.2.1`；本機舊版 WiFi／Servo／HCSR04、Node.js ZIP、Node-RED flow、SQL 與編譯產物不是正式依賴。
 - `Django_Server/dataset/`、runtime JSON、`.env` 與 `secrets.h` 皆不由 GitHub 備份，部署或移機前必須另行保存需要的資料。
-- 模型訓練 repository、正式模型版本與 dataset 交接規則見 [`model_training/README.md`](../model_training/README.md)；本硬體 repository 不追蹤模型權重或訓練輸出。
+- 模型訓練 repository、正式模型版本與 dataset 交接規則見 [`external/README.md`](../external/README.md)；本硬體 repository 不追蹤模型權重或訓練輸出。

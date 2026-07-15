@@ -39,8 +39,7 @@ Django_Server/runtime_config/
 # Project folders not tracked for now
 Necessary_library/*
 !Necessary_library/README.md
-model_training/*
-!model_training/README.md
+/external/ps-quality-detection-system/
 
 # Dataset and raw media
 **/dataset/
@@ -57,7 +56,6 @@ model_training/*
 !docs/images/hardware-development/*.png
 
 # YOLO / ML training outputs and model weights
-model_training/**/runs/
 **/runs/
 *.pt
 *.pth

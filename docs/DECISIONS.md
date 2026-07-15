@@ -1,10 +1,29 @@
 # 決策紀錄
 
+## 2026-07-15：模型 Repository 放入硬體工作區但維持獨立 Git
+
+### 決策
+
+模型 repository 本機移至 `D:\PassionFruit_IoT_hardware\external\ps-quality-detection-system\`，保留自己的 `.git`、GitHub 遠端與 Git LFS。父層硬體 repository 以 `.gitignore` 排除完整模型目錄，兩邊仍各自 commit 與 push，不採用 Git submodule，也不合併歷史。
+
+原本只作為導引的舊 README 已移除，改由 [`external/README.md`](../external/README.md) 記錄 clone、版本管理、dataset 與 Django 整合邊界。
+
+### 原因
+
+- 讓 Django、firmware 與模型程式位於同一個本機工作區，降低跨工作區閱讀與整合的不便。
+- 維持團隊模型 repository 的獨立權限、版本、Git LFS 與發布流程。
+- 避免父層 Git 誤收模型權重、訓練輸出或 child repository 歷史。
+
+### 影響
+
+- 未來檢測層成為 Python package 後，可使用 `python -m pip install -e .\external\ps-quality-detection-system` 連接開發版本。
+- Django 只透過 adapter 取得 ROI、顏色、皺褶、局部瑕疵、confidence 與模型版本；AI 仍不得直接控制 GPIO。
+
 ## 2026-07-14：模型訓練與硬體系統維持雙 Repository
 
 ### 決策
 
-硬體與資料採集系統繼續由 `Eten0721/PassionFruit_IoT_hardware` 維護；YOLO 模型訓練、驗證與 Multi-stage Pipeline 改由團隊 repository `fcu-passionfruit-project/ps-quality-detection-system` 作為唯一來源。原本內嵌在 `model_training/passionFruit/` 的獨立 Git workspace 搬到 `D:\ps-quality-detection-system\`，本硬體 repository 只保留 `model_training/README.md`。
+硬體與資料採集系統繼續由 `Eten0721/PassionFruit_IoT_hardware` 維護；YOLO 模型訓練、驗證與 Multi-stage Pipeline 改由團隊 repository `fcu-passionfruit-project/ps-quality-detection-system` 作為唯一來源。當時先將原本內嵌的獨立 Git workspace 移出硬體 repository；目前本機配置已由上方 `2026-07-15` 決策取代。
 
 原始照片與 dataset 不進任何 Git repository，本機集中於 `D:\passion-fruit-datasets\` 或團隊共用儲存空間。模型 repository 只使用 Git LFS 管理通過驗收的正式權重，排除 `runs/`、`last.pt`、歷史 checkpoint 與圖片。
 

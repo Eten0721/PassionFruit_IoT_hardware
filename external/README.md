@@ -1,0 +1,30 @@
+# 外部 Repository 工作區
+
+`external/` 用來放置需要與本硬體系統共同開發、但仍由其他 Git repository 獨立維護的專案。父層 `Eten0721/PassionFruit_IoT_hardware` 不追蹤這些 child repository 的內容。
+
+## 模型與檢測層
+
+- GitHub：[`fcu-passionfruit-project/ps-quality-detection-system`](https://github.com/fcu-passionfruit-project/ps-quality-detection-system)
+- 本機位置：`external/ps-quality-detection-system/`
+- 正式權重：由模型 repository 使用 Git LFS 管理。
+- 原始照片、dataset、`runs/` 與歷史 checkpoint：不進 Git，改放團隊共用儲存空間並以 manifest 記錄版本與切分。
+
+若本機尚未有模型 repository，請在硬體 repository 根目錄執行：
+
+```powershell
+git clone https://github.com/fcu-passionfruit-project/ps-quality-detection-system.git external\ps-quality-detection-system
+git -C external\ps-quality-detection-system lfs install
+git -C external\ps-quality-detection-system lfs pull
+```
+
+硬體與模型是兩個獨立 repository。修改後必須分別在各自根目錄檢查、commit 與 push；不可在硬體 repository 執行 `git add external/ps-quality-detection-system`。
+
+## 未來 Django 整合
+
+模型 repository 整理成可匯入的 Python package 後，可在硬體專案虛擬環境執行：
+
+```powershell
+python -m pip install -e .\external\ps-quality-detection-system
+```
+
+Django adapter 只接收 ROI、顏色、皺褶、局部瑕疵、confidence、耗時與模型版本等結構化結果。AI 必須透過既有 `classify_fruit`、command ID、互斥與 timeout 協定，不得直接控制 ESP32 GPIO 或 MG996R。

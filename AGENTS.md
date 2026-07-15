@@ -19,9 +19,9 @@
 
 目前資料採集流程已從「滾動中連拍 6 張」改為「三段 SG90 閘門停止拍攝 3 張」。舊版六連拍只保留為歷史背景，不得作為新功能的主要實作方向。
 
-截至 `v1.2.5`，系統已完成三站停止拍攝、首站加速、人工分類與 MG996R 實體分類整合：Django 中央狀態機、手機單張輪詢拍攝、ESP32 三閘門控制、三張照片採集、`trigger_id` 首站捷徑冪等處理、transition trace、照片原子保存、單一 motor command slot 互斥、持久化 command ID 與可調整的閒置命令輪詢皆可運作；並補齊 Windows 快速部署、ESP32 必要依賴、雙 repository 分工與未來 AI 決策層說明。
+截至 `v1.2.6`，系統已完成三站停止拍攝、首站加速、人工分類與 MG996R 實體分類整合：Django 中央狀態機、手機單張輪詢拍攝、ESP32 三閘門控制、三張照片採集、`trigger_id` 首站捷徑冪等處理、transition trace、照片原子保存、單一 motor command slot 互斥、持久化 command ID 與可調整的閒置命令輪詢皆可運作；並補齊 Windows 快速部署、ESP32 必要依賴、雙 repository 分工與未來 AI 決策層說明。
 
-模型訓練與檢測層採獨立 repository：`fcu-passionfruit-project/ps-quality-detection-system`。本硬體 repository 的 `model_training/` 只保留連結與整合邊界，不放內嵌 `.git`、YOLO 訓練 workspace、正式權重或原始照片。本機硬體 workspace 位於 `D:\PassionFruit_IoT_hardware\`，模型 workspace 位於 `D:\ps-quality-detection-system\`，照片資料位於 `D:\passion-fruit-datasets\`。
+模型訓練與檢測層採獨立 repository：`fcu-passionfruit-project/ps-quality-detection-system`。模型 repository 本機放在 `external/ps-quality-detection-system/`，保留自己的 `.git`、GitHub 遠端與 Git LFS，並由父層硬體 repository 忽略；兩邊仍須分別 commit 與 push。本機硬體 workspace 位於 `D:\PassionFruit_IoT_hardware\`，照片資料位於 `D:\passion-fruit-datasets\`。
 
 首張照片加速以「受守門的自動首站捷徑」為預設策略。它只壓縮第 1 站前的 HTTPS 控制往返，不得改變「站點停穩 → 手機單張照片保存成功 → 放行下一閘門」的安全規則。
 
@@ -139,7 +139,7 @@ C:\Users\qoqoo\anaconda3\envs\pf_iot_env\python.exe -m pip install <package>
 
 - `Django_Server/`：電腦端 Django 伺服器，包含 API、前端頁面、dataset 管理與未來 AI 整合入口。
 - `firmware/`：ESP32 Arduino code；正式三閘門資料採集 firmware 位於 `firmware/Three_Gate_Data_Collection/`。
-- `model_training/`：只保留外部模型 repository 的連結與軟硬體整合邊界；完整 YOLO workspace 位於獨立的 `fcu-passionfruit-project/ps-quality-detection-system`。
+- `external/`：放置不由父層 Git 追蹤的外部 repository；目前模型 workspace 位於 `external/ps-quality-detection-system/`，相關邊界見 `external/README.md`。
 - `decision_layer/`：機器學習決策層，例如 XGBoost 相關資料。
 - `hardware_notes/`：硬體實作筆記。
 - `docs/`：repo 文件。
