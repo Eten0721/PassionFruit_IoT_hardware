@@ -93,8 +93,8 @@ HC-SR04 Echo 接到 ESP32 前必須降壓至 `3.3 V` 邏輯；正常目標為 �
 
 1. `capture_sequence_finished` 完成後，使用者才可按中文分類按鈕。
 2. Django 先搬移資料夾、寫入 `metadata.csv`、推進 counter 並清除 active dataset 狀態。
-3. 中文 label 映射為 `high_medium`、`low`、`processing` 或 `discard`，再建立 `classify_fruit`。
-4. MG996R 在 GPIO `25` 前往 `25°／55°／115°／145°`，保持 `1000 ms` 後回到 Home `85°` 並穩定 `500 ms`。
+3. 中文 label 依序映射為上等 `high_medium`、中等 `discard`、下等 `low`、加工 `processing`，再建立 `classify_fruit`。`discard` 僅保留為既有 ESP32 協定值，不代表廢棄級距。
+4. MG996R 依上等 `25°`、中等 `145°`、下等 `55°`、加工 `115°` 前往分類位置，保持 `1000 ms` 後回到 Home `85°` 並穩定 `500 ms`。
 5. ESP32 回報完成或失敗；任何硬體錯誤都不回滾已分類資料。
 6. Sorter pending／running 期間，同一 motor command slot 不得被新拍攝或另一筆分類覆蓋。
 
@@ -172,11 +172,13 @@ dataset/temp/fruit_XXX/
 分類級距：
 
 ```text
-上中等
+上等
+中等
 下等
 加工
-廢棄
 ```
+
+上等、中等與下等目前以皺褶、擦傷及顏色差異作為人工判斷因素，顏色包含綠色、橘色與黃色等情形；尚未定義量化門檻。系統不再提供「廢棄」分類，原本應判為廢棄的果實後續歸入加工。
 
 `metadata.csv` 欄位：
 

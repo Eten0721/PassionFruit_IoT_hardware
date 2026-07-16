@@ -1,8 +1,8 @@
 # 百香果辨識系統專案脈絡
 
-更新日期：2026-07-15
+更新日期：2026-07-16
 
-目前版本：`v1.2.6, 重整外部模型工作區與整合文件`
+目前版本：`v1.2.7, 更新實地考察分類級距與資料`
 
 ## 1. 專案目標
 
@@ -153,15 +153,15 @@ dataset/
       img_02.jpg
       img_03.jpg
 
-  上中等/
+  上等/
     fruit_001/
       img_01.jpg
       img_02.jpg
       img_03.jpg
 
+  中等/
   下等/
   加工/
-  廢棄/
 
   metadata.csv
   counter.json
@@ -170,21 +170,13 @@ dataset/
 目前分類級距：
 
 ```text
-上中等
-下等
-加工
-廢棄
-```
-
-未來若手機鏡頭與平台保持平行且拍攝距離固定，可將 ROI 面積納入「大小」特徵，再評估把 `上中等` 拆成：
-
-```text
 上等
 中等
 下等
 加工
-廢棄
 ```
+
+上等、中等與下等目前依皺褶、擦傷及顏色差異進行人工判斷；顏色需留意綠色、橘色與黃色等情形，但尚未訂定量化門檻。現場不再使用「廢棄」分類，原本應判為廢棄的果實後續歸入加工。既有 ESP32 ASCII code 為相容性維持不變：上等使用 `high_medium`、中等使用 `discard`、下等使用 `low`、加工使用 `processing`；其中 `discard` 僅是歷史協定名稱，不再代表廢棄級距。
 
 ## 9. AI 整合方向
 
@@ -201,7 +193,7 @@ MG996R 實體分類器目前已可由人工分類按鈕控制；AI 推論與自�
 
 模型 repository 應輸出每個站點的 ROI、顏色、皺褶、局部瑕疵、confidence、耗時與模型版本。模型載入失敗、找不到百香果或低信心時，必須保留人工覆核，不能直接驅動 ESP32。
 
-未來決策層的整合邊界記錄於 [`decision_layer/README.md`](../decision_layer/README.md)。模型輸出必須映射為 `high_medium`、`low`、`processing` 或 `discard`，再交由 Django 沿用既有資料分類、單一 motor command slot、command ID、sorter timeout 與 report retry；決策模型不可直接控制 GPIO、MG996R 角度或 PWM。
+未來決策層的整合邊界記錄於 [`decision_layer/README.md`](../decision_layer/README.md)。模型輸出必須依上等、中等、下等、加工的中文語意，分別映射為相容代碼 `high_medium`、`discard`、`low`、`processing`，再交由 Django 沿用既有資料分類、單一 motor command slot、command ID、sorter timeout 與 report retry；決策模型不可直接控制 GPIO、MG996R 角度或 PWM。
 
 ## 10. 部署與本機設定
 

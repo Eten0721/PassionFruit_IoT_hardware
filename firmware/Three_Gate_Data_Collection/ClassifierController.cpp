@@ -117,7 +117,7 @@ ClassifierController::State ClassifierController::state() const {
 ClassifierController::Classification ClassifierController::parseClassification(
     const String& code) const {
   if (code == "high_medium") {
-    return Classification::kHighMedium;
+    return Classification::kHigh;
   }
   if (code == "low") {
     return Classification::kLow;
@@ -126,7 +126,7 @@ ClassifierController::Classification ClassifierController::parseClassification(
     return Classification::kProcessing;
   }
   if (code == "discard") {
-    return Classification::kDiscard;
+    return Classification::kMedium;
   }
   return Classification::kInvalid;
 }
@@ -134,14 +134,14 @@ ClassifierController::Classification ClassifierController::parseClassification(
 int ClassifierController::angleForClassification(
     Classification classification) const {
   switch (classification) {
-    case Classification::kHighMedium:
-      return FirmwareConfig::kClassifierHighMediumAngle;
+    case Classification::kHigh:
+      return FirmwareConfig::kClassifierHighAngle;
     case Classification::kLow:
       return FirmwareConfig::kClassifierLowAngle;
     case Classification::kProcessing:
       return FirmwareConfig::kClassifierProcessingAngle;
-    case Classification::kDiscard:
-      return FirmwareConfig::kClassifierDiscardAngle;
+    case Classification::kMedium:
+      return FirmwareConfig::kClassifierMediumAngle;
     case Classification::kInvalid:
       return FirmwareConfig::kClassifierHomeAngle;
   }

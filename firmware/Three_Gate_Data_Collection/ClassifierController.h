@@ -46,10 +46,10 @@ class ClassifierController {
  private:
   enum class Classification : uint8_t {
     kInvalid,
-    kHighMedium,
+    kHigh,
     kLow,
     kProcessing,
-    kDiscard,
+    kMedium,
   };
 
   Servo servo_;

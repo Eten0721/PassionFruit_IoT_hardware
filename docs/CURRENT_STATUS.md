@@ -1,8 +1,8 @@
 # 目前狀態
 
-更新日期：2026-07-15
+更新日期：2026-07-16
 
-目前版本進度：`v1.2.6, 重整外部模型工作區與整合文件`
+目前版本進度：`v1.2.7, 更新實地考察分類級距與資料`
 
 ## 已完成
 
@@ -39,12 +39,13 @@
 - 人工資料分類成功後，Django 會在既有單一 motor command slot 建立 `classify_fruit`；ESP32 使用 GPIO `25` 的 MG996R 完成實體分類並回報結果。
 - Sorter 狀態與拍攝主狀態分離；pending／running 期間會鎖住下一次自動與手動拍攝，失敗或逾時不回滾照片資料。
 - Motor command ID 已原子持久化於 `runtime_config/motor_command_sequence.json`，Django 重啟與 dataset reset 不會重用最後一筆 ID。
+- 依 `2026-07-16` 實地考察結果，Dashboard、Django 與 dataset 中文分類已更新為上等、中等、下等、加工；既有 ESP32 ASCII code 與角度保持相容。
 
 ## 目前硬體與 timing
 
 - `HOME_ANGLE = 0`：攔截／歸位。
 - `RELEASE_ANGLE = 90`：放行。
-- MG996R：GPIO `25`，Home `85°`，上中等 `25°`、下等 `55°`、加工 `115°`、廢棄 `145°`；保持 `1000 ms`、歸位穩定 `500 ms`、timeout `5000 ms`。
+- MG996R：GPIO `25`，Home `85°`，上等 `25°`、中等 `145°`、下等 `55°`、加工 `115°`；保持 `1000 ms`、歸位穩定 `500 ms`、timeout `5000 ms`。相容 ASCII code 依序為 `high_medium`、`discard`、`low`、`processing`。
 - HC-SR04 觸發距離：`6.0 cm`。
 - HC-SR04 重新待命距離：`8.0 cm`。
 - `servo_settle_ms = 200`。
@@ -82,12 +83,14 @@
 
 ## 測試
 
-本版已完成的自動化驗證：
+最近一次已完成的自動化驗證基準為 `v1.2.6`：
 
 - Django `fruit_app`：`59` 項測試通過。
 - 相機與 dashboard static JavaScript syntax check 通過。
 - `git diff --check` 通過。
 - 正式 firmware 已以 `esp32:esp32:esp32` 編譯通過；整合第四顆 Servo 後 Flash 約 `82%`、RAM 約 `15%`。
+
+`v1.2.7` 的分類級距更新已完成 dataset 一致性與 `git diff --check` 驗證；Django 測試與 firmware 編譯仍須在具備 `pf_iot_env`、Arduino CLI 與 `ESP32Servo 3.2.1` 的開發機重新執行後，才能更新為本版驗證結果。
 
 Django 測試指令：
 

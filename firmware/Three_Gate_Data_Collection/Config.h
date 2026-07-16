@@ -13,10 +13,10 @@ constexpr uint8_t kClassifierPin = 25;
 constexpr int kHomeAngle = 0;
 constexpr int kReleaseAngle = 90;
 constexpr int kClassifierHomeAngle = 85;
-constexpr int kClassifierHighMediumAngle = 25;
+constexpr int kClassifierHighAngle = 25;
 constexpr int kClassifierLowAngle = 55;
 constexpr int kClassifierProcessingAngle = 115;
-constexpr int kClassifierDiscardAngle = 145;
+constexpr int kClassifierMediumAngle = 145;
 
 constexpr float kTriggerDistanceCM = 6.0F;
 constexpr float kRearmDistanceCM = 8.0F;

@@ -18,12 +18,12 @@ from . import api_payloads, capture_session, capture_timing, dataset_store, moto
 from .runtime_state import RuntimeState
 
 
-LABELS = ['上中等', '下等', '廢棄', '加工']
+LABELS = ['上等', '中等', '下等', '加工']
 CLASSIFICATION_CODES = {
-    '上中等': 'high_medium',
+    '上等': 'high_medium',
+    '中等': 'discard',
     '下等': 'low',
     '加工': 'processing',
-    '廢棄': 'discard',
 }
 IMAGE_COUNT = 3
 IMAGE_FILENAMES = [f'img_{idx:02d}.jpg' for idx in range(1, IMAGE_COUNT + 1)]
@@ -666,7 +666,11 @@ def classify_api(request):
     label = data.get('label')
     note = (data.get('note') or '').strip()
     if label not in LABELS:
-        return _json_error('分類必須是上中等、下等、廢棄或加工。', status=400)
+        return _json_error(
+            '分類必須是上等、中等、下等或加工。',
+            status=400,
+            reason='invalid_label',
+        )
 
     with STATE_LOCK:
         _sync_active_state_with_filesystem()

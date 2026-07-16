@@ -83,20 +83,20 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(response.json()['status'], 'uploaded')
 
         response = self._post_json('/api/classify/', {
-            'label': '上中等',
+            'label': '上等',
             'note': '表皮完整',
         })
         self.assertEqual(response.status_code, 200)
         self.assertFalse((self.dataset_root / 'temp' / 'fruit_120').exists())
-        self.assertTrue((self.dataset_root / '上中等' / 'fruit_120' / 'img_03.jpg').exists())
+        self.assertTrue((self.dataset_root / '上等' / 'fruit_120' / 'img_03.jpg').exists())
         self.assertEqual(response.json()['next_fruit_id'], 'fruit_121')
 
         with (self.dataset_root / 'metadata.csv').open('r', encoding='utf-8-sig', newline='') as csv_file:
             rows = list(csv.DictReader(csv_file))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['fruit_id'], 'fruit_120')
-        self.assertEqual(rows[0]['label'], '上中等')
-        self.assertEqual(rows[0]['path'], '上中等/fruit_120')
+        self.assertEqual(rows[0]['label'], '上等')
+        self.assertEqual(rows[0]['path'], '上等/fruit_120')
         self.assertEqual(rows[0]['capture_count'], '3')
         self.assertEqual(rows[0]['station_01_ok'], 'true')
         self.assertEqual(rows[0]['station_02_ok'], 'true')
@@ -231,10 +231,10 @@ class DataCollectionFlowTests(SimpleTestCase):
 
     def test_all_labels_map_to_ascii_sorter_commands_without_hardware_fields(self):
         expected_codes = {
-            '上中等': 'high_medium',
+            '上等': 'high_medium',
+            '中等': 'discard',
             '下等': 'low',
             '加工': 'processing',
-            '廢棄': 'discard',
         }
         for index, (label, expected_code) in enumerate(expected_codes.items(), start=1):
             fruit_id = f'fruit_{index:03d}'
@@ -315,14 +315,19 @@ class DataCollectionFlowTests(SimpleTestCase):
         partial_dir = self.dataset_root / 'temp' / 'fruit_001'
         partial_dir.mkdir(parents=True)
         (partial_dir / 'img_01.jpg').write_bytes(b'partial')
-        incomplete = self._post_json('/api/classify/', {'label': '上中等'})
+        for legacy_label in ('上中等', '廢棄'):
+            legacy = self._post_json('/api/classify/', {'label': legacy_label})
+            self.assertEqual(legacy.status_code, 400)
+            self.assertEqual(legacy.json()['reason'], 'invalid_label')
+
+        incomplete = self._post_json('/api/classify/', {'label': '上等'})
         self.assertEqual(incomplete.status_code, 409)
         self.assertIsNone(views.APP_STATE['motor_command'])
         self.assertEqual(views.APP_STATE['sorter_status'], 'idle')
 
     def test_sorter_failure_timeout_and_late_report_never_rollback_dataset(self):
         self._complete_auto_session('fruit_001')
-        classified = self._post_json('/api/classify/', {'label': '廢棄'}).json()
+        classified = self._post_json('/api/classify/', {'label': '中等'}).json()
         command = self._esp32_command()
         failed = self._report(
             'classification_sorter_failed',
@@ -332,16 +337,16 @@ class DataCollectionFlowTests(SimpleTestCase):
         )
         self.assertEqual(failed.status_code, 200)
         self.assertEqual(failed.json()['sorter_status'], 'failed')
-        self.assertTrue((self.dataset_root / '廢棄' / classified['fruit_id']).exists())
+        self.assertTrue((self.dataset_root / '中等' / classified['fruit_id']).exists())
 
         self._complete_auto_session('fruit_002')
-        second = self._post_json('/api/classify/', {'label': '上中等'}).json()
+        second = self._post_json('/api/classify/', {'label': '上等'}).json()
         timeout_command = views.APP_STATE['motor_command'].copy()
         views.APP_STATE['sorter_deadline_monotonic'] = 0
         timed_out = self.client.get('/api/state/').json()
         self.assertEqual(timed_out['sorter_status'], 'timeout')
         self.assertEqual(timed_out['sorter_error'], 'esp32_timeout')
-        self.assertTrue((self.dataset_root / '上中等' / second['fruit_id']).exists())
+        self.assertTrue((self.dataset_root / '上等' / second['fruit_id']).exists())
 
         late = self._report(
             'classification_sorter_completed',
@@ -377,8 +382,8 @@ class DataCollectionFlowTests(SimpleTestCase):
 
     def test_duplicate_classification_writes_one_row_and_one_sorter_command(self):
         self._complete_auto_session('fruit_001')
-        first = self._post_json('/api/classify/', {'label': '上中等'})
-        second = self._post_json('/api/classify/', {'label': '上中等'})
+        first = self._post_json('/api/classify/', {'label': '上等'})
+        second = self._post_json('/api/classify/', {'label': '上等'})
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 409)
         self.assertEqual(views.APP_STATE['motor_command']['command_id'], first.json()['sorter_command_id'])
@@ -924,7 +929,7 @@ class DataCollectionFlowTests(SimpleTestCase):
     def test_metadata_header_is_upgraded_from_old_schema(self):
         metadata_path = self.dataset_root / 'metadata.csv'
         metadata_path.write_text(
-            'fruit_id,label,capture_time,path,note\nfruit_001,上中等,2026-07-06 10:00:00,上中等/fruit_001,old note\n',
+            'fruit_id,label,capture_time,path,note\nfruit_001,上等,2026-07-06 10:00:00,上等/fruit_001,old note\n',
             encoding='utf-8-sig',
         )
 
@@ -1014,6 +1019,10 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(dashboard_response.status_code, 200)
         self.assertContains(dashboard_response, '不要開啟 /dashboard/')
         self.assertContains(dashboard_response, '三站照片預覽')
+        for label in ('上等', '中等', '下等', '加工'):
+            self.assertContains(dashboard_response, f'data-label="{label}"')
+        self.assertNotContains(dashboard_response, 'data-label="上中等"')
+        self.assertNotContains(dashboard_response, 'data-label="廢棄"')
         self.assertEqual(dashboard_response['Cache-Control'], 'no-store, max-age=0')
 
         camera_response = self.client.get('/camera/')
@@ -1304,7 +1313,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             client = Client()
             result['response'] = client.post(
                 '/api/classify/',
-                data=json.dumps({'label': '上中等'}),
+                data=json.dumps({'label': '上等'}),
                 content_type='application/json',
             )
 
@@ -1372,17 +1381,17 @@ class DataCollectionFlowTests(SimpleTestCase):
             'kGatePins[kGateCount] = {18, 19, 21}',
             'kClassifierPin = 25',
             'kClassifierHomeAngle = 85',
-            'kClassifierHighMediumAngle = 25',
+            'kClassifierHighAngle = 25',
             'kClassifierLowAngle = 55',
             'kClassifierProcessingAngle = 115',
-            'kClassifierDiscardAngle = 145',
+            'kClassifierMediumAngle = 145',
             'kClassifierHoldMS = 1000UL',
             'kClassifierHomeSettleMS = 500UL',
             'kClassifierTimeoutMS = 5000UL',
             'kIdleCommandPollIntervalMS = 250UL',
         ):
             self.assertIn(contract, config)
-        for code in ('high_medium', 'low', 'processing', 'discard'):
+        for code in ('high_medium', 'discard', 'low', 'processing'):
             self.assertIn(f'code == "{code}"', classifier_source)
         for state in (
             'kUninitialized',

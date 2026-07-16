@@ -19,7 +19,7 @@
 
 目前資料採集流程已從「滾動中連拍 6 張」改為「三段 SG90 閘門停止拍攝 3 張」。舊版六連拍只保留為歷史背景，不得作為新功能的主要實作方向。
 
-截至 `v1.2.6`，系統已完成三站停止拍攝、首站加速、人工分類與 MG996R 實體分類整合：Django 中央狀態機、手機單張輪詢拍攝、ESP32 三閘門控制、三張照片採集、`trigger_id` 首站捷徑冪等處理、transition trace、照片原子保存、單一 motor command slot 互斥、持久化 command ID 與可調整的閒置命令輪詢皆可運作；並補齊 Windows 快速部署、ESP32 必要依賴、雙 repository 分工與未來 AI 決策層說明。
+截至 `v1.2.7`，系統已完成三站停止拍攝、首站加速、人工分類與 MG996R 實體分類整合：Django 中央狀態機、手機單張輪詢拍攝、ESP32 三閘門控制、三張照片採集、`trigger_id` 首站捷徑冪等處理、transition trace、照片原子保存、單一 motor command slot 互斥、持久化 command ID 與可調整的閒置命令輪詢皆可運作；並依 `2026-07-16` 實地考察結果將中文分類與 dataset 更新為上等、中等、下等、加工。
 
 模型訓練與檢測層採獨立 repository：`fcu-passionfruit-project/ps-quality-detection-system`。模型 repository 本機放在 `external/ps-quality-detection-system/`，保留自己的 `.git`、GitHub 遠端與 Git LFS，並由父層硬體 repository 忽略；兩邊仍須分別 commit 與 push。本機硬體 workspace 位於 `D:\PassionFruit_IoT_hardware\`，照片資料位於 `D:\passion-fruit-datasets\`。
 
@@ -35,7 +35,7 @@
 6. 手機相機頁輪詢 Django 取得拍攝請求，每次只拍攝並上傳一個拍攝站點的單張照片。
 7. Django 確認當站照片保存成功後，才設定下一個 ESP32 馬達命令。
 8. 每顆百香果預設只保留 3 張照片，分別對應三個拍攝站點。
-9. 照片先暫存在 `dataset/temp/fruit_XXX/`；使用者確認後再分類到「上中等 / 下等 / 加工 / 廢棄」。
+9. 照片先暫存在 `dataset/temp/fruit_XXX/`；使用者確認後再分類到「上等 / 中等 / 下等 / 加工」。上等、中等與下等依皺褶、擦傷及顏色差異判斷；不再提供廢棄級距，原本應判為廢棄的果實歸入加工。
 10. 未分類暫存資料存在時，Django 會讓 `auto_trigger_enabled=0`，ESP32 不應開始下一顆自動拍攝流程。
 11. 不得使用固定延遲猜測手機是否拍攝完成；手機拍攝完成必須以 Django 收到照片並保存成功為準。
 
@@ -57,7 +57,7 @@ Django 已將可獨立責任抽出為 `capture_session.py`、`dataset_store.py` 
 
 - `HOME_ANGLE = 0`：攔截／歸位角度。
 - `RELEASE_ANGLE = 90`：放行角度。
-- MG996R 使用 GPIO `25`，Home 為 `85°`；上中等、下等、加工、廢棄分別為 `25°`、`55°`、`115°`、`145°`。分類位置保持 `1000 ms`，歸位穩定 `500 ms`，動作 timeout 為 `5000 ms`。
+- MG996R 使用 GPIO `25`，Home 為 `85°`；上等、中等、下等、加工分別為 `25°`、`145°`、`55°`、`115°`。為相容既有 ESP32，ASCII code 仍依序使用 `high_medium`、`discard`、`low`、`processing`；`discard` 現在代表中等。分類位置保持 `1000 ms`，歸位穩定 `500 ms`，動作 timeout 為 `5000 ms`。
 - HC-SR04 目前觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`。
 - Dashboard timing profile 的推薦值依序為：`first_station_settle_ms = 300`、`servo_settle_ms = 200`、`fruit_settle_ms = 350`、`final_gate_return_delay_ms = 300`、`idle_command_poll_interval_ms = 250`（單位皆為 `ms`）。`Config.h` 只保留斷線／首次刷入時的 fallback。
 - `POST /api/capture_timing/` 只能在 Django 為 `idle`、沒有 active fruit 或 motor command 時更新完整五項設定。所有數值必須為 `50 ms` 的倍數；四項機構 timing 的上限為 `3000 ms`，最終歸位延遲可為 `0 ms`，idle command polling 範圍為 `100～5000 ms`。
