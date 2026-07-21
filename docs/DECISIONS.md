@@ -1,5 +1,28 @@
 # 決策紀錄
 
+## 2026-07-22：統一 AI 特徵契約並撤除 prototype 權重追蹤
+
+### 決策
+
+Stage 1 的大小特徵定義為每張原始照片中的 `roi_area_ratio = bbox_width × bbox_height / (image_width × image_height)`，分別保存三個站點的比例。這個數值只代表百香果 bounding box 在照片中的相對佔比，不是平方公分或真實表面積。`pf-20260716-v001` 的 `981` 張照片已確認全部為 `1080 × 1920`，但計算時仍必須讀取每張照片的實際寬高。
+
+皺褶正式目標採 `smooth`／`wrinkle` 二分類；局部瑕疵只考慮炭疽病、畫圖蟲、擦傷與蟲咬。炭疽病經已驗證門檻判定為陽性時，以硬規則直接輸出加工 `processing`；其餘果實才進入 XGBoost 四分類。現有 `metadata.csv` 只有人工 label 與未正規化 note，必須先由影像 pipeline 產生結構化特徵，不能直接作為完整 XGBoost 輸入。
+
+模型 repository 的 `stage1.pt`、`stage2_1.pt`、`stage2_2.pt` 三個 prototype 從目前追蹤樹撤除，實體檔案留在開發者本機並由 `*.pt` 忽略。repository 目前不發布模型權重；未來只有通過準確率、類別對照、SHA-256 與硬體整合驗收的正式權重才可使用 Git LFS。
+
+### 原因
+
+- ROI 像素面積會隨照片解析度改變，使用原始影像面積正規化後，XGBoost 才能取得可比較的相對大小特徵。
+- 實地資料確認同學家的百香果局部瑕疵為炭疽病、畫圖蟲、擦傷與蟲咬；猴痘、芽種不良目前資料為零。
+- 現有權重屬 prototype，皺褶類別也不符合正式二分類規格，不應繼續被 README 或 manifest 宣稱為可交付正式權重。
+
+### 影響
+
+- 模型 manifest 目前使用 `models: {}`，並把四個模型列為待訓練與驗收；不保留指向已撤除權重的 path 或 SHA-256。
+- 舊 commit 與遠端 Git LFS 歷史物件保留，不進行 history rewrite、LFS migrate 或 force push。
+- Notion 的 Decision Layer 與 Multi-stage Pipeline 只做指定段落的小幅更新，保留圖片、toggle、callout 與研究筆記。
+- Django、firmware、`classify_fruit` 協定與 MG996R 角度均不變；AI 自動推論仍未正式整合。
+
 ## 2026-07-18：統一分類代碼、重排 MG996R 角度並凍結實地資料快照
 
 ### 決策

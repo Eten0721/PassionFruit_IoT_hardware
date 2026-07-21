@@ -188,7 +188,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 目前 `capture_count` 預期為 `3`。
 
-`2026-07-16` 的凍結快照 `pf-20260716-v001` 含 `327` 顆與 `981` 張照片，分類分布為上等 `102`、中等 `65`、下等 `56`、加工 `104`。快照實體保存在 `D:\passion-fruit-datasets\pf-20260716-v001`，透過模型 repository 的 `dataset/pf-20260716-v001` 存取；目前 `split_status` 為 `pending_roboflow`，尚未建立 train／valid／test。
+`2026-07-16` 的凍結快照 `pf-20260716-v001` 含 `327` 顆與 `981` 張照片，分類分布為上等 `102`、中等 `65`、下等 `56`、加工 `104`。三站各 `327` 張且全部為 `1080 × 1920`；`metadata.csv` 只有人工分類 label 與未正規化 note，不能直接作為完整 XGBoost 特徵表。快照實體保存在 `D:\passion-fruit-datasets\pf-20260716-v001`，透過模型 repository 的 `dataset/pf-20260716-v001` 存取；目前 `split_status` 為 `pending_roboflow`，尚未建立 train／valid／test。
 
 ## 驗證指令
 
