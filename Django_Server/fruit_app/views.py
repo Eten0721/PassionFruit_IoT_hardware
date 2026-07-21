@@ -20,8 +20,8 @@ from .runtime_state import RuntimeState
 
 LABELS = ['上等', '中等', '下等', '加工']
 CLASSIFICATION_CODES = {
-    '上等': 'high_medium',
-    '中等': 'discard',
+    '上等': 'high',
+    '中等': 'medium',
     '下等': 'low',
     '加工': 'processing',
 }

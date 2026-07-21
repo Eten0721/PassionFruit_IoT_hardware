@@ -34,6 +34,7 @@ Django_Server/*.sqlite3
 Django_Server/media/
 Django_Server/staticfiles/
 Django_Server/dataset/
+Django_Server/0716_dataset/
 Django_Server/runtime_config/
 
 # Project folders not tracked for now

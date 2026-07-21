@@ -1,5 +1,26 @@
 # 決策紀錄
 
+## 2026-07-18：統一分類代碼、重排 MG996R 角度並凍結實地資料快照
+
+### 決策
+
+Django 新建立的 `classify_fruit` 統一使用上等 `high`、中等 `medium`、下等 `low`、加工 `processing`。MG996R 依實體出口順序重排為上等 `25°`、中等 `55°`、下等 `115°`、加工 `145°`；新版 firmware 同時接受 `high_medium` 與 `discard` 作為舊 Django 的輸入 alias，但 alias 也必須套用新角度。
+
+`2026-07-16` 的 `327` 顆／`981` 張三站資料凍結為 `pf-20260716-v001`，實體保存於 `D:\passion-fruit-datasets\pf-20260716-v001`。模型 repository 以 ignored `dataset/` junction 指向獨立資料目錄，並只追蹤 `datasets/pf-20260716-v001.yaml` manifest；train／valid／test 留待 Roboflow 建立。
+
+### 原因
+
+- 直接把舊 `discard` 位置改稱中等會使實體出口順序不直覺，且不符合目前分類機構的預期排列。
+- 新代碼可消除 `high_medium` 與 `discard` 的歷史語意歧義；firmware 保留輸入 alias，可先燒入新 firmware，再安全切換 Django。
+- 實地照片已確定用於後續 YOLO／Roboflow 工作，必須離開硬體 repository 的臨時資料路徑，並以 checksum 與 manifest 固定資料來源。
+
+### 影響
+
+- 部署順序固定為：Django idle 且無 pending sorter → 先燒雙相容 firmware → 再啟動新版 Django。
+- Home、保持時間、歸位穩定、timeout、command ID、單一命令槽與 sorter report 規則不變。
+- `pf-20260716-v001` 保留 `195` 筆未正規化自由文字 note；送入 Roboflow 或模型特徵流程前需另行清理。
+- Junction 不是備份，凍結快照仍須上傳 Roboflow 或團隊共用儲存空間。
+
 ## 2026-07-16：分類級距改為上等、中等、下等、加工
 
 ### 決策

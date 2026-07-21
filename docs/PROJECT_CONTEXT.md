@@ -1,8 +1,8 @@
 # 百香果辨識系統專案脈絡
 
-更新日期：2026-07-16
+更新日期：2026-07-18
 
-目前版本：`v1.2.7, 更新實地考察分類級距與資料`
+目前版本：`v1.2.8, 統一分類協定、重排分類角度與保存實地資料快照`
 
 ## 1. 專案目標
 
@@ -82,7 +82,7 @@ Sorter 使用獨立的 `idle／pending／running／completed／failed／timeout`
 - Gate 3：GPIO `21`
 - HC-SR04 Trig：GPIO `26`
 - HC-SR04 Echo：GPIO `27`
-- MG996R 分類器：GPIO `25`，Home `85°`；必須使用獨立外部電源並與 ESP32 共地。
+- MG996R 分類器：GPIO `25`，Home `85°`，上等 `25°`、中等 `55°`、下等 `115°`、加工 `145°`；必須使用獨立外部電源並與 ESP32 共地。
 
 HC-SR04 的 Echo 是 `5 V` 邏輯輸出，接到 ESP32 GPIO 前必須經過分壓或邏輯電平轉換；正常目標為 ≤ `3.3 V`，絕不可超過 `3.6 V`。接線與量測方式見 `hardware_notes/HC-SR04_ESP32_3V3_安全檢查.md`。
 
@@ -176,7 +176,9 @@ dataset/
 加工
 ```
 
-上等、中等與下等目前依皺褶、擦傷及顏色差異進行人工判斷；顏色需留意綠色、橘色與黃色等情形，但尚未訂定量化門檻。現場不再使用「廢棄」分類，原本應判為廢棄的果實後續歸入加工。既有 ESP32 ASCII code 為相容性維持不變：上等使用 `high_medium`、中等使用 `discard`、下等使用 `low`、加工使用 `processing`；其中 `discard` 僅是歷史協定名稱，不再代表廢棄級距。
+上等、中等與下等目前依皺褶、擦傷及顏色差異進行人工判斷；顏色需留意綠色、橘色與黃色等情形，但尚未訂定量化門檻。現場不再使用「廢棄」分類，原本應判為廢棄的果實後續歸入加工。Django 正式 ASCII code 為上等 `high`、中等 `medium`、下等 `low`、加工 `processing`；新版 firmware 仍接受 `high_medium` 與 `discard` 作為舊 Django 的輸入 alias。
+
+`2026-07-16` 實地採集快照 `pf-20260716-v001` 含 `327` 顆百香果與 `981` 張三站照片：上等 `102` 顆、中等 `65` 顆、下等 `56` 顆、加工 `104` 顆。所有 fruit ID 由 `001` 至 `327` 連續、每顆三張且三站完成旗標皆為 true；`195` 筆 metadata note 為尚未正規化的自由文字。快照實體保存在 `D:\passion-fruit-datasets\pf-20260716-v001`，由模型 repository 的 ignored `dataset/` junction 存取，尚未建立 Roboflow train／valid／test 切分。
 
 ## 9. AI 整合方向
 
@@ -189,11 +191,11 @@ MG996R 實體分類器目前已可由人工分類按鈕控制；AI 推論與自�
 
 模型訓練與檢測層統一由團隊 repository [`fcu-passionfruit-project/ps-quality-detection-system`](https://github.com/fcu-passionfruit-project/ps-quality-detection-system) 維護。其責任包含 YOLO 訓練、準確率驗證、ROI 裁切、圓形遮罩、灰階 CLAHE、顏色、皺褶、局部瑕疵 pipeline、dataset manifest 與正式模型版本。本機將該獨立 repository 放在 `external/ps-quality-detection-system/`；父層硬體 Git 不追蹤其內容，整合邊界見 [`external/README.md`](../external/README.md)。
 
-本機硬體 repository 位於 `D:\PassionFruit_IoT_hardware\`，模型 repository 位於其下的 `external\ps-quality-detection-system\`，原始照片與訓練資料位於 `D:\passion-fruit-datasets\`。模型目錄雖位於硬體工作區內，仍保留獨立 `.git`，且不使用 Git submodule；待檢測層成為可匯入的 Python package 並建立版本 tag 後，Django 再透過薄 adapter 固定使用指定版本。
+本機硬體 repository 位於 `D:\PassionFruit_IoT_hardware\`，模型 repository 位於其下的 `external\ps-quality-detection-system\`，原始照片與訓練資料位於 `D:\passion-fruit-datasets\`。模型 repository 根目錄的 ignored `dataset/` 是指向該獨立資料目錄的 Windows junction；`datasets/` 則只保存可追蹤的 manifest。模型目錄仍保留獨立 `.git`，且不使用 Git submodule；待檢測層成為可匯入的 Python package 並建立版本 tag 後，Django 再透過薄 adapter 固定使用指定版本。
 
 模型 repository 應輸出每個站點的 ROI、顏色、皺褶、局部瑕疵、confidence、耗時與模型版本。模型載入失敗、找不到百香果或低信心時，必須保留人工覆核，不能直接驅動 ESP32。
 
-未來決策層的整合邊界記錄於 [`decision_layer/README.md`](../decision_layer/README.md)。模型輸出必須依上等、中等、下等、加工的中文語意，分別映射為相容代碼 `high_medium`、`discard`、`low`、`processing`，再交由 Django 沿用既有資料分類、單一 motor command slot、command ID、sorter timeout 與 report retry；決策模型不可直接控制 GPIO、MG996R 角度或 PWM。
+未來決策層的整合邊界記錄於 [`decision_layer/README.md`](../decision_layer/README.md)。模型輸出必須依上等、中等、下等、加工的中文語意，分別映射為正式代碼 `high`、`medium`、`low`、`processing`，再交由 Django 沿用既有資料分類、單一 motor command slot、command ID、sorter timeout 與 report retry；決策模型不可直接控制 GPIO、MG996R 角度或 PWM。
 
 ## 10. 部署與本機設定
 

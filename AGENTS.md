@@ -19,9 +19,9 @@
 
 目前資料採集流程已從「滾動中連拍 6 張」改為「三段 SG90 閘門停止拍攝 3 張」。舊版六連拍只保留為歷史背景，不得作為新功能的主要實作方向。
 
-截至 `v1.2.7`，系統已完成三站停止拍攝、首站加速、人工分類與 MG996R 實體分類整合：Django 中央狀態機、手機單張輪詢拍攝、ESP32 三閘門控制、三張照片採集、`trigger_id` 首站捷徑冪等處理、transition trace、照片原子保存、單一 motor command slot 互斥、持久化 command ID 與可調整的閒置命令輪詢皆可運作；並依 `2026-07-16` 實地考察結果將中文分類與 dataset 更新為上等、中等、下等、加工。
+截至 `v1.2.8`，系統已完成三站停止拍攝、首站加速、人工分類與 MG996R 實體分類整合：Django 中央狀態機、手機單張輪詢拍攝、ESP32 三閘門控制、三張照片採集、`trigger_id` 首站捷徑冪等處理、transition trace、照片原子保存、單一 motor command slot 互斥、持久化 command ID 與可調整的閒置命令輪詢皆可運作；並依 `2026-07-16` 實地考察結果將中文分類與 dataset 更新為上等、中等、下等、加工。`2026-07-18` 再將正式分類 code 統一為 `high`、`medium`、`low`、`processing`，並依實體出口順序重排 MG996R 角度。
 
-模型訓練與檢測層採獨立 repository：`fcu-passionfruit-project/ps-quality-detection-system`。模型 repository 本機放在 `external/ps-quality-detection-system/`，保留自己的 `.git`、GitHub 遠端與 Git LFS，並由父層硬體 repository 忽略；兩邊仍須分別 commit 與 push。本機硬體 workspace 位於 `D:\PassionFruit_IoT_hardware\`，照片資料位於 `D:\passion-fruit-datasets\`。
+模型訓練與檢測層採獨立 repository：`fcu-passionfruit-project/ps-quality-detection-system`。模型 repository 本機放在 `external/ps-quality-detection-system/`，保留自己的 `.git`、GitHub 遠端與 Git LFS，並由父層硬體 repository 忽略；兩邊仍須分別 commit 與 push。本機硬體 workspace 位於 `D:\PassionFruit_IoT_hardware\`，照片快照實體位於 `D:\passion-fruit-datasets\`，模型 repository 的 ignored `dataset/` junction 指向該獨立資料目錄。
 
 首張照片加速以「受守門的自動首站捷徑」為預設策略。它只壓縮第 1 站前的 HTTPS 控制往返，不得改變「站點停穩 → 手機單張照片保存成功 → 放行下一閘門」的安全規則。
 
@@ -57,7 +57,7 @@ Django 已將可獨立責任抽出為 `capture_session.py`、`dataset_store.py` 
 
 - `HOME_ANGLE = 0`：攔截／歸位角度。
 - `RELEASE_ANGLE = 90`：放行角度。
-- MG996R 使用 GPIO `25`，Home 為 `85°`；上等、中等、下等、加工分別為 `25°`、`145°`、`55°`、`115°`。為相容既有 ESP32，ASCII code 仍依序使用 `high_medium`、`discard`、`low`、`processing`；`discard` 現在代表中等。分類位置保持 `1000 ms`，歸位穩定 `500 ms`，動作 timeout 為 `5000 ms`。
+- MG996R 使用 GPIO `25`，Home 為 `85°`；上等、中等、下等、加工分別為 `25°`、`55°`、`115°`、`145°`。Django 正式 ASCII code 依序為 `high`、`medium`、`low`、`processing`；新版 firmware 仍接受舊輸入 alias `high_medium` 與 `discard`，但一律套用新的分類語意與角度。分類位置保持 `1000 ms`，歸位穩定 `500 ms`，動作 timeout 為 `5000 ms`。
 - HC-SR04 目前觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`。
 - Dashboard timing profile 的推薦值依序為：`first_station_settle_ms = 300`、`servo_settle_ms = 200`、`fruit_settle_ms = 350`、`final_gate_return_delay_ms = 300`、`idle_command_poll_interval_ms = 250`（單位皆為 `ms`）。`Config.h` 只保留斷線／首次刷入時的 fallback。
 - `POST /api/capture_timing/` 只能在 Django 為 `idle`、沒有 active fruit 或 motor command 時更新完整五項設定。所有數值必須為 `50 ms` 的倍數；四項機構 timing 的上限為 `3000 ms`，最終歸位延遲可為 `0 ms`，idle command polling 範圍為 `100～5000 ms`。

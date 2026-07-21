@@ -231,8 +231,8 @@ class DataCollectionFlowTests(SimpleTestCase):
 
     def test_all_labels_map_to_ascii_sorter_commands_without_hardware_fields(self):
         expected_codes = {
-            '上等': 'high_medium',
-            '中等': 'discard',
+            '上等': 'high',
+            '中等': 'medium',
             '下等': 'low',
             '加工': 'processing',
         }
@@ -1382,17 +1382,19 @@ class DataCollectionFlowTests(SimpleTestCase):
             'kClassifierPin = 25',
             'kClassifierHomeAngle = 85',
             'kClassifierHighAngle = 25',
-            'kClassifierLowAngle = 55',
-            'kClassifierProcessingAngle = 115',
-            'kClassifierMediumAngle = 145',
+            'kClassifierMediumAngle = 55',
+            'kClassifierLowAngle = 115',
+            'kClassifierProcessingAngle = 145',
             'kClassifierHoldMS = 1000UL',
             'kClassifierHomeSettleMS = 500UL',
             'kClassifierTimeoutMS = 5000UL',
             'kIdleCommandPollIntervalMS = 250UL',
         ):
             self.assertIn(contract, config)
-        for code in ('high_medium', 'discard', 'low', 'processing'):
+        for code in ('high', 'medium', 'low', 'processing', 'high_medium', 'discard'):
             self.assertIn(f'code == "{code}"', classifier_source)
+        self.assertIn('code == "high" || code == "high_medium"', classifier_source)
+        self.assertIn('code == "medium" || code == "discard"', classifier_source)
         for state in (
             'kUninitialized',
             'kBootHomeSettling',

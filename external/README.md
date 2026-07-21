@@ -7,7 +7,9 @@
 - GitHub：[`fcu-passionfruit-project/ps-quality-detection-system`](https://github.com/fcu-passionfruit-project/ps-quality-detection-system)
 - 本機位置：`external/ps-quality-detection-system/`
 - 正式權重：由模型 repository 使用 Git LFS 管理。
-- 原始照片、dataset、`runs/` 與歷史 checkpoint：不進 Git，改放團隊共用儲存空間並以 manifest 記錄版本與切分。
+- 原始照片、dataset、`runs/` 與歷史 checkpoint：不進 Git。原始快照實體放在 `D:\passion-fruit-datasets\`，模型 repository 的 ignored `dataset/` junction 指向該位置，並以 `datasets/*.yaml` manifest 記錄版本、checksum 與切分狀態。
+
+目前凍結快照 `pf-20260716-v001` 含 `327` 顆百香果與 `981` 張三站照片，可由 `external/ps-quality-detection-system/dataset/pf-20260716-v001/` 存取。該 junction 不是備份；照片仍須上傳 Roboflow 或團隊共用儲存空間建立第二份副本。
 
 若本機尚未有模型 repository，請在硬體 repository 根目錄執行：
 

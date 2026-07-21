@@ -116,17 +116,17 @@ ClassifierController::State ClassifierController::state() const {
 
 ClassifierController::Classification ClassifierController::parseClassification(
     const String& code) const {
-  if (code == "high_medium") {
+  if (code == "high" || code == "high_medium") {
     return Classification::kHigh;
+  }
+  if (code == "medium" || code == "discard") {
+    return Classification::kMedium;
   }
   if (code == "low") {
     return Classification::kLow;
   }
   if (code == "processing") {
     return Classification::kProcessing;
-  }
-  if (code == "discard") {
-    return Classification::kMedium;
   }
   return Classification::kInvalid;
 }

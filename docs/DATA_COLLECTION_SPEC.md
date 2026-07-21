@@ -93,8 +93,8 @@ HC-SR04 Echo 接到 ESP32 前必須降壓至 `3.3 V` 邏輯；正常目標為 �
 
 1. `capture_sequence_finished` 完成後，使用者才可按中文分類按鈕。
 2. Django 先搬移資料夾、寫入 `metadata.csv`、推進 counter 並清除 active dataset 狀態。
-3. 中文 label 依序映射為上等 `high_medium`、中等 `discard`、下等 `low`、加工 `processing`，再建立 `classify_fruit`。`discard` 僅保留為既有 ESP32 協定值，不代表廢棄級距。
-4. MG996R 依上等 `25°`、中等 `145°`、下等 `55°`、加工 `115°` 前往分類位置，保持 `1000 ms` 後回到 Home `85°` 並穩定 `500 ms`。
+3. 中文 label 依序映射為上等 `high`、中等 `medium`、下等 `low`、加工 `processing`，再建立 `classify_fruit`。新版 firmware 額外接受 `high_medium` 與 `discard` 作為舊 Django 的輸入 alias，但新命令不得再產生這兩個歷史代碼。
+4. MG996R 依上等 `25°`、中等 `55°`、下等 `115°`、加工 `145°` 前往分類位置，保持 `1000 ms` 後回到 Home `85°` 並穩定 `500 ms`。
 5. ESP32 回報完成或失敗；任何硬體錯誤都不回滾已分類資料。
 6. Sorter pending／running 期間，同一 motor command slot 不得被新拍攝或另一筆分類覆蓋。
 
@@ -187,6 +187,8 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 ```
 
 目前 `capture_count` 預期為 `3`。
+
+`2026-07-16` 的凍結快照 `pf-20260716-v001` 含 `327` 顆與 `981` 張照片，分類分布為上等 `102`、中等 `65`、下等 `56`、加工 `104`。快照實體保存在 `D:\passion-fruit-datasets\pf-20260716-v001`，透過模型 repository 的 `dataset/pf-20260716-v001` 存取；目前 `split_status` 為 `pending_roboflow`，尚未建立 train／valid／test。
 
 ## 驗證指令
 

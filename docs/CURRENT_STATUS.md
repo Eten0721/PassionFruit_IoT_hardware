@@ -1,14 +1,14 @@
 # 目前狀態
 
-更新日期：2026-07-16
+更新日期：2026-07-18
 
-目前版本進度：`v1.2.7, 更新實地考察分類級距與資料`
+目前版本進度：`v1.2.8, 統一分類協定、重排分類角度與保存實地資料快照`
 
 ## 已完成
 
 - `v1.2.4` 文件更新與 `v1.2.5` 文件維護 commit 已推送至 GitHub；`v1.2.6` 重整外部模型工作區與整合文件。既有 `v1.2.3` annotated tag 與更早歷史保持不變，沒有重寫遠端 main 或既有 tag。
 - 硬體與 Django repository 使用 `Eten0721/PassionFruit_IoT_hardware`；模型訓練、驗證與 Multi-stage Pipeline 由 `fcu-passionfruit-project/ps-quality-detection-system` 獨立維護，正式權重只在模型 repository 以 Git LFS 管理。
-- 本機硬體 workspace 位於 `D:\PassionFruit_IoT_hardware\`，模型 workspace 已搬至 `external\ps-quality-detection-system\`，原始 dataset 位於 `D:\passion-fruit-datasets\`；模型目錄保留獨立 `.git`，硬體 repository 不使用 Git submodule，也不追蹤模型權重或照片。
+- 本機硬體 workspace 位於 `D:\PassionFruit_IoT_hardware\`，模型 workspace 位於 `external\ps-quality-detection-system\`；`pf-20260716-v001` 原始快照實體位於 `D:\passion-fruit-datasets\`，模型 repository 以 ignored `dataset/` junction 存取。模型目錄保留獨立 `.git`，硬體 repository 不使用 Git submodule，也不追蹤模型權重或照片。
 - `Necessary_library/README.md` 已整理目前正式 ESP32 firmware 的快速燒錄需求；舊版 WiFi／Servo／HCSR04 函式庫、Node.js 安裝包、Node-RED flow、SQL 與編譯產物維持本機忽略，不列為正式依賴。
 - `decision_layer/README.md` 已建立未來 AI／XGBoost 決策層的整合邊界；目前仍由人工按鈕產生既有 `classify_fruit` 命令，尚未實作自動推論。
 - 根目錄 `README.md` 已精簡為同學電腦可快速復現的 Windows 部署指南，包含 Python `3.10.20`、Conda／`venv`、iPhone 熱點固定 IP `172.20.10.3`、Windows 防火牆與同學家 Wi-Fi 備案。
@@ -39,13 +39,15 @@
 - 人工資料分類成功後，Django 會在既有單一 motor command slot 建立 `classify_fruit`；ESP32 使用 GPIO `25` 的 MG996R 完成實體分類並回報結果。
 - Sorter 狀態與拍攝主狀態分離；pending／running 期間會鎖住下一次自動與手動拍攝，失敗或逾時不回滾照片資料。
 - Motor command ID 已原子持久化於 `runtime_config/motor_command_sequence.json`，Django 重啟與 dataset reset 不會重用最後一筆 ID。
-- 依 `2026-07-16` 實地考察結果，Dashboard、Django 與 dataset 中文分類已更新為上等、中等、下等、加工；既有 ESP32 ASCII code 與角度保持相容。
+- 依 `2026-07-16` 實地考察結果，Dashboard、Django 與 dataset 中文分類已更新為上等、中等、下等、加工。
+- `v1.2.8` 將 Django 正式分類 code 統一為 `high`、`medium`、`low`、`processing`，並將 MG996R 重排為上等 `25°`、中等 `55°`、下等 `115°`、加工 `145°`；新版 firmware 仍接受 `high_medium` 與 `discard` 作為舊 Django 輸入 alias。
+- `pf-20260716-v001` 已凍結 `327` 顆／`981` 張三站照片，上等 `102`、中等 `65`、下等 `56`、加工 `104`；fruit ID、三站旗標、path 與 counter 均通過一致性檢查，另有 `195` 筆未正規化 note。尚未建立 Roboflow train／valid／test。
 
 ## 目前硬體與 timing
 
 - `HOME_ANGLE = 0`：攔截／歸位。
 - `RELEASE_ANGLE = 90`：放行。
-- MG996R：GPIO `25`，Home `85°`，上等 `25°`、中等 `145°`、下等 `55°`、加工 `115°`；保持 `1000 ms`、歸位穩定 `500 ms`、timeout `5000 ms`。相容 ASCII code 依序為 `high_medium`、`discard`、`low`、`processing`。
+- MG996R：GPIO `25`，Home `85°`，上等 `25°`、中等 `55°`、下等 `115°`、加工 `145°`；保持 `1000 ms`、歸位穩定 `500 ms`、timeout `5000 ms`。正式 ASCII code 依序為 `high`、`medium`、`low`、`processing`。
 - HC-SR04 觸發距離：`6.0 cm`。
 - HC-SR04 重新待命距離：`8.0 cm`。
 - `servo_settle_ms = 200`。
@@ -80,17 +82,18 @@
 3. 健康網路完成連續 `20` 次自動採集；以 Django trace 觀察伺服器端鏈路，並以同次 firmware Serial timing 與高速錄影量測 HC-SR04 實體偵測到第 1 張原子保存的中位數與 `p95`。
 4. 驗證 Wi-Fi 中斷、TLS timeout、手機未上傳、錯站照片與重複 trigger 時，流程不會提早放行或建立重複 fruit。
 5. 依實測微調 `triggerDistanceCM`、第 1 站機構位置與 `firstStationSettleMS`；維持現有人工按鈕與 MG996R 流程，穩定後再接入 AI 自動決策。
+6. 先燒入可接受新舊分類 code 的 `v1.2.8` firmware，再部署新版 Django，逐一實測 `25°／55°／115°／145°` 與 Home 歸位。
+7. 將 `pf-20260716-v001` 上傳 Roboflow 或團隊共用儲存空間建立第二份副本，再由 Roboflow 建立資料切分。
 
 ## 測試
 
-最近一次已完成的自動化驗證基準為 `v1.2.6`：
+`v1.2.8` 已完成下列自動化與資料驗證：
 
 - Django `fruit_app`：`59` 項測試通過。
-- 相機與 dashboard static JavaScript syntax check 通過。
-- `git diff --check` 通過。
-- 正式 firmware 已以 `esp32:esp32:esp32` 編譯通過；整合第四顆 Servo 後 Flash 約 `82%`、RAM 約 `15%`。
-
-`v1.2.7` 的分類級距更新已完成 dataset 一致性與 `git diff --check` 驗證；Django 測試與 firmware 編譯仍須在具備 `pf_iot_env`、Arduino CLI 與 `ESP32Servo 3.2.1` 的開發機重新執行後，才能更新為本版驗證結果。
+- 正式 firmware 已以 `esp32:esp32:esp32` 與 `ESP32Servo 3.2.1` 編譯通過；Flash `1,077,851 bytes`（`82%`），RAM `49,828 bytes`（`15%`）。
+- `pf-20260716-v001` 已逐檔比對來源與目的地 `986` 筆 SHA-256；其中 `981` 張為正式照片，checksum manifest 保存在快照內。
+- 模型 repository 的 `dataset` 已驗證為指向 `D:\passion-fruit-datasets` 的 Windows junction，且資料路徑受 Git 忽略。
+- 硬體與模型 repository 的 `git diff --check` 均通過。
 
 Django 測試指令：
 
