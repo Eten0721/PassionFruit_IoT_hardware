@@ -55,7 +55,6 @@ constexpr uint32_t kCommandFailureBackoffMaxMS = 10000UL;
 // Set this to false for an immediate firmware-only rollback to the legacy
 // hcsr04_trigger -> start_sequence -> station_1_ready handshake.
 constexpr bool kEnableAutoStation1FastPath = true;
-constexpr bool kEnableClassificationSorter = true;
 constexpr bool kVerboseHttpResponseLog = false;
 
 static_assert(kClassifierPin != kGatePins[0], "Classifier pin conflicts with Gate 1");

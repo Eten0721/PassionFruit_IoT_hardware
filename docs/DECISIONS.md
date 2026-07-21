@@ -1,5 +1,25 @@
 # 決策紀錄
 
+## 2026-07-22：刪除資料採集流程的舊版樣板與重複狀態
+
+### 決策
+
+Django 的 dataset bootstrap、counter 與圖片 manifest 改用 Python `functools.cache`，不再維護單一實例的多用途 cache class。舊六連拍留下的 `capture_interval_ms`、多張 `timestamps_ms`／`intervals_ms` 與未使用 helper 全部移除；`capture_meta` 只保留現行單站拍攝需要的 client timing。專案未使用 Django database model、admin、auth、session 或 messages，因此一併移除相關樣板與 migration 步驟。
+
+Firmware 移除固定為開啟的分類器 feature flag、未讀取的 trigger／HTTP／classifier 狀態，以及 `MotorCommand` 內與 `TimingConfig` 重複的伺服 timing 欄位。分類器保持正式功能，首站捷徑 rollback flag、每顆 fruit timing snapshot、原子保存、command ID 與三站安全交握均保留。
+
+### 原因
+
+- 現行流程每站只拍一張，舊六連拍的間隔與多張 timestamp 不再有消費端。
+- 專案的資料一致性由 dataset 檔案、metadata、counter 與 operation token 管理，沒有 Django ORM 使用者。
+- 固定為開啟且沒有部署變體的分類器開關只增加失敗分支；硬體真正需要校正的 timing 與首站 rollback 開關不能刪除。
+
+### 影響
+
+- 新環境安裝 requirements 後可直接啟動 `runsslserver`，不需要 `manage.py migrate`。
+- Django 與 firmware 對外 API、分類 ASCII code、MG996R 角度及三站交握不變。
+- cache 失效採整體 `cache_clear()`；目前單程序、單 dataset root 部署足夠，若日後支援多程序或多 dataset root，再改用共享狀態。
+
 ## 2026-07-22：統一 AI 特徵契約並撤除 prototype 權重追蹤
 
 ### 決策
@@ -116,7 +136,7 @@ Dashboard、Django 中文 label、dataset 資料夾與 `metadata.csv` 統一改�
 
 - Git 只追蹤 `Necessary_library/README.md`，其餘舊資源繼續保留在本機並由 `.gitignore` 排除。
 - `secrets.h`、`.env`、dataset 與 runtime JSON 仍不得提交。
-- Windows Django 快速部署維持 Python `3.10.20`、根目錄 `.env`、migration 與 `runsslserver 0.0.0.0:8000`。
+- Windows Django 快速部署維持 Python `3.10.20`、根目錄 `.env` 與 `runsslserver 0.0.0.0:8000`；目前不使用 Django database model，因此不再執行 migration。
 
 ## 2026-07-14：未來 AI 決策層沿用既有 classify_fruit 邊界
 
@@ -367,7 +387,7 @@ HC-SR04 以直接 Trigger pulse 與 `12000 us` Echo timeout 讀值；Wi-Fi、伺
 ### 影響
 
 - Django 仍只以照片原子保存成功作為放行下一閘門的條件。
-- `capture_meta` 保留既有欄位，另加入 request、影格、blob 與 upload 的 client timing，供 transition trace 對照。
+- `capture_meta` 目前只保留站點脈絡與 request、影格、blob、upload 的 client timing；舊六連拍的 interval 與多張 timestamp 欄位已於 `2026-07-22` 移除。
 - Dashboard 顯示最近 transition trace；舊版 state 未提供 trace 時不影響控制功能。
 
 ## 2026-07-11：高頻狀態路徑與等待命令輪詢最佳化

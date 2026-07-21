@@ -25,8 +25,6 @@ struct MotorCommand {
   int stationIndex;
   int homeAngle;
   int releaseAngle;
-  int servoSettleMS;
-  int fruitSettleMS;
   bool autoTriggerEnabled;
   bool hasAutoTriggerEnabled;
   TimingConfig timing;
@@ -40,8 +38,6 @@ struct MotorCommand {
         stationIndex(0),
         homeAngle(0),
         releaseAngle(0),
-        servoSettleMS(0),
-        fruitSettleMS(0),
         autoTriggerEnabled(false),
         hasAutoTriggerEnabled(false),
         timing(),
@@ -54,16 +50,11 @@ struct HttpResult {
   int statusCode;
   uint32_t elapsedMS;
   String body;
-  bool connectionClosed;
 
-  HttpResult()
-      : statusCode(0), elapsedMS(0), body(""), connectionClosed(false) {}
+  HttpResult() : statusCode(0), elapsedMS(0), body("") {}
 
   bool isSuccess() const {
     return statusCode >= 200 && statusCode < 300;
   }
 
-  bool isTransportFailure() const {
-    return statusCode <= 0;
-  }
 };

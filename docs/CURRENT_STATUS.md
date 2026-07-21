@@ -27,7 +27,8 @@
 - 自動觸發可使用受守門的 `hcsr04_station_1_ready` 首站捷徑；本地安全條件不符、捷徑停用或收到可回退的協定拒絕時，會安全回退既有 `hcsr04_trigger -> start_sequence -> station_1_ready`。Gate 1 已攔住果實仍是實機部署前提，並非目前的硬體回授訊號。
 - `trigger_id` 是首站捷徑與 timeout retry 的 server-side 冪等鍵；legacy `hcsr04_trigger` 的重複防護仍由 Django active fruit 與既有 motor command 狀態負責。
 - Django 已提供禁止快取的 `/api/camera/state/`；手機頁使用 `250 ms` idle／`50 ms` active 的 single in-flight polling，並在 state request 加上 `AbortController` timeout。高頻路徑已不再重複掃描 dataset、讀取 counter 或驗證 metadata schema。
-- `capture_started` 已改為不阻塞拍照與上傳的 timing telemetry；上傳 `capture_meta` 會帶 client 端 request、影格、blob 與 upload timing。
+- `capture_started` 已改為不阻塞拍照與上傳的 timing telemetry；上傳 `capture_meta` 只帶站點脈絡與 client 端 request、影格、blob、upload timing，舊六連拍的 interval／多張 timestamp 欄位已移除。
+- Django dataset bootstrap、counter 與圖片 manifest 已改用 Python `functools.cache`；未使用的 admin、auth、session、database model／migration 樣板已移除，部署不再需要執行 `manage.py migrate`。
 - Dashboard 可顯示最近的 transition trace；舊版後端未傳回 trace 時會顯示相容提示。
 - Dashboard 可持久化管理四項拍攝停穩設定與 ESP32 閒置命令輪詢間隔；最後一版數值固定原子覆寫至 `runtime_config/capture_timing.json`，Django 以 revision 下發，ESP32 僅在 idle 套用並回報 `timing_config_applied`。
 - Dashboard 三站縮圖固定為直式 `3:4`，可點擊開啟原始比例的網頁內彈窗預覽；未收到 WebRTC 影像軌時會收合預覽區，避免留白。

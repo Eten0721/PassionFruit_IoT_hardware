@@ -141,8 +141,6 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
   command.stationIndex = readTextValue(body, "station_index").toInt();
   command.homeAngle = homeAngleValue.toInt();
   command.releaseAngle = releaseAngleValue.toInt();
-  command.servoSettleMS = servoSettleValue.toInt();
-  command.fruitSettleMS = fruitSettleValue.toInt();
   command.autoTriggerEnabled = autoTriggerValue == "1" || autoTriggerValue == "true";
   command.hasAutoTriggerEnabled = autoTriggerValue.length() > 0;
   command.serverStatus = readTextValue(body, "server_status");
@@ -157,13 +155,6 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
   if (releaseAngleValue.length() == 0) {
     command.releaseAngle = FirmwareConfig::kReleaseAngle;
   }
-  if (command.servoSettleMS <= 0) {
-    command.servoSettleMS = FirmwareConfig::kServoSettleMS;
-  }
-  if (command.fruitSettleMS <= 0) {
-    command.fruitSettleMS = FirmwareConfig::kFruitSettleMS;
-  }
-
   if (timingRevisionValue.length() > 0 &&
       firstStationSettleValue.length() > 0 &&
       servoSettleValue.length() > 0 &&
@@ -189,8 +180,6 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
       command.timing.idleCommandPollIntervalMS =
           static_cast<uint32_t>(idleCommandPollIntervalMS);
       command.hasTimingConfig = true;
-      command.servoSettleMS = static_cast<int>(servoSettleMS);
-      command.fruitSettleMS = static_cast<int>(fruitSettleMS);
     }
   }
   return command;
@@ -220,9 +209,9 @@ bool DjangoApiClient::parseStartSequenceFromResponse(
       motorCommand, "home_angle", FirmwareConfig::kHomeAngle);
   command.releaseAngle = readJsonInt(
       motorCommand, "release_angle", FirmwareConfig::kReleaseAngle);
-  command.servoSettleMS = readJsonInt(
+  int servoSettleMS = readJsonInt(
       motorCommand, "servo_settle_ms", FirmwareConfig::kServoSettleMS);
-  command.fruitSettleMS = readJsonInt(
+  int fruitSettleMS = readJsonInt(
       motorCommand, "fruit_settle_ms", FirmwareConfig::kFruitSettleMS);
   const int timingRevision = readJsonInt(motorCommand, "timing_revision", -1);
   const int firstStationSettleMS = readJsonInt(
@@ -236,22 +225,22 @@ bool DjangoApiClient::parseStartSequenceFromResponse(
   if (command.stationIndex <= 0) {
     command.stationIndex = 1;
   }
-  if (command.servoSettleMS <= 0) {
-    command.servoSettleMS = FirmwareConfig::kServoSettleMS;
+  if (servoSettleMS <= 0) {
+    servoSettleMS = FirmwareConfig::kServoSettleMS;
   }
-  if (command.fruitSettleMS <= 0) {
-    command.fruitSettleMS = FirmwareConfig::kFruitSettleMS;
+  if (fruitSettleMS <= 0) {
+    fruitSettleMS = FirmwareConfig::kFruitSettleMS;
   }
   if (timingRevision >= 0 && firstStationSettleMS > 0 &&
-      command.servoSettleMS > 0 && command.fruitSettleMS > 0 &&
+      servoSettleMS > 0 && fruitSettleMS > 0 &&
       finalGateReturnDelayMS >= 0 && idleCommandPollIntervalMS > 0) {
     command.timing.revision = static_cast<uint32_t>(timingRevision);
     command.timing.firstStationSettleMS =
         static_cast<uint32_t>(firstStationSettleMS);
     command.timing.servoSettleMS =
-        static_cast<uint32_t>(command.servoSettleMS);
+        static_cast<uint32_t>(servoSettleMS);
     command.timing.fruitSettleMS =
-        static_cast<uint32_t>(command.fruitSettleMS);
+        static_cast<uint32_t>(fruitSettleMS);
     command.timing.finalGateReturnDelayMS =
         static_cast<uint32_t>(finalGateReturnDelayMS);
     command.timing.idleCommandPollIntervalMS =
@@ -383,13 +372,11 @@ HttpResult DjangoApiClient::executeGet(const char* url, uint32_t timeoutMS) {
   if (!wifiConnected()) {
     result.statusCode = -4;
     result.elapsedMS = millis() - startedAt;
-    result.connectionClosed = true;
     return result;
   }
   if (!prepareRequest(url, timeoutMS)) {
     result.statusCode = -1;
     result.elapsedMS = millis() - startedAt;
-    result.connectionClosed = true;
     closeConnection();
     return result;
   }
@@ -413,13 +400,11 @@ HttpResult DjangoApiClient::executePost(
   if (!wifiConnected()) {
     result.statusCode = -4;
     result.elapsedMS = millis() - startedAt;
-    result.connectionClosed = true;
     return result;
   }
   if (!prepareRequest(url, timeoutMS)) {
     result.statusCode = -1;
     result.elapsedMS = millis() - startedAt;
-    result.connectionClosed = true;
     closeConnection();
     return result;
   }
@@ -471,8 +456,7 @@ void DjangoApiClient::finishRequest(HttpResult& result) {
 
   http_.end();
 
-  result.connectionClosed = serverClosed || transportFailed || socketClosed;
-  if (result.connectionClosed) {
+  if (serverClosed || transportFailed || socketClosed) {
     closeConnection();
   }
 }

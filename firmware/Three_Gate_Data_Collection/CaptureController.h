@@ -63,7 +63,6 @@ class CaptureController {
   struct AutoTrigger {
     AutoTriggerPhase phase;
     String triggerId;
-    uint32_t detectedAt;
     uint32_t nextAttemptAt;
     bool waitingForStartSequence;
     uint32_t waitingStartedAt;
@@ -71,7 +70,6 @@ class CaptureController {
     AutoTrigger()
         : phase(AutoTriggerPhase::kNone),
           triggerId(""),
-          detectedAt(0),
           nextAttemptAt(0),
           waitingForStartSequence(false),
           waitingStartedAt(0) {}

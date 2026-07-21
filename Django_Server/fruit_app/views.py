@@ -5,6 +5,7 @@ import re
 import shutil
 import time
 from datetime import datetime
+from functools import cache
 from pathlib import Path
 
 from django.conf import settings
@@ -39,9 +40,6 @@ METADATA_FIELDNAMES = [
     'station_03_ok',
     'note',
 ]
-DEFAULT_CAPTURE_INTERVAL_MS = 0
-MIN_CAPTURE_INTERVAL_MS = 0
-MAX_CAPTURE_INTERVAL_MS = 3000
 HOME_ANGLE = 0
 RELEASE_ANGLE = 90
 # Conservative defaults that still preserve the first-station fast path.
@@ -101,7 +99,6 @@ APP_STATE = RuntimeState({
     'capture_token': 0,
     'active_fruit_id': None,
     'capture_time': None,
-    'capture_interval_ms': DEFAULT_CAPTURE_INTERVAL_MS,
     'source': None,
     'active_station_index': None,
     'station_statuses': {},
@@ -118,8 +115,6 @@ APP_STATE = RuntimeState({
     'capture_started_at': None,
     'capture_started_monotonic': None,
     'command_to_phone_start_ms': None,
-    'phone_capture_timestamps_ms': [],
-    'phone_capture_intervals_ms': [],
     'client_timing': {},
     'upload_received_at': None,
     # Fast station-1 reports are idempotent across HTTPS response timeouts.
@@ -220,7 +215,7 @@ def dashboard_view(request):
 @require_GET
 def state_api(request):
     _ensure_dataset_structure()
-    _run_dataset_maintenance()
+    _retry_deferred_discards_if_due()
     with STATE_LOCK:
         _sync_active_state_with_filesystem()
         payload = _state_payload()
@@ -297,7 +292,8 @@ def capture_timing_api(request):
         APP_STATE['capture_timing_revision'] = previous_revision + 1
         APP_STATE['capture_timing_applied_at'] = None
         try:
-            _write_capture_timing_config(
+            capture_timing.write(
+                _capture_timing_path(),
                 timing,
                 APP_STATE['capture_timing_revision'],
             )
@@ -354,7 +350,7 @@ def manual_capture_api(request):
 def esp32_trigger_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
-        _mark_esp32_report()
+        APP_STATE['last_esp32_report_at'] = _now_string()
         try:
             payload = _create_capture_session(source='esp32')
         except CaptureCommandError as exc:
@@ -375,7 +371,8 @@ def esp32_trigger_api(request):
 def esp32_command_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
-        _mark_esp32_poll()
+        APP_STATE['last_esp32_poll_at'] = _now_string()
+        APP_STATE['last_esp32_poll_monotonic'] = time.monotonic()
         _sync_active_state_with_filesystem()
         payload = _esp32_command_payload()
         _mark_sorter_running_if_dispatched(payload)
@@ -394,7 +391,7 @@ def esp32_report_api(request):
     command_id = _safe_int(data.get('command_id'))
 
     with STATE_LOCK:
-        _mark_esp32_report()
+        APP_STATE['last_esp32_report_at'] = _now_string()
         if event == 'timing_config_applied':
             try:
                 payload = _handle_timing_config_applied(data)
@@ -499,11 +496,13 @@ def recapture_api(request):
         except DatasetFileBusyError as exc:
             return _json_error(str(exc), status=409)
 
-        _start_existing_capture_session(
+        _start_new_capture_session(
             fruit_id,
             source='manual_recapture',
+            status='waiting_esp32_start',
             message=f'已重新啟動 {fruit_id}，等待 ESP32 開始三站閘門流程。',
         )
+        _set_motor_command('start_sequence', station_index=1)
         payload = _state_payload(extra={'recaptured_fruit_id': fruit_id})
     return JsonResponse(payload)
 
@@ -649,8 +648,10 @@ def upload_images_api(request):
                 'command_to_upload_ms': command_to_upload_ms,
             },
         )
-        _mark_station_captured(station_index)
-        _set_release_command(station_index)
+        APP_STATE['station_statuses'][str(station_index)] = 'captured'
+        _set_motor_command('release_gate', station_index=station_index)
+        APP_STATE['status'] = 'waiting_motor'
+        APP_STATE['message'] = f'{active_fruit_id} 第 {station_index} 站照片已保存，等待 ESP32 放行第 {station_index} 閘門。'
         payload = _state_payload(extra={
             'uploaded_fruit_id': active_fruit_id,
             'station_index': station_index,
@@ -827,10 +828,9 @@ def reset_dataset_api(request):
         _clear_active_state('dataset 已重置，下一筆資料將從 fruit_001 開始。', status='idle')
         _reset_sorter_state()
         APP_STATE['capture_token'] = 0
-        APP_STATE['capture_interval_ms'] = DEFAULT_CAPTURE_INTERVAL_MS
         APP_STATE['transition_trace'] = []
         APP_STATE['trace_sequence'] = 0
-        _reset_timing_state(keep_interval=True)
+        _reset_timing_state()
         _record_transition('dataset_reset', details={'delete_warning_count': len(delete_warnings)})
         payload = _state_payload(extra={'reset_done': True, 'delete_warnings': delete_warnings})
     return JsonResponse(payload)
@@ -940,7 +940,6 @@ def reset_runtime_state_for_tests():
             'capture_token': 0,
             'active_fruit_id': None,
             'capture_time': None,
-            'capture_interval_ms': DEFAULT_CAPTURE_INTERVAL_MS,
             'source': None,
             'active_station_index': None,
             'station_statuses': {},
@@ -957,8 +956,6 @@ def reset_runtime_state_for_tests():
             'capture_started_at': None,
             'capture_started_monotonic': None,
             'command_to_phone_start_ms': None,
-            'phone_capture_timestamps_ms': [],
-            'phone_capture_intervals_ms': [],
             'client_timing': {},
             'upload_received_at': None,
             'fast_path_trigger_id': None,
@@ -994,7 +991,7 @@ def reset_runtime_state_for_tests():
             'camera_ice': [],
             'updated_at': None,
         })
-        dataset_store.RUNTIME_CACHE.reset()
+        _reset_dataset_caches()
 
 
 def _dataset_root():
@@ -1020,10 +1017,6 @@ def _capture_timing_path():
     return Path(settings.CAPTURE_TIMING_CONFIG_PATH)
 
 
-def _motor_command_sequence_path():
-    return Path(settings.MOTOR_COMMAND_SEQUENCE_PATH)
-
-
 def _legacy_capture_timing_path():
     return _dataset_root() / 'capture_timing.json'
 
@@ -1036,32 +1029,25 @@ def _reset_state_path():
     return _dataset_root() / 'reset_state.json'
 
 
-def _delete_pending_dir():
-    return _dataset_root() / '_delete_pending'
-
-
 def _discard_state_path():
     return _dataset_root() / 'discard_state.json'
 
 
 def _ensure_dataset_structure():
-    root = _dataset_root()
-
-    def initialise():
-        root.mkdir(parents=True, exist_ok=True)
-        _temp_dir().mkdir(parents=True, exist_ok=True)
-        for label in LABELS:
-            (root / label).mkdir(parents=True, exist_ok=True)
-        if not _counter_path().exists():
-            _write_counter(1)
-        _ensure_capture_timing_config()
-        _ensure_metadata_header()
-
-    dataset_store.RUNTIME_CACHE.ensure_once(root, initialise)
+    _initialise_dataset_structure(_dataset_root())
 
 
-def _run_dataset_maintenance():
-    _retry_deferred_discards_if_due()
+@cache
+def _initialise_dataset_structure(root):
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / 'temp').mkdir(parents=True, exist_ok=True)
+    for label in LABELS:
+        (root / label).mkdir(parents=True, exist_ok=True)
+    if not (root / 'counter.json').exists():
+        _write_counter(1)
+    _ensure_capture_timing_config()
+    _ensure_metadata_header()
 
 
 def _request_data(request):
@@ -1075,12 +1061,13 @@ def _request_data(request):
 
 
 def _read_counter():
-    return dataset_store.RUNTIME_CACHE.read_counter(_dataset_root(), _load_counter)
+    return _load_counter(_dataset_root())
 
 
-def _load_counter():
+@cache
+def _load_counter(root):
     try:
-        with _counter_path().open('r', encoding='utf-8') as counter_file:
+        with (Path(root) / 'counter.json').open('r', encoding='utf-8') as counter_file:
             data = json.load(counter_file)
         return max(int(data.get('next_id', 1)), 1)
     except (FileNotFoundError, json.JSONDecodeError, TypeError, ValueError):
@@ -1093,7 +1080,7 @@ def _write_counter(next_id):
     with _counter_path().open('w', encoding='utf-8') as counter_file:
         json.dump({'next_id': int(next_id)}, counter_file, ensure_ascii=False, indent=2)
         counter_file.write('\n')
-    dataset_store.RUNTIME_CACHE.write_counter(_dataset_root(), int(next_id))
+    _load_counter.cache_clear()
 
 
 def _normalise_capture_timing(raw_timing, *, require_all):
@@ -1124,10 +1111,6 @@ def _read_capture_timing_config(path):
         return None
 
 
-def _write_capture_timing_config(timing, revision):
-    capture_timing.write(_capture_timing_path(), timing, revision)
-
-
 def _ensure_capture_timing_config():
     path = _capture_timing_path()
     path_key = str(path)
@@ -1147,7 +1130,7 @@ def _ensure_capture_timing_config():
         revision += 1
         needs_write = True
     if needs_write:
-        _write_capture_timing_config(timing, revision)
+        capture_timing.write(_capture_timing_path(), timing, revision)
     APP_STATE['capture_timing'] = timing
     APP_STATE['capture_timing_revision'] = revision
     APP_STATE['capture_timing_applied_revision'] = 0
@@ -1228,14 +1211,11 @@ def _find_fruit_image(fruit_id, filename):
 
 
 def _build_image_list(fruit_id):
-    return dataset_store.RUNTIME_CACHE.image_manifest(
-        _dataset_root(),
-        fruit_id,
-        lambda: _load_image_list(fruit_id),
-    )
+    return [dict(image) for image in _load_image_list(_dataset_root(), fruit_id)]
 
 
-def _load_image_list(fruit_id):
+@cache
+def _load_image_list(root, fruit_id):
     images = []
     for filename in IMAGE_FILENAMES:
         image_path = _find_fruit_image(fruit_id, filename)
@@ -1244,7 +1224,13 @@ def _load_image_list(fruit_id):
                 'filename': filename,
                 'url': f'/api/image/{fruit_id}/{filename}/?v={int(image_path.stat().st_mtime)}',
             })
-    return images
+    return tuple(images)
+
+
+def _reset_dataset_caches():
+    _initialise_dataset_structure.cache_clear()
+    _load_counter.cache_clear()
+    _load_image_list.cache_clear()
 
 
 def _ensure_metadata_header():
@@ -1554,7 +1540,6 @@ def _start_new_capture_session(fruit_id, source, status, message):
     APP_STATE['capture_token'] += 1
     APP_STATE['active_fruit_id'] = fruit_id
     APP_STATE['capture_time'] = _now_string()
-    APP_STATE['capture_interval_ms'] = DEFAULT_CAPTURE_INTERVAL_MS
     APP_STATE['source'] = source
     APP_STATE['active_station_index'] = None
     APP_STATE['station_statuses'] = {str(index): 'pending' for index in range(1, IMAGE_COUNT + 1)}
@@ -1568,18 +1553,13 @@ def _start_new_capture_session(fruit_id, source, status, message):
     APP_STATE['trace_sequence'] = 0
     APP_STATE['status'] = status
     APP_STATE['message'] = message
-    _reset_timing_state(keep_interval=True)
+    _reset_timing_state()
     _start_wait_timer()
     _record_transition(
         'capture_session_created',
         fruit_id=fruit_id,
         details={'source': source, 'status': status},
     )
-
-
-def _start_existing_capture_session(fruit_id, source, message):
-    _start_new_capture_session(fruit_id, source, 'waiting_esp32_start', message)
-    _set_motor_command('start_sequence', station_index=1)
 
 
 def _clear_classified_dataset_state(fruit_id, label):
@@ -1598,15 +1578,11 @@ def _clear_classified_dataset_state(fruit_id, label):
     APP_STATE['message'] = f'{fruit_id} 已分類為「{label}」。'
     if not existing_command:
         _clear_wait_timer()
-        _reset_timing_state(keep_interval=True)
+        _reset_timing_state()
 
 
 def _queue_sorter_command(fruit_id, label):
     classification_code = CLASSIFICATION_CODES[label]
-    if not getattr(settings, 'ENABLE_CLASSIFICATION_SORTER', True):
-        _set_sorter_failed(fruit_id, label, classification_code, 'sorter_disabled')
-        return _sorter_queue_result(False)
-
     try:
         command = _set_motor_command(
             'classify_fruit',
@@ -1774,7 +1750,7 @@ def _set_motor_command(command, station_index=None, *, fruit_id=None, classifica
 
     try:
         command_id = motor_commands.allocate(
-            _motor_command_sequence_path(),
+            Path(settings.MOTOR_COMMAND_SEQUENCE_PATH),
             APP_STATE.get('motor_command_id', 0),
         )
     except motor_commands.CommandSequenceError as exc:
@@ -1811,17 +1787,6 @@ def _set_motor_command(command, station_index=None, *, fruit_id=None, classifica
         details={'command': command},
     )
     return APP_STATE['motor_command']
-
-
-def _set_release_command(station_index):
-    _set_motor_command('release_gate', station_index=station_index)
-    APP_STATE['status'] = 'waiting_motor'
-    APP_STATE['message'] = f'{APP_STATE["active_fruit_id"]} 第 {station_index} 站照片已保存，等待 ESP32 放行第 {station_index} 閘門。'
-
-
-def _mark_station_captured(station_index):
-    station_statuses = APP_STATE.setdefault('station_statuses', {})
-    station_statuses[str(station_index)] = 'captured'
 
 
 def _handle_station_ready(station_index, command_id=None):
@@ -2102,15 +2067,6 @@ def _format_command_text(payload):
     return '\n'.join(lines) + '\n'
 
 
-def _mark_esp32_poll():
-    APP_STATE['last_esp32_poll_at'] = _now_string()
-    APP_STATE['last_esp32_poll_monotonic'] = time.monotonic()
-
-
-def _mark_esp32_report():
-    APP_STATE['last_esp32_report_at'] = _now_string()
-
-
 def _esp32_is_online():
     last_poll = APP_STATE.get('last_esp32_poll_monotonic')
     return last_poll is not None and time.monotonic() - last_poll <= ESP32_ONLINE_WINDOW_SECONDS
@@ -2222,7 +2178,6 @@ def _state_payload(extra=None):
         'capture_token': APP_STATE['capture_token'],
         'revision': APP_STATE.get('state_revision', 0),
         'state_revision': APP_STATE.get('state_revision', 0),
-        'capture_interval_ms': APP_STATE['capture_interval_ms'],
         'active_fruit_id': active_fruit_id,
         'station_index': APP_STATE.get('active_station_index'),
         'active_station_index': APP_STATE.get('active_station_index'),
@@ -2413,7 +2368,7 @@ def _clear_active_state(message, status='idle'):
     APP_STATE['status'] = status
     APP_STATE['message'] = message
     _clear_wait_timer()
-    _reset_timing_state(keep_interval=True)
+    _reset_timing_state()
 
 
 def _temp_image_count(fruit_dir):
@@ -2435,29 +2390,19 @@ def _timing_payload():
         'capture_started_at': APP_STATE['capture_started_at'],
         'upload_received_at': APP_STATE['upload_received_at'],
         'command_to_phone_start_ms': APP_STATE['command_to_phone_start_ms'],
-        'capture_interval_ms': APP_STATE['capture_interval_ms'],
-        'phone_capture_timestamps_ms': APP_STATE['phone_capture_timestamps_ms'],
-        'phone_capture_intervals_ms': APP_STATE['phone_capture_intervals_ms'],
         'client_timing': APP_STATE.get('client_timing') or {},
         'wait_started_at': APP_STATE.get('wait_started_at'),
     }
 
 
-def _reset_timing_state(keep_interval=False):
-    interval_ms = APP_STATE.get('capture_interval_ms', DEFAULT_CAPTURE_INTERVAL_MS)
+def _reset_timing_state():
     APP_STATE['command_created_at'] = None
     APP_STATE['command_created_monotonic'] = None
     APP_STATE['capture_started_at'] = None
     APP_STATE['capture_started_monotonic'] = None
     APP_STATE['command_to_phone_start_ms'] = None
-    APP_STATE['phone_capture_timestamps_ms'] = []
-    APP_STATE['phone_capture_intervals_ms'] = []
     APP_STATE['client_timing'] = {}
     APP_STATE['upload_received_at'] = None
-    if keep_interval:
-        APP_STATE['capture_interval_ms'] = interval_ms
-    else:
-        APP_STATE['capture_interval_ms'] = DEFAULT_CAPTURE_INTERVAL_MS
 
 
 def _apply_capture_meta(raw_meta):
@@ -2468,12 +2413,6 @@ def _apply_capture_meta(raw_meta):
     except (TypeError, json.JSONDecodeError):
         return
 
-    timestamps = _number_list(meta.get('timestamps_ms'), limit=IMAGE_COUNT)
-    intervals = _number_list(meta.get('intervals_ms'), limit=IMAGE_COUNT - 1)
-    if timestamps:
-        APP_STATE['phone_capture_timestamps_ms'] = timestamps
-    if intervals:
-        APP_STATE['phone_capture_intervals_ms'] = intervals
     _apply_client_timing(meta.get('client_timing'))
 
 
@@ -2503,25 +2442,6 @@ def _apply_client_timing(raw_timing):
         station_index=APP_STATE.get('active_station_index'),
         details=timing,
     )
-
-
-def _number_list(value, limit):
-    if not isinstance(value, list):
-        return []
-    numbers = []
-    for item in value[:limit]:
-        try:
-            numbers.append(round(float(item), 1))
-        except (TypeError, ValueError):
-            continue
-    return numbers
-
-
-def _parse_capture_interval_ms(value):
-    interval_ms = _safe_int(value)
-    if interval_ms is None:
-        return DEFAULT_CAPTURE_INTERVAL_MS
-    return max(MIN_CAPTURE_INTERVAL_MS, min(MAX_CAPTURE_INTERVAL_MS, interval_ms))
 
 
 def _safe_int(value):
@@ -2694,12 +2614,12 @@ def _is_deferred_discard_path(path):
 
 def _retry_deferred_discards_if_due():
     now = time.monotonic()
-    if not dataset_store.RUNTIME_CACHE.claim_maintenance(
-        _dataset_root(),
-        now,
-        DISCARD_CLEANUP_RETRY_INTERVAL_SECONDS,
-    ):
+    # ponytail: single-process maintenance gate; add a dedicated lock only if
+    # concurrent dashboard pollers become a supported deployment mode.
+    last_attempt = APP_STATE.get('discard_cleanup_last_monotonic')
+    if last_attempt is not None and now - last_attempt < DISCARD_CLEANUP_RETRY_INTERVAL_SECONDS:
         return
+    APP_STATE['discard_cleanup_last_monotonic'] = now
 
     state = _read_discard_state()
     remaining_entries = []
@@ -2769,33 +2689,7 @@ def _clear_temp_images(fruit_dir):
             _safe_unlink(image_file)
     finally:
         if FRUIT_ID_PATTERN.match(fruit_dir.name):
-            dataset_store.RUNTIME_CACHE.invalidate_images(_dataset_root(), fruit_dir.name)
-
-
-def _clear_staging_images(fruit_dir):
-    for staging_file in Path(fruit_dir).glob(f'*{UPLOAD_STAGING_SUFFIX}'):
-        _safe_unlink(staging_file)
-
-
-def _replace_temp_images(fruit_dir, image_files):
-    fruit_dir = Path(fruit_dir)
-    staging_pairs = []
-    try:
-        _clear_staging_images(fruit_dir)
-        for filename, image_file in zip(IMAGE_FILENAMES, image_files):
-            target = fruit_dir / filename
-            staging = fruit_dir / f'{filename}{UPLOAD_STAGING_SUFFIX}'
-            with staging.open('wb') as output:
-                for chunk in image_file.chunks():
-                    output.write(chunk)
-            staging_pairs.append((staging, target))
-
-        _clear_temp_images(fruit_dir)
-        for staging, target in staging_pairs:
-            _safe_replace(staging, target)
-    except Exception:
-        _clear_staging_images(fruit_dir)
-        raise
+            _load_image_list.cache_clear()
 
 
 def _save_station_image(fruit_dir, station_index, image_file):
@@ -2810,7 +2704,7 @@ def _save_station_image(fruit_dir, station_index, image_file):
     )
     active_fruit_id = APP_STATE.get('active_fruit_id')
     if active_fruit_id:
-        dataset_store.RUNTIME_CACHE.invalidate_images(_dataset_root(), active_fruit_id)
+        _load_image_list.cache_clear()
     return result
 
 
@@ -2836,7 +2730,7 @@ def _reset_dataset_contents():
     with _metadata_path().open('w', encoding='utf-8-sig', newline='') as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=METADATA_FIELDNAMES)
         writer.writeheader()
-    dataset_store.RUNTIME_CACHE.invalidate_images(_dataset_root())
+    _load_image_list.cache_clear()
     _write_counter(1)
     _write_reset_state({
         'reset_at': _now_string(),
@@ -2844,10 +2738,6 @@ def _reset_dataset_contents():
         'moved_paths': moved_paths,
     })
     return delete_warnings
-
-
-def _try_remove_path(path):
-    return _remove_or_archive_reset_path(path, datetime.now().strftime('reset_%Y%m%d_%H%M%S'))['warning']
 
 
 def _remove_or_archive_reset_path(path, reset_id):
@@ -2893,7 +2783,7 @@ def _move_reset_leftover_to_pending(path, reason):
 
 def _unique_delete_pending_path(path, reason):
     relative_path = _dataset_relative_path(path)
-    target = _delete_pending_dir() / reason / relative_path
+    target = _dataset_root() / '_delete_pending' / reason / relative_path
     target.parent.mkdir(parents=True, exist_ok=True)
     if not target.exists():
         return target

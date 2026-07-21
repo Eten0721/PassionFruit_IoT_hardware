@@ -45,7 +45,7 @@ firmware/Three_Gate_Data_Collection/Three_Gate_Data_Collection.ino
 
 入口 sketch 只負責初始化與主迴圈；HC-SR04 讀值、閘門 phase、MG996R 分類器、Django HTTPS client 與採集控制分拆為 `Config.h`、`ProtocolTypes.h`、`DistanceSensor.*`、`GateController.*`、`ClassifierController.*`、`DjangoApiClient.*` 與 `CaptureController.*`，避免把流程狀態散落在多個 `.ino` tab。
 
-Django 的單程序 runtime state／operation token 位於 `runtime_state.py`，timing 驗證與原子保存位於 `capture_timing.py`，ESP32 response shaping 位於 `api_payloads.py`；`capture_session.py`、`dataset_store.py` 與 `webrtc_signaling.py` 分別負責狀態轉移、dataset primitive／熱路徑 cache 與 signaling。`views.py` 仍保留 HTTP 整合、資料集生命週期與部分狀態機 helper，後續應延續相同責任邊界逐步縮小，不應誤稱為完全薄化。
+Django 的單程序 runtime state／operation token 位於 `runtime_state.py`，timing 驗證與原子保存位於 `capture_timing.py`，ESP32 response shaping 位於 `api_payloads.py`；`capture_session.py`、`dataset_store.py` 與 `webrtc_signaling.py` 分別負責狀態轉移、單張照片原子保存與 signaling。dataset 初始化、counter 與圖片 manifest 的熱路徑 cache 直接使用 Python `functools.cache`，不再維護自訂多用途 cache class。`views.py` 仍保留 HTTP 整合、資料集生命週期與部分狀態機 helper，後續應延續相同責任邊界逐步縮小，不應誤稱為完全薄化。
 
 ## 3. 現行拍攝流程
 

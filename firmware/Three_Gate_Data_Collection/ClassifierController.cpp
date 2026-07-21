@@ -110,10 +110,6 @@ ClassifierController::Result ClassifierController::takeResult() {
   return result;
 }
 
-ClassifierController::State ClassifierController::state() const {
-  return state_;
-}
-
 ClassifierController::Classification ClassifierController::parseClassification(
     const String& code) const {
   if (code == "high" || code == "high_medium") {

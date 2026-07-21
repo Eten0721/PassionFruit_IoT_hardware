@@ -400,8 +400,6 @@ const localVideo = document.getElementById('local-video');
                 schema_version: 2,
                 capture_token: captureToken,
                 station_index: stationIndex,
-                timestamps_ms: [roundTimingMs(capturedFrame.frameDrawnAtMs)],
-                intervals_ms: [],
                 client_timing: {
                     clock: 'performance.now',
                     request_revision: requestRevision,

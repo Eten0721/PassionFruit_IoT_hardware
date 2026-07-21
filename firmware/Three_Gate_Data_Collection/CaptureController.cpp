@@ -227,7 +227,6 @@ void CaptureController::startAutoTrigger(uint32_t currentTime) {
 
   autoTrigger_ = AutoTrigger();
   autoTrigger_.triggerId = createTriggerId(currentTime);
-  autoTrigger_.detectedAt = currentTime;
   snapshotActiveTiming();
   printTiming("hcsr04_trigger_detected");
 
@@ -804,11 +803,6 @@ void CaptureController::startClassifier(
   activeCommand_ = command;
   setAutoTriggerEnabled(false, "classifier_busy");
 
-  if (!FirmwareConfig::kEnableClassificationSorter) {
-    queueClassifierFailure(command, "classifier_disabled");
-    return;
-  }
-
   String reason;
   if (!classifier_.start(
           command.commandId,
@@ -863,8 +857,6 @@ void CaptureController::startSequence(
     snapshotActiveTiming();
   }
   activeCommand_ = command;
-  activeCommand_.servoSettleMS = static_cast<int>(activeTiming_.servoSettleMS);
-  activeCommand_.fruitSettleMS = static_cast<int>(activeTiming_.fruitSettleMS);
   activeStationIndex_ = 1;
   sequenceActive_ = true;
   executingCommandId_ = command.commandId;
@@ -913,8 +905,6 @@ void CaptureController::releaseGate(
     snapshotActiveTiming();
   }
   activeCommand_ = command;
-  activeCommand_.servoSettleMS = static_cast<int>(activeTiming_.servoSettleMS);
-  activeCommand_.fruitSettleMS = static_cast<int>(activeTiming_.fruitSettleMS);
   executingCommandId_ = command.commandId;
   motionPhase_ = MotionPhase::kReleaseServoSettling;
   phaseDeadlineAt_ = currentTime + activeTiming_.servoSettleMS;

@@ -9,7 +9,7 @@ from unittest import mock
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, SimpleTestCase, override_settings
 
-from . import dataset_store, views
+from . import views
 
 
 class DataCollectionFlowTests(SimpleTestCase):
@@ -933,7 +933,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             encoding='utf-8-sig',
         )
 
-        dataset_store.RUNTIME_CACHE.reset(self.dataset_root)
+        views._reset_dataset_caches()
         views._ensure_dataset_structure()
 
         with metadata_path.open('r', encoding='utf-8-sig', newline='') as csv_file:
@@ -1477,8 +1477,6 @@ class DataCollectionFlowTests(SimpleTestCase):
             'station_index': str(station_index),
             'capture_meta': json.dumps({
                 'station_index': station_index,
-                'timestamps_ms': [10 * station_index],
-                'intervals_ms': [],
             }),
             'image': self._fake_image(station_index),
         })

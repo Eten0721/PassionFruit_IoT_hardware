@@ -155,7 +155,7 @@ Sorter `pending／running` 期間，Dashboard 必須停用手動拍攝與四個�
 - ESP32 只有在 idle、等待 `start_sequence` 或等待 `release_gate` 時輪詢 command；伺服移動、果實停穩與 report pending 階段不得送出無效 command GET。
 - 每次只在 Django 指定站點時拍攝並上傳 1 張照片。
 - 上傳必須包含 `fruit_id`、`capture_token`、`station_index`。
-- `capture_started` 是 best-effort timing telemetry，不能等待其 HTTP response 才擷取 canvas 或上傳；`capture_meta` 應記錄 request、影格、blob 與 upload 開始的 client timing。
+- `capture_started` 是 best-effort timing telemetry，不能等待其 HTTP response 才擷取 canvas 或上傳；`capture_meta` 只保留站點脈絡與 request、影格、blob、upload 開始的 client timing，不再帶舊六連拍的 `capture_interval_ms`、`timestamps_ms` 或 `intervals_ms`。
 - Django 仍嚴格檢查 token、fruit id、站點與流程狀態。
 
 ## Dataset 與 metadata

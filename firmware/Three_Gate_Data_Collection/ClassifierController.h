@@ -41,7 +41,6 @@ class ClassifierController {
   bool busy() const;
   bool hasResult() const;
   Result takeResult();
-  State state() const;
 
  private:
   enum class Classification : uint8_t {

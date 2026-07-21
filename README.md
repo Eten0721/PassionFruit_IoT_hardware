@@ -59,12 +59,7 @@ notepad .env
 DJANGO_SECRET_KEY=貼上剛才產生的隨機字串
 ```
 
-第一次執行時套用 Django migration：
-
-```powershell
-cd Django_Server
-python manage.py migrate
-```
+目前資料採集由檔案系統管理，不使用 Django database model，因此不需要執行 migration。
 
 ## 4. A Plan：使用伊藤的 `iPhone 17 Pro` 熱點
 
