@@ -27,4 +27,4 @@ git clone https://github.com/fcu-passionfruit-project/ps-quality-detection-syste
 python -m pip install -e .\external\ps-quality-detection-system
 ```
 
-Django adapter 只接收每站 ROI、原始影像尺寸、`roi_area_ratio`、顏色、二分類皺褶、四種局部瑕疵面積比例、confidence、耗時與模型版本等結構化結果。炭疽病經有效門檻判定為陽性時，Decision Layer 直接輸出加工 `processing`；其餘才交由 XGBoost 四分類。AI 必須透過既有 `classify_fruit`、command ID、互斥與 timeout 協定，不得直接控制 ESP32 GPIO 或 MG996R。
+Django adapter 只接收每站 ROI、原始影像尺寸、`roi_area_ratio`、顏色、二分類皺褶、四種局部瑕疵 mask 面積比例、confidence、耗時與模型版本等結構化結果。瑕疵比例以果實 ROI 面積正規化；未偵測時為 `0`，ROI 或推論失敗時為 `null` 並進入人工覆核。所有有效果實均交由 XGBoost 四分類，不設炭疽病一票否決。AI 必須透過既有 `classify_fruit`、command ID、互斥與 timeout 協定，不得直接控制 ESP32 GPIO 或 MG996R。

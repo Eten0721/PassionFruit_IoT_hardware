@@ -2,7 +2,7 @@
 
 更新日期：2026-07-22
 
-目前版本：`v1.2.8, 統一分類協定、重排分類角度與保存實地資料快照`
+目前版本：`v1.2.10, 程式碼優化`
 
 ## 1. 專案目標
 
@@ -178,7 +178,7 @@ dataset/
 
 上等、中等與下等目前依皺褶、擦傷及顏色差異進行人工判斷；顏色需留意綠色、橘色與黃色等情形，但尚未訂定量化門檻。現場不再使用「廢棄」分類，原本應判為廢棄的果實後續歸入加工。Django 正式 ASCII code 為上等 `high`、中等 `medium`、下等 `low`、加工 `processing`；新版 firmware 仍接受 `high_medium` 與 `discard` 作為舊 Django 的輸入 alias。
 
-`2026-07-16` 實地採集快照 `pf-20260716-v001` 含 `327` 顆百香果與 `981` 張三站照片：上等 `102` 顆、中等 `65` 顆、下等 `56` 顆、加工 `104` 顆。所有 fruit ID 由 `001` 至 `327` 連續、每顆三張且三站完成旗標皆為 true；三站各 `327` 張，全部照片皆為 `1080 × 1920`。`195` 筆 metadata note 為尚未正規化的自由文字，不能直接作為完整 XGBoost 特徵表。快照實體保存在 `D:\passion-fruit-datasets\pf-20260716-v001`，由模型 repository 的 ignored `dataset/` junction 存取，尚未建立 Roboflow train／valid／test 切分。
+`2026-07-16` 實地採集快照 `pf-20260716-v001` 含 `327` 顆百香果與 `981` 張三站照片：上等 `102` 顆、中等 `65` 顆、下等 `56` 顆、加工 `104` 顆。所有 fruit ID 由 `001` 至 `327` 連續、每顆三張且三站完成旗標皆為 true；三站各 `327` 張，全部照片皆為 `1080 × 1920`。`195` 筆 metadata note 為尚未正規化的自由文字，其中 `13` 筆包含炭疽並分布於中等 `4` 筆與加工 `9` 筆，不能直接作為完整 XGBoost 特徵表。快照實體保存在 `D:\passion-fruit-datasets\pf-20260716-v001`，由模型 repository 的 ignored `dataset/` junction 存取，尚未建立 Roboflow train／valid／test 切分。
 
 ## 9. AI 整合方向
 
@@ -186,16 +186,16 @@ MG996R 實體分類器目前已可由人工分類按鈕控制；AI 推論與自�
 
 - 百香果 ROI 偵測或裁切，並將 bounding box 換算回原始照片座標。
 - 每站保存 `roi_area_ratio = bbox_width × bbox_height / (image_width × image_height)`，作為照片內的相對大小特徵；它不代表真實面積，且拍攝平面與距離仍須固定。
-- 顏色二分類、`smooth`／`wrinkle` 皺褶二分類，以及炭疽病、畫圖蟲、擦傷、蟲咬四種局部瑕疵判斷。
+- 顏色二分類、`smooth`／`wrinkle` 皺褶二分類，以及 YOLO26n-seg 對炭疽病、畫圖蟲、擦傷、蟲咬進行四類 segmentation。每站以 `defect_mask_pixels / fruit_roi_pixels` 保存四種瑕疵比例；未偵測時為 `0`，ROI 或推論失敗時為 `null` 並進入人工覆核。
 - 後段決策模型，例如 XGBoost / Random Forest。
 
 模型訓練與檢測層統一由團隊 repository [`fcu-passionfruit-project/ps-quality-detection-system`](https://github.com/fcu-passionfruit-project/ps-quality-detection-system) 維護。其責任包含 YOLO 訓練、準確率驗證、ROI 裁切、圓形遮罩、灰階 CLAHE、顏色、皺褶、局部瑕疵 pipeline、dataset manifest 與正式模型版本。本機將該獨立 repository 放在 `external/ps-quality-detection-system/`；父層硬體 Git 不追蹤其內容，整合邊界見 [`external/README.md`](../external/README.md)。目前三個 prototype 權重只保留在開發者本機，模型 repository 不發布可交付硬體端的正式權重。
 
 本機硬體 repository 位於 `D:\PassionFruit_IoT_hardware\`，模型 repository 位於其下的 `external\ps-quality-detection-system\`，原始照片與訓練資料位於 `D:\passion-fruit-datasets\`。模型 repository 根目錄的 ignored `dataset/` 是指向該獨立資料目錄的 Windows junction；`datasets/` 則只保存可追蹤的 manifest。模型目錄仍保留獨立 `.git`，且不使用 Git submodule；待檢測層成為可匯入的 Python package 並建立版本 tag 後，Django 再透過薄 adapter 固定使用指定版本。
 
-模型 repository 應輸出每個站點的 ROI、原始影像尺寸、`roi_area_ratio`、顏色、二分類皺褶、四種局部瑕疵面積比例、confidence、耗時與模型版本。模型載入失敗、找不到百香果或低信心時，必須保留人工覆核，不能直接驅動 ESP32。
+模型 repository 應輸出每個站點的 ROI、原始影像尺寸、`roi_area_ratio`、顏色、二分類皺褶、四種局部瑕疵 mask 面積比例、confidence、耗時與模型版本。Detect bbox 代理值必須使用 `*_bbox_area_ratio`，不得與正式 mask ratio 混用。模型載入失敗、找不到百香果或低信心時，必須回傳 `null` 並保留人工覆核，不能直接驅動 ESP32。
 
-未來決策層的整合邊界記錄於 [`decision_layer/README.md`](../decision_layer/README.md)。經有效門檻判定有炭疽病時，硬規則直接輸出加工 `processing`；其餘果實才由 XGBoost 輸出上等、中等、下等、加工四級機率，並映射為 `high`、`medium`、`low`、`processing`。結果仍須交由 Django 沿用既有資料分類、單一 motor command slot、command ID、sorter timeout 與 report retry；決策模型不可直接控制 GPIO、MG996R 角度或 PWM。
+未來決策層的整合邊界記錄於 [`decision_layer/README.md`](../decision_layer/README.md)。炭疽病不再使用一票否決；所有有效果實均由 XGBoost 結合相對大小、顏色、皺褶與三站局部瑕疵面積比例，輸出上等、中等、下等、加工四級機率，再映射為 `high`、`medium`、`low`、`processing`。結果仍須交由 Django 沿用既有資料分類、單一 motor command slot、command ID、sorter timeout 與 report retry；決策模型不可直接控制 GPIO、MG996R 角度或 PWM。
 
 ## 10. 部署與本機設定
 

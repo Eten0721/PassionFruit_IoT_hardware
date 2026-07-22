@@ -20,7 +20,29 @@ Firmware 移除固定為開啟的分類器 feature flag、未讀取的 trigger�
 - Django 與 firmware 對外 API、分類 ASCII code、MG996R 角度及三站交握不變。
 - cache 失效採整體 `cache_clear()`；目前單程序、單 dataset root 部署足夠，若日後支援多程序或多 dataset root，再改用共享狀態。
 
+## 2026-07-22：取消炭疽病一票否決並改用局部瑕疵面積比例
+
+### 決策
+
+`pf-20260716-v001` 的 `metadata.csv` 有 `13` 筆 note 包含炭疽，其中中等 `4` 筆、加工 `9` 筆。炭疽是否出現不能單獨決定級距；所有有效果實均由 XGBoost 結合相對大小、顏色、皺褶及局部瑕疵面積比例進行上等／中等／下等／加工四分類，不再使用炭疽病一票否決。
+
+局部瑕疵正式目標改為四類 segmentation。每站保存炭疽病、畫圖蟲、擦傷與蟲咬的 `defect_mask_pixels / fruit_roi_pixels`，三站共 `12` 個面積比例特徵。未偵測到瑕疵時記為 `0`；ROI 或推論失敗時記為 `null` 並交由人工覆核。Detect bounding box 面積只能使用 `*_bbox_area_ratio` 作為實驗代理值，不得與正式 mask ratio 混用。
+
+### 原因
+
+- 同一種炭疽註記同時出現在中等與加工，實地判斷取決於瑕疵範圍及其他外觀特徵，而不是疾病名稱本身。
+- 以果實 ROI 為分母可量化可見表面的受損比例；segmentation mask 比 bounding box 更接近實際瑕疵範圍。
+- `metadata.csv` note 仍是未正規化自由文字，只能佐證分類現象，不能代替 mask 標註或直接作為 XGBoost 特徵表。
+
+### 影響
+
+- 本決策取代下方同日「炭疽病陽性直接輸出加工」的硬規則；舊段落保留為歷史。
+- 模型端 Stage 2-3 目標改為 `YOLO26n-seg`，待 Roboflow mask 標註、訓練與驗收。
+- Django、firmware、四級分類代碼、MG996R 角度與人工分類流程均不變；AI 自動推論仍未正式整合。
+
 ## 2026-07-22：統一 AI 特徵契約並撤除 prototype 權重追蹤
+
+> 歷史決策：本段的炭疽病一票否決規則已由上方同日決策取代，其餘 ROI、皺褶、權重撤除與資料保存內容仍有效。
 
 ### 決策
 
