@@ -89,7 +89,7 @@ Set-NetConnectionProfile -InterfaceAlias "Wi-Fi" -NetworkCategory Private
 New-NetFirewallRule -DisplayName "PassionFruit Django 8000" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8000 -Profile Private -RemoteAddress LocalSubnet
 ```
 
-### 確認 ESP32 Server URL
+### 確認 ESP32 Server
 
 正式 firmware 的本機設定檔位於：
 
@@ -97,12 +97,7 @@ New-NetFirewallRule -DisplayName "PassionFruit Django 8000" -Direction Inbound -
 firmware/Three_Gate_Data_Collection/secrets.h
 ```
 
-A Plan 的兩個 URL 應為：
-
-```cpp
-const char* commandUrl = "https://172.20.10.3:8000/api/esp32/command/?format=text";
-const char* reportUrl = "https://172.20.10.3:8000/api/esp32/report/";
-```
+A Plan 使用 `172.20.10.3` 作為 Django 主機。複製 `secrets.example.h` 後只替換主機 IP 與 Wi-Fi credentials，不修改範例中的 endpoint path；API 定義見 [`docs/DATA_COLLECTION_SPEC.md`](docs/DATA_COLLECTION_SPEC.md)。
 
 `secrets.h` 也必須填入 iPhone 熱點的 SSID 與密碼，而且不可提交到 Git。
 
@@ -156,13 +151,11 @@ Copy-Item firmware\Three_Gate_Data_Collection\secrets.example.h firmware\Three_G
 7. Django 仍執行 `python manage.py runsslserver 0.0.0.0:8000`，不需修改 Django 或 `.env`。
 8. 手機改用新的電腦 IP 開啟 `/camera/`。
 
-若新 IP 是 `192.168.0.54`，`secrets.h` 應改為：
+若新 IP 是 `192.168.0.54`，更新 `secrets.h` 的 Wi-Fi credentials 與兩個 URL 的主機部分；保留範例中的 endpoint path。
 
 ```cpp
 const char* ssid = "同學家的 Wi-Fi 名稱";
 const char* password = "同學家的 Wi-Fi 密碼";
-const char* commandUrl = "https://192.168.0.54:8000/api/esp32/command/?format=text";
-const char* reportUrl = "https://192.168.0.54:8000/api/esp32/report/";
 ```
 
 手機網址則改為：

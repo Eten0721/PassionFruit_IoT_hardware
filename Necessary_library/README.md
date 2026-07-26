@@ -27,12 +27,13 @@ Copy-Item firmware\Three_Gate_Data_Collection\secrets.example.h firmware\Three_G
 3. 編輯 `firmware/Three_Gate_Data_Collection/secrets.h`，填入：
    - `ssid`：ESP32 要連接的 Wi-Fi 名稱。
    - `password`：Wi-Fi 密碼。
-   - `commandUrl`：Django 電腦的 `/api/esp32/command/` HTTPS URL。
-   - `reportUrl`：Django 電腦的 `/api/esp32/report/` HTTPS URL。
+   - `commandUrl`、`reportUrl`：只替換 Django 主機，保留 `secrets.example.h` 的 endpoint path。
 4. 使用 Arduino IDE 開啟正式 `.ino`，選擇正確的 ESP32 開發板與序列埠。
 5. 編譯並上傳 firmware；更換 Wi-Fi 或 Django 電腦 IP 後必須修改 `secrets.h` 並重新燒錄。
 
 `secrets.h` 含有本機 Wi-Fi 密碼，已由 `.gitignore` 排除，不可加入 Git。
+
+API 定義與 request timeout 見 [`docs/DATA_COLLECTION_SPEC.md`](../docs/DATA_COLLECTION_SPEC.md)。
 
 ## 舊資源說明
 
