@@ -16,5 +16,6 @@ ADR 記錄長期有效、跨模組或涉及安全與資料一致性的決策。�
 | [0010](0010-independent-model-repository.md) | Accepted | 模型與硬體採獨立 Repository |
 | [0011](0011-anthracnose-veto-ai-contract.md) | Superseded | 炭疽病一票否決 AI 契約 |
 | [0012](0012-defect-ratio-ai-contract.md) | Accepted | 局部瑕疵比例與人工覆核 AI 契約 |
+| [0013](0013-django-orchestrated-single-feed-auto-run.md) | Accepted | Django 協調單顆送料自動運轉 |
 
 完成項目的實作過程、版本進度與 commit 歷史不另建 ADR，由 Git、tag 與 release 保存。

@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-06
+- Amended by: [ADR-0013](0013-django-orchestrated-single-feed-auto-run.md)
 
 ## Context
 
@@ -9,7 +10,7 @@
 
 ## Decision
 
-Django 作為中央狀態來源；ESP32 控制三段閘門，手機依 Django 指定站點各上傳一張照片。手動拍攝只取代開始訊號，後續仍走相同硬體流程。
+Django 作為中央狀態來源；ESP32 控制三段閘門，手機依 Django 指定站點各上傳一張照片。最初允許手動拍攝只取代開始訊號，後續仍走相同硬體流程；ADR-0013 導入上游送料後移除正式 manual capture，保留重拍復原。
 
 ## Consequences
 

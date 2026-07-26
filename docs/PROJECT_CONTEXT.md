@@ -4,13 +4,16 @@
 
 本專案建立百香果照片蒐集、資料集管理與後續 AI 分級辨識流程。現階段以穩定取得每顆果實三個固定站點的清晰照片為主，再由人工分類與實體分類器完成資料與果實分流。
 
-現行流程是三段閘門停止拍攝；舊版滾動連拍不再是開發方向。現行協定、硬體設定與驗收標準以 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 為唯一來源。
+目標流程是上游單顆送料後，以三段閘門停止拍攝；舊版滾動連拍不再是開發方向。現行協定、硬體設定與驗收標準以 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 為唯一來源，實作進度以 [CURRENT_STATUS.md](CURRENT_STATUS.md) 為準。
 
 ## 系統架構
 
 ```text
-HC-SR04／Dashboard
-  -> 觸發一顆果實的採集工作階段
+Dashboard
+  -> 啟用自動運轉並要求單顆送料
+
+HC-SR04
+  -> 確認果實抵達並觸發採集工作階段
 
 Django
   -> 中央狀態機與互斥
@@ -24,7 +27,7 @@ Django
 
 ESP32 Firmware
   -> 輪詢命令與回報狀態
-  -> 控制三站閘門、感測器與分類器
+  -> 控制送料、三站閘門、感測器與分類器
 ```
 
 ### Django
@@ -41,7 +44,7 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 
 ### 手機與 Dashboard
 
-手機頁只負責即時預覽、取得單站拍攝請求與上傳照片。Dashboard 負責人工觸發、狀態、timing 管理、照片檢查、分類與刪除。WebRTC 預覽失敗不得阻塞照片上傳流程。
+手機頁只負責即時預覽、相機 readiness、取得單站拍攝請求與上傳照片。Dashboard 負責開始／優雅暫停自動運轉、runtime profile、送料校正、狀態、照片檢查、分類與刪除。WebRTC 預覽失敗不得阻塞照片上傳流程。
 
 ## Repository 邊界
 
@@ -61,12 +64,13 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 
 ## 主要資料流
 
-1. HC-SR04 或 Dashboard 向 Django 請求開始。
-2. Django 與 ESP32 建立或確認硬體工作階段。
+1. 操作員由 Dashboard 啟用自動運轉，Django 在安全邊界建立單顆送料命令。
+2. ESP32 完成有界送料並停止，HC-SR04 確認果實抵達後建立採集工作階段。
 3. 每站皆遵守「果實停穩、手機上傳、Django 保存成功、下一閘門放行」。
 4. 三站完成後，使用者檢查並分類照片。
 5. Django 先提交 Dataset 與 metadata，再嘗試下發實體分類命令。
-6. 未完成工作與實機驗證由 GitHub Issues 追蹤。
+6. 分類器完成且安全條件仍成立時，Django 才建立下一次送料。
+7. 未完成工作與實機驗證由 GitHub Issues 追蹤。
 
 完整事件、API、command 與 timeout 見 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md)。
 
@@ -74,8 +78,10 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 
 - Django 是中央狀態來源；手機與 ESP32 不自行推測流程完成。
 - 當站照片原子保存成功前，不得放行下一閘門。
-- 手動拍攝只取代開始訊號，不繞過 ESP32 閘門控制。
+- 正式流程不提供 manual capture；重拍只重新執行同一顆果實的三站流程，不驅動送料。
 - 未分類資料、active capture 或 sorter 動作存在時，不得開始下一顆。
+- 送料馬達必須在 ESP32 本機有界停止；網路 retry 不得重複實體送料。
+- 優雅暫停只禁止後續送料，已承諾送出的果實仍完成既有流程。
 - 首站加速只能縮短安全條件成立後的控制往返，不得縮短機構停穩或照片保存交握。
 - HTTP timeout 是不確定結果；retry 必須維持冪等，不能假定前次失敗。
 - 資料分類先於實體分類；硬體失敗不得回滾已提交的照片、metadata 或 counter。
