@@ -114,12 +114,16 @@ class CaptureController {
   int lastConfirmedCommandId_ = 0;
   int executingCommandId_ = 0;
   int lastFeedCommandId_ = 0;
+  bool awaitingFruit_ = false;
+  bool fruitArrivalWarningReported_ = false;
+  uint32_t fruitArrivalWarningAt_ = 0;
   bool triggerArmed_ = true;
   bool autoTriggerEnabled_ = false;
   String lastServerStatus_;
 
   void advanceMotion(uint32_t currentTime);
   void handleSensor(uint32_t currentTime);
+  void checkFruitArrivalWarning(uint32_t currentTime);
   bool shouldStartAutoTrigger(float distanceCM, uint32_t currentTime, String& reason) const;
   void startAutoTrigger(uint32_t currentTime);
   bool processAutoTrigger(uint32_t currentTime);

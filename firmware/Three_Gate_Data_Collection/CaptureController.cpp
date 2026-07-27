@@ -44,6 +44,7 @@ void CaptureController::tick() {
     return;
   }
   handleSensor(currentTime);
+  checkFruitArrivalWarning(currentTime);
   checkStartSequenceWaitTimeout(currentTime);
 
   if (flushPendingReport(currentTime)) {
@@ -69,12 +70,17 @@ void CaptureController::advanceMotion(uint32_t currentTime) {
     case MotionPhase::kFeederDriving:
       feeder_.writeMicroseconds(activeTiming_.feederStopUS);
       lastFeedCommandId_ = activeCommand_.commandId;
+      awaitingFruit_ = activeCommand_.feedContext == "production";
+      fruitArrivalWarningReported_ = false;
+      fruitArrivalWarningAt_ = awaitingFruit_
+          ? currentTime + activeTiming_.fruitArrivalWarningMS
+          : 0;
       motionPhase_ = MotionPhase::kWaitingForReport;
       queueReport(
           "feed_cycle_completed",
           0,
           activeCommand_.commandId,
-          "calibration_feed_cycle_completed",
+          activeCommand_.feedContext + "_feed_cycle_completed",
           activeTiming_.revision,
           "",
           false);
@@ -192,6 +198,23 @@ void CaptureController::handleSensor(uint32_t currentTime) {
   startAutoTrigger(currentTime);
 }
 
+void CaptureController::checkFruitArrivalWarning(uint32_t currentTime) {
+  if (!awaitingFruit_ || fruitArrivalWarningReported_ ||
+      pendingReport_.active ||
+      !timeReached(currentTime, fruitArrivalWarningAt_)) {
+    return;
+  }
+  fruitArrivalWarningReported_ = true;
+  queueReport(
+      "fruit_arrival_delayed",
+      0,
+      lastFeedCommandId_,
+      "fruit_arrival_delayed",
+      0,
+      "",
+      false);
+}
+
 bool CaptureController::shouldStartAutoTrigger(
     float distanceCM,
     uint32_t currentTime,
@@ -240,6 +263,8 @@ bool CaptureController::shouldStartAutoTrigger(
 void CaptureController::startAutoTrigger(uint32_t currentTime) {
   lastTriggerAt_ = currentTime;
   triggerArmed_ = false;
+  awaitingFruit_ = false;
+  fruitArrivalWarningAt_ = 0;
   setAutoTriggerEnabled(false, "local_hcsr04_trigger");
 
   autoTrigger_ = AutoTrigger();
@@ -656,7 +681,8 @@ bool CaptureController::timingConfigIsValid(const TimingConfig& timing) const {
 bool CaptureController::timingConfigCanApply() const {
   return motionPhase_ == MotionPhase::kIdle && !sequenceActive_ &&
          !classifierCommandActive_ && !classifier_.busy() &&
-         !autoTrigger_.active() && !pendingReport_.active && gates_.atHome();
+         !awaitingFruit_ && !autoTrigger_.active() &&
+         !pendingReport_.active && gates_.atHome();
 }
 
 void CaptureController::stageTimingConfig(const MotorCommand& command) {
@@ -744,7 +770,9 @@ void CaptureController::pollCommand(uint32_t currentTime) {
   }
   lastCommandPollAt_ = currentTime;
 
-  const HttpResult result = api_.pollCommand("idle", lastFeedCommandId_);
+  const HttpResult result = api_.pollCommand(
+      awaitingFruit_ ? "awaiting_fruit" : "idle",
+      lastFeedCommandId_);
   if (!result.isSuccess()) {
     Serial.print("Command GET failed: ");
     Serial.print(result.statusCode);
@@ -817,10 +845,13 @@ void CaptureController::handleCommand(
   }
 
   if (command.command == "feed_one") {
-    if (command.feedContext != "calibration" || sequenceActive_ ||
+    const bool validContext =
+        command.feedContext == "calibration" ||
+        command.feedContext == "production";
+    if (!validContext || sequenceActive_ ||
         classifierCommandActive_ || classifier_.busy() ||
         motionPhase_ != MotionPhase::kIdle) {
-      queueMotorError(command, "calibration_feed_not_safe");
+      queueMotorError(command, "feed_not_safe");
       return;
     }
     startFeeder(command, currentTime);
@@ -847,14 +878,18 @@ void CaptureController::handleCommand(
 void CaptureController::startFeeder(
     const MotorCommand& command,
     uint32_t currentTime) {
-  setAutoTriggerEnabled(false, "calibration_feed_active");
+  awaitingFruit_ = false;
+  fruitArrivalWarningAt_ = 0;
+  setAutoTriggerEnabled(false, command.feedContext + "_feed_active");
   snapshotActiveTiming();
   activeCommand_ = command;
   executingCommandId_ = command.commandId;
   feeder_.writeMicroseconds(activeTiming_.feederDriveUS);
   motionPhase_ = MotionPhase::kFeederDriving;
   phaseDeadlineAt_ = currentTime + activeTiming_.feederRunMS;
-  Serial.print("Calibration feeder started. command_id=");
+  Serial.print("Feeder started. context=");
+  Serial.print(command.feedContext);
+  Serial.print(" command_id=");
   Serial.print(command.commandId);
   Serial.print(" run_ms=");
   Serial.println(activeTiming_.feederRunMS);

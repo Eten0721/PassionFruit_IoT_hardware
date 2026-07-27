@@ -23,7 +23,7 @@ const remoteVideo = document.getElementById('remote-video');
     const counterInput = document.getElementById('counter-input');
     const noteInput = document.getElementById('note');
     const classifyButtons = Array.from(document.querySelectorAll('.classify-button'));
-    const manualCaptureButton = document.getElementById('btn-manual-capture');
+    const autoRunButton = document.getElementById('btn-auto-run');
     const recaptureButton = document.getElementById('btn-recapture');
     const discardButton = document.getElementById('btn-discard');
     const resetDatasetButton = document.getElementById('btn-reset-dataset');
@@ -300,7 +300,21 @@ const remoteVideo = document.getElementById('remote-video');
         sorterErrorEl.textContent = data.sorter_error || '無';
         renderStationStatuses(data.station_statuses || {});
         errorReasonEl.textContent = data.last_error_reason || '無';
-        setMessage(data.message || '');
+        const blockingReason = data.last_error_reason
+            || data.auto_run_recovery_reason
+            || (!data.auto_run_enabled && data.auto_run_disabled_reason);
+        if (blockingReason) {
+            const command = data.motor_command || {};
+            setMessage(
+                `阻擋原因：${blockingReason}｜`
+                + `位置：${data.status || 'unknown'}｜`
+                + `fruit：${data.active_fruit_id || '無'}｜`
+                + `command：${command.command || 'none'} #${command.command_id || 0}｜`
+                + '操作：暫停 → 排除／重新拍攝／刪除 → 開始執行',
+            );
+        } else {
+            setMessage(data.message || '');
+        }
         renderThumbnails(images);
         renderTiming(data.timing || {});
         renderCaptureTiming(data);
@@ -310,7 +324,13 @@ const remoteVideo = document.getElementById('remote-video');
             button.disabled = classificationInFlight || data.sorter_busy || !data.can_classify;
         });
         discardButton.disabled = classificationInFlight || !data.can_discard;
-        manualCaptureButton.disabled = data.sorter_busy || !data.can_manual_capture;
+        autoRunButton.textContent = data.auto_run_enabled
+            ? '暫停'
+            : data.auto_run_finishing
+                ? '正在完成目前果實'
+                : '開始執行';
+        autoRunButton.disabled = data.auto_run_finishing
+            || (!data.auto_run_enabled && !data.can_start_auto_run);
         recaptureButton.disabled = data.sorter_busy || !data.can_recapture;
         resetDatasetButton.disabled = data.sorter_busy;
     }
@@ -717,13 +737,18 @@ const remoteVideo = document.getElementById('remote-video');
         }
     }
 
-    async function manualCapture() {
+    async function toggleAutoRun() {
         try {
-            const payload = await postJson('/api/manual_capture/');
-            setMessage(`已建立 ${payload.fruit_id}，等待 ESP32 啟動三站流程。`);
+            const enabled = !Boolean(lastState && lastState.auto_run_enabled);
+            const payload = await postJson('/api/auto_run/', { enabled });
+            lastState = payload;
+            renderState(payload);
+            setMessage(enabled
+                ? '自動運轉已開始，正在送入第一顆百香果。'
+                : '已要求暫停；目前百香果完成後不會送入下一顆。');
             await refreshState();
         } catch (error) {
-            setMessage(`拍攝命令失敗：${error.message}`);
+            setMessage(`自動運轉切換失敗：${error.message}`);
         }
     }
 
@@ -846,7 +871,7 @@ const remoteVideo = document.getElementById('remote-video');
     resetTimingButton.addEventListener('click', restoreRecommendedTiming);
     applyTimingButton.addEventListener('click', applyCaptureTiming);
     testFeederButton.addEventListener('click', testFeederOnce);
-    manualCaptureButton.addEventListener('click', manualCapture);
+    autoRunButton.addEventListener('click', toggleAutoRun);
     recaptureButton.addEventListener('click', recaptureCurrent);
     document.getElementById('btn-open-folder').addEventListener('click', openDatasetFolder);
     discardButton.addEventListener('click', discardCurrent);

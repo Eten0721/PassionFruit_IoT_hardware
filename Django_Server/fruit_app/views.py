@@ -99,6 +99,7 @@ HARDWARE_STEP_TIMEOUT_SECONDS = 20
 CAMERA_UPLOAD_TIMEOUT_SECONDS = 45
 SORTER_PENDING_TIMEOUT_SECONDS = 30
 SORTER_RUNNING_TIMEOUT_SECONDS = 30
+CAMERA_READY_WINDOW_SECONDS = 5
 FILE_OPERATION_RETRIES = 2
 FILE_OPERATION_RETRY_DELAY_SECONDS = 0.05
 DISCARD_CLEANUP_RETRY_INTERVAL_SECONDS = 30
@@ -162,6 +163,11 @@ APP_STATE = RuntimeState({
     'capture_timing_applied_at': None,
     'capture_timing_loaded_path': None,
     'auto_run_enabled': False,
+    'auto_feed_pending': False,
+    'auto_run_finishing': False,
+    'auto_run_recovery_reason': None,
+    'camera_last_live_frame_at': None,
+    'camera_last_live_frame_monotonic': None,
     'esp32_boot_id': None,
     'esp32_feeder_capable': False,
     'esp32_feeder_state': None,
@@ -178,7 +184,7 @@ APP_STATE = RuntimeState({
     'sorter_started_monotonic': None,
     'sorter_deadline_monotonic': None,
     'status': 'idle',
-    'message': '等待手機連線與手動拍攝。',
+    'message': '等待手機相機、ESP32 與送料校正完成。',
 })
 STATE_LOCK = APP_STATE.lock
 WEBRTC_STATE = {
@@ -264,6 +270,10 @@ def camera_state_api(request):
     """Return only the fields needed by the high-frequency camera poller."""
     _ensure_dataset_structure()
     with STATE_LOCK:
+        if request.GET.get('camera_ready') == '1':
+            APP_STATE['camera_last_live_frame_at'] = _now_string()
+            APP_STATE['camera_last_live_frame_monotonic'] = time.monotonic()
+            _queue_pending_auto_feed()
         _apply_session_timeouts()
         payload = _camera_state_payload()
     return _no_store_response(JsonResponse(payload))
@@ -402,27 +412,62 @@ def feeder_test_api(request):
 
 @csrf_exempt
 @require_POST
-def manual_capture_api(request):
+def auto_run_api(request):
     _ensure_dataset_structure()
+    enabled = _request_data(request).get('enabled')
+    if not isinstance(enabled, bool):
+        return _json_error(
+            'enabled 必須是布林值。',
+            status=400,
+            reason='invalid_auto_run_enabled',
+        )
+
     with STATE_LOCK:
         _sync_active_state_with_filesystem()
-        if _sorter_busy():
+        if not enabled:
+            waiting_without_fruit = (
+                APP_STATE.get('status') == 'waiting_fruit'
+                and not APP_STATE.get('active_fruit_id')
+            )
+            if waiting_without_fruit:
+                APP_STATE['auto_run_recovery_reason'] = (
+                    APP_STATE.get('auto_run_recovery_reason')
+                    or 'feed_arrival_unconfirmed'
+                )
+                APP_STATE['auto_run_finishing'] = False
+            elif APP_STATE.get('auto_run_enabled'):
+                APP_STATE['auto_run_finishing'] = not APP_STATE.get('auto_feed_pending')
+            _disable_auto_run()
+            APP_STATE['message'] = '已要求暫停；目前百香果會完成既有流程，不再送入下一顆。'
+            _record_transition('auto_run_paused')
+            return JsonResponse(_state_payload(extra={'ok': True}))
+
+        if APP_STATE.get('auto_run_enabled'):
+            return JsonResponse(_state_payload(extra={'ok': True}))
+
+        reason = _auto_run_disabled_reason(allow_recovery=True)
+        if reason:
             return _json_error(
-                '硬體分類器正在執行，完成或逾時前不可開始下一次拍攝。',
+                '目前無法開始自動運轉，請確認相機、ESP32、設定與送料校正皆已就緒。',
                 status=409,
-                reason='classifier_busy',
+                reason=reason,
             )
-        if not _esp32_is_online():
-            return _json_error(
-                'ESP32 尚未連線或已超過 20 秒未輪詢，請確認正式三閘門 firmware 已啟動。',
-                status=503,
-                reason='esp32_offline',
-            )
+
+        recovery_confirmed = bool(APP_STATE.get('auto_run_recovery_reason'))
+        APP_STATE['auto_run_recovery_reason'] = None
+        APP_STATE['last_error_reason'] = None
+        APP_STATE['status'] = 'idle'
+        APP_STATE['esp32_feeder_state'] = 'idle'
+        APP_STATE['auto_run_enabled'] = True
+        APP_STATE['auto_run_finishing'] = False
         try:
-            payload = _create_capture_session(source='manual')
+            command = _queue_production_feed()
+            command['recovery_confirmed'] = recovery_confirmed
         except CaptureCommandError as exc:
+            APP_STATE['auto_run_enabled'] = False
             return _json_error(exc.message, status=exc.status, reason=exc.reason)
-    return JsonResponse(payload)
+        _record_transition('auto_run_started')
+        return JsonResponse(_state_payload(extra={'ok': True}))
 
 
 @csrf_exempt
@@ -453,9 +498,33 @@ def esp32_command_api(request):
     with STATE_LOCK:
         APP_STATE['last_esp32_poll_at'] = _now_string()
         APP_STATE['last_esp32_poll_monotonic'] = time.monotonic()
-        APP_STATE['esp32_boot_id'] = (request.GET.get('boot_id') or '').strip() or None
-        APP_STATE['esp32_feeder_capable'] = request.GET.get('capability') == 'feeder_v1'
+        previous_boot_id = APP_STATE.get('esp32_boot_id')
+        boot_id = (request.GET.get('boot_id') or '').strip() or None
         feeder_state = (request.GET.get('feeder_state') or '').strip()
+        current_command = APP_STATE.get('motor_command') or {}
+        if (
+            previous_boot_id
+            and boot_id
+            and boot_id != previous_boot_id
+            and current_command.get('command') == 'feed_one'
+        ):
+            APP_STATE['motor_command'] = None
+            _disable_auto_run()
+            APP_STATE['auto_run_finishing'] = False
+            APP_STATE['last_error_reason'] = 'esp32_restarted_during_feed'
+            APP_STATE['auto_run_recovery_reason'] = 'esp32_restarted_during_feed'
+            APP_STATE['status'] = 'error'
+            APP_STATE['message'] = (
+                'ESP32 在送料完成確認前重新啟動；已停止自動運轉且不重送，'
+                '請暫停並檢查送料區域。'
+            )
+            _record_transition(
+                'esp32_restarted_during_feed',
+                command_id=current_command.get('command_id'),
+                details={'previous_boot_id': previous_boot_id, 'boot_id': boot_id},
+            )
+        APP_STATE['esp32_boot_id'] = boot_id
+        APP_STATE['esp32_feeder_capable'] = request.GET.get('capability') == 'feeder_v1'
         APP_STATE['esp32_feeder_state'] = (
             feeder_state if feeder_state in ('idle', 'awaiting_fruit') else None
         )
@@ -463,6 +532,27 @@ def esp32_command_api(request):
             _safe_int(request.GET.get('last_feed_command_id')) or 0,
             0,
         )
+        known_feed_wait = (
+            APP_STATE.get('last_completed_feed_command_id', 0) > 0
+            and APP_STATE['esp32_last_feed_command_id']
+            == APP_STATE['last_completed_feed_command_id']
+        )
+        recovery_feed_pending = (
+            current_command.get('command') == 'feed_one'
+            and current_command.get('recovery_confirmed')
+        )
+        if (
+            feeder_state == 'awaiting_fruit'
+            and not APP_STATE.get('active_fruit_id')
+            and not known_feed_wait
+            and not recovery_feed_pending
+        ):
+            _disable_auto_run()
+            APP_STATE['auto_run_finishing'] = False
+            APP_STATE['auto_run_recovery_reason'] = 'feed_arrival_unconfirmed'
+            if APP_STATE['status'] != 'error':
+                APP_STATE['status'] = 'waiting_fruit'
+                APP_STATE['message'] = '進料未確認；等待 HC-SR04 接手，請勿重新送料。'
         _sync_active_state_with_filesystem()
         payload = _esp32_command_payload()
         _mark_sorter_running_if_dispatched(payload)
@@ -494,6 +584,10 @@ def esp32_report_api(request):
                 payload = _handle_feed_cycle_completed(command_id)
             except CaptureCommandError as exc:
                 return _json_error(exc.message, status=exc.status, reason=exc.reason, extra={'ok': False})
+            return JsonResponse(_compact_esp32_payload(payload))
+
+        if event == 'fruit_arrival_delayed':
+            payload = _handle_fruit_arrival_delayed(command_id)
             return JsonResponse(_compact_esp32_payload(payload))
 
         if event == 'hcsr04_station_1_ready':
@@ -599,6 +693,8 @@ def recapture_api(request):
             status='waiting_esp32_start',
             message=f'已重新啟動 {fruit_id}，等待 ESP32 開始三站閘門流程。',
         )
+        _disable_auto_run()
+        APP_STATE['auto_run_finishing'] = False
         _set_motor_command('start_sequence', station_index=1)
         payload = _state_payload(extra={'recaptured_fruit_id': fruit_id})
     return JsonResponse(payload)
@@ -875,6 +971,8 @@ def discard_api(request):
         if not APP_STATE.operation_matches(operation_token):
             return _json_error('刪除完成時狀態已變更。', status=409, reason='stale_operation')
         APP_STATE.finish_dataset_operation(operation_token)
+        _disable_auto_run()
+        APP_STATE['auto_run_finishing'] = False
         _clear_active_state(message, status='idle')
         _record_transition(
             'fruit_discarded',
@@ -1067,6 +1165,11 @@ def reset_runtime_state_for_tests():
             'capture_timing_applied_at': None,
             'capture_timing_loaded_path': None,
             'auto_run_enabled': False,
+            'auto_feed_pending': False,
+            'auto_run_finishing': False,
+            'auto_run_recovery_reason': None,
+            'camera_last_live_frame_at': None,
+            'camera_last_live_frame_monotonic': None,
             'esp32_boot_id': None,
             'esp32_feeder_capable': False,
             'esp32_feeder_state': None,
@@ -1083,7 +1186,7 @@ def reset_runtime_state_for_tests():
             'sorter_started_monotonic': None,
             'sorter_deadline_monotonic': None,
             'status': 'idle',
-            'message': '等待手機連線與手動拍攝。',
+            'message': '等待手機相機、ESP32 與送料校正完成。',
         })
         WEBRTC_STATE.update({
             'offer': None,
@@ -1455,9 +1558,6 @@ def _create_capture_session(source):
         # guarded station-1 shortcut.
         _record_transition('hcsr04_trigger_received', fruit_id=fruit_id)
         _record_transition('hcsr04_trigger_accepted', fruit_id=fruit_id)
-    elif source.startswith('manual'):
-        _record_transition('manual_capture_accepted', fruit_id=fruit_id)
-
     return _state_payload(extra={
         'status': 'success',
         'fruit_id': fruit_id,
@@ -1857,6 +1957,9 @@ def _handle_sorter_report(event, data, command_id):
     if event == 'classification_sorter_completed':
         APP_STATE['sorter_status'] = 'completed'
         APP_STATE['sorter_error'] = None
+        APP_STATE['status'] = 'idle'
+        APP_STATE['auto_feed_pending'] = APP_STATE.get('auto_run_enabled', False)
+        APP_STATE['auto_run_finishing'] = False
         APP_STATE['message'] = f'{fruit_id} 的硬體分類器控制流程已完成。'
     else:
         reason = (data.get('message') or 'classifier_failed').strip()
@@ -1870,6 +1973,7 @@ def _handle_sorter_report(event, data, command_id):
         command_id=command_id,
         details={'classification_code': classification_code, 'sorter_error': APP_STATE.get('sorter_error')},
     )
+    _queue_pending_auto_feed()
     return _state_payload(extra={'ok': True, 'event': event})
 
 
@@ -2136,8 +2240,15 @@ def _handle_feed_cycle_completed(command_id):
         )
     APP_STATE['last_completed_feed_command_id'] = command_id
     APP_STATE['motor_command'] = None
-    APP_STATE['status'] = 'idle'
-    APP_STATE['message'] = '一次送料校正測試已完成，請確認停止、方向與轉量。'
+    APP_STATE['status'] = (
+        'waiting_fruit'
+        if command.get('feed_context') == 'production'
+        else 'idle'
+    )
+    if command.get('feed_context') == 'production':
+        APP_STATE['message'] = '送料 cycle 已完成，等待百香果抵達 HC-SR04。'
+    else:
+        APP_STATE['message'] = '一次送料校正測試已完成，請確認停止、方向與轉量。'
     _clear_wait_timer()
     _record_transition(
         'feed_cycle_completed',
@@ -2145,6 +2256,35 @@ def _handle_feed_cycle_completed(command_id):
         details={'feed_context': command.get('feed_context')},
     )
     return _state_payload(extra={'ok': True, 'event': 'feed_cycle_completed'})
+
+
+def _handle_fruit_arrival_delayed(command_id):
+    if APP_STATE.get('active_fruit_id'):
+        return _state_payload(extra={
+            'ok': True,
+            'event': 'fruit_arrival_delayed',
+            'ignored': True,
+            'reason': 'fruit_already_detected',
+        })
+    if command_id != APP_STATE.get('last_completed_feed_command_id'):
+        return _state_payload(extra={
+            'ok': True,
+            'event': 'fruit_arrival_delayed',
+            'ignored': True,
+            'reason': 'stale_feed_command',
+        })
+    APP_STATE['last_error_reason'] = 'fruit_arrival_delayed'
+    APP_STATE['auto_run_recovery_reason'] = 'fruit_arrival_delayed'
+    APP_STATE['status'] = 'waiting_fruit'
+    APP_STATE['message'] = (
+        '送料後仍未觸發 HC-SR04；進料未確認。請暫停並檢查送料區域，'
+        '不要自動補轉。'
+    )
+    _record_transition(
+        'fruit_arrival_delayed',
+        command_id=command_id,
+    )
+    return _state_payload(extra={'ok': True, 'event': 'fruit_arrival_delayed'})
 
 
 def _handle_timing_config_applied(data):
@@ -2274,6 +2414,11 @@ def _esp32_is_online():
 def _feeder_test_disabled_reason():
     if APP_STATE.get('auto_run_enabled'):
         return 'auto_run_must_be_stopped'
+    return _feeder_hardware_disabled_reason()
+
+
+def _feeder_hardware_disabled_reason(*, allow_recovery=False):
+    recovery = bool(APP_STATE.get('auto_run_recovery_reason'))
     if APP_STATE.get('dataset_operation'):
         return 'dataset_operation_in_progress'
     if _sorter_busy():
@@ -2282,26 +2427,67 @@ def _feeder_test_disabled_reason():
         return 'active_fruit_exists'
     if APP_STATE.get('motor_command'):
         return 'pending_motor_command'
-    if APP_STATE.get('status') != 'idle':
+    if APP_STATE.get('status') != 'idle' and not (
+        allow_recovery and recovery and APP_STATE.get('status') in ('waiting_fruit', 'error')
+    ):
         return 'system_not_idle'
     if not _esp32_is_online():
         return 'esp32_offline'
     if not APP_STATE.get('esp32_feeder_capable'):
         return 'feeder_capability_missing'
-    if APP_STATE.get('esp32_feeder_state') != 'idle':
+    if APP_STATE.get('esp32_feeder_state') != 'idle' and not (
+        allow_recovery and recovery and APP_STATE.get('esp32_feeder_state') == 'awaiting_fruit'
+    ):
         return 'feeder_state_not_idle'
     if APP_STATE['capture_timing_applied_revision'] != APP_STATE['capture_timing_revision']:
         return 'feeder_timing_not_applied'
     return None
 
 
-def _auto_run_disabled_reason():
-    reason = _feeder_test_disabled_reason()
+def _auto_run_disabled_reason(*, allow_recovery=False):
+    reason = _feeder_hardware_disabled_reason(allow_recovery=allow_recovery)
     if reason:
         return reason
     if not APP_STATE['capture_timing']['feeder_calibrated']:
         return 'feeder_calibration_required'
+    if not _camera_is_ready():
+        return 'camera_not_ready'
+    if APP_STATE.get('auto_run_recovery_reason') and not allow_recovery:
+        return APP_STATE['auto_run_recovery_reason']
     return None
+
+
+def _camera_is_ready():
+    last_frame = APP_STATE.get('camera_last_live_frame_monotonic')
+    return (
+        last_frame is not None
+        and time.monotonic() - last_frame <= CAMERA_READY_WINDOW_SECONDS
+    )
+
+
+def _queue_production_feed():
+    command = _set_motor_command('feed_one', feed_context='production')
+    APP_STATE['auto_feed_pending'] = False
+    APP_STATE['status'] = 'waiting_feeder'
+    APP_STATE['message'] = 'ESP32 正在送入下一顆百香果。'
+    return command
+
+
+def _queue_pending_auto_feed():
+    if not APP_STATE.get('auto_run_enabled') or not APP_STATE.get('auto_feed_pending'):
+        return False
+    reason = _auto_run_disabled_reason()
+    if reason:
+        if reason == 'camera_not_ready':
+            APP_STATE['message'] = '等待手機相機恢復有效即時畫面後再送入下一顆。'
+        return False
+    _queue_production_feed()
+    return True
+
+
+def _disable_auto_run():
+    APP_STATE['auto_run_enabled'] = False
+    APP_STATE['auto_feed_pending'] = False
 
 
 def _start_wait_timer():
@@ -2392,7 +2578,6 @@ def _state_payload(extra=None):
         and APP_STATE['status'] == 'uploaded'
     )
     can_discard = bool(active_fruit_id) and not is_uploading and not dataset_busy
-    can_manual_capture = _auto_trigger_enabled()
     can_recapture = not dataset_busy and bool(active_fruit_id) and APP_STATE['status'] in (
         'waiting_esp32_start',
         'waiting_station_ready',
@@ -2420,18 +2605,21 @@ def _state_payload(extra=None):
         'image_count': IMAGE_COUNT,
         'image_total': image_total,
         'latest_images': latest_images,
-        'can_manual_capture': can_manual_capture,
         'can_discard': can_discard,
         'can_classify': can_classify,
         'can_recapture': can_recapture,
         'esp32_online': _esp32_is_online(),
         'auto_run_enabled': APP_STATE.get('auto_run_enabled', False),
+        'auto_run_finishing': APP_STATE.get('auto_run_finishing', False),
+        'auto_run_recovery_reason': APP_STATE.get('auto_run_recovery_reason'),
+        'camera_ready': _camera_is_ready(),
+        'camera_last_live_frame_at': APP_STATE.get('camera_last_live_frame_at'),
         'esp32_boot_id': APP_STATE.get('esp32_boot_id'),
         'esp32_feeder_capable': APP_STATE.get('esp32_feeder_capable', False),
         'esp32_feeder_state': APP_STATE.get('esp32_feeder_state'),
         'can_test_feeder': _feeder_test_disabled_reason() is None,
         'feeder_test_disabled_reason': _feeder_test_disabled_reason(),
-        'can_start_auto_run': _auto_run_disabled_reason() is None,
+        'can_start_auto_run': _auto_run_disabled_reason(allow_recovery=True) is None,
         'auto_run_disabled_reason': _auto_run_disabled_reason(),
         'last_esp32_poll_at': APP_STATE.get('last_esp32_poll_at'),
         'last_esp32_report_at': APP_STATE.get('last_esp32_report_at'),
@@ -2479,6 +2667,7 @@ def _camera_state_payload():
         'capture_requested': requested,
         'pending_capture': requested,
         'status': APP_STATE.get('status'),
+        'camera_ready': _camera_is_ready(),
         'capture': capture,
     }
 

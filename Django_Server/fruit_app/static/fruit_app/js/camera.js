@@ -14,6 +14,7 @@ const localVideo = document.getElementById('local-video');
     let lastFailedCaptureRequestKey = '';
     let lastCaptureFailureTime = 0;
     let isCapturing = false;
+    let lastLiveFrameAtMs = null;
     let capturePollTimer = null;
     let webrtcPollTimer = null;
     const captureRetryDelayMs = 2000;
@@ -88,7 +89,14 @@ const localVideo = document.getElementById('local-video');
     }
 
     async function fetchCaptureState() {
-        const response = await fetchWithTimeout('/api/camera/state/', {
+        const hasFreshLiveFrame = (
+            lastLiveFrameAtMs !== null
+            && performance.now() - lastLiveFrameAtMs <= 1000
+        );
+        const url = hasFreshLiveFrame
+            ? '/api/camera/state/?camera_ready=1'
+            : '/api/camera/state/';
+        const response = await fetchWithTimeout(url, {
             cache: 'no-store',
             headers: { 'Cache-Control': 'no-cache' },
         }, captureStateRequestTimeoutMs);
@@ -144,6 +152,7 @@ const localVideo = document.getElementById('local-video');
             }
 
             localVideo.srcObject = localStream;
+            watchLiveFrames();
             startPanel.classList.add('hidden');
             setStatus('相機已開啟，等待 dashboard 連線與拍攝命令。');
             currentOfferId = 0;
@@ -474,6 +483,24 @@ const localVideo = document.getElementById('local-video');
                 }
             }, 'image/jpeg', 0.92);
         });
+    }
+
+    function watchLiveFrames() {
+        lastLiveFrameAtMs = null;
+        if (typeof localVideo.requestVideoFrameCallback !== 'function') {
+            localVideo.addEventListener('timeupdate', markLiveFrame);
+            return;
+        }
+        localVideo.requestVideoFrameCallback(function onLiveFrame() {
+            markLiveFrame();
+            localVideo.requestVideoFrameCallback(onLiveFrame);
+        });
+    }
+
+    function markLiveFrame() {
+        if (localVideo.videoWidth > 0 && localVideo.videoHeight > 0) {
+            lastLiveFrameAtMs = performance.now();
+        }
     }
 
     updateDiagnostic();

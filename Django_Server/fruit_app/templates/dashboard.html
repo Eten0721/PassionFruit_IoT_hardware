@@ -30,7 +30,7 @@
             <h2>三站照片預覽</h2>
             <div class="section-body">
                 <div id="thumbnail-grid" class="thumb-grid"></div>
-                <div id="thumbnail-empty" class="empty">尚未拍攝。按下手動拍攝後，ESP32 會啟動三閘門流程，手機每站上傳 1 張照片。</div>
+                <div id="thumbnail-empty" class="empty">尚未拍攝。開始自動運轉後，HC-SR04 會啟動三閘門流程，手機每站上傳 1 張照片。</div>
             </div>
         </section>
     </div>
@@ -59,11 +59,11 @@
                     <input id="counter-input" type="number" min="1" inputmode="numeric" placeholder="輸入起始 ID，例如 120">
                     <button id="btn-set-counter" type="button" class="secondary">設定起始 ID</button>
                 </div>
-                <button id="btn-manual-capture" type="button">手動拍攝</button>
+                <button id="btn-auto-run" type="button">開始執行</button>
                 <button id="btn-recapture" type="button" class="warning">重新拍攝目前 fruit</button>
                 <button id="btn-open-folder" type="button" class="secondary">開啟資料夾</button>
                 <button id="btn-reset-dataset" type="button" class="danger">重置 dataset</button>
-                <div id="message" class="message"></div>
+                <div id="message" class="message" role="alert"></div>
             </div>
         </section>
 
