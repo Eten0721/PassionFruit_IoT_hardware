@@ -12,6 +12,7 @@
 - Capture 與 sorter 共用單一 motor command slot，command ID 可跨 Django 重啟保持遞增。
 - 人工分類先提交 Dataset 與 metadata，再驅動 MG996R；硬體失敗不回滾資料。
 - Dashboard 可管理拍攝 timing、檢查三張照片、分類與刪除；手機頁使用 single in-flight polling。
+- 上游送料支援校正、單顆自動運轉、優雅暫停、延遲警示及 Django／ESP32 重啟防重復原。
 - 正式 Firmware 已按感測、閘門、分類器、HTTPS 與流程控制拆分模組。
 - 硬體與模型採獨立 Repository，照片快照存於獨立資料目錄。
 - 目前 Dataset 快照包含 `327` 顆果實與 `981` 張照片，尚待建立正式 train／valid／test 切分與第二份備份。
@@ -23,7 +24,7 @@
 - [#1 整合上游送料機構與 360° SG90](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1)
 - [#2 分類器新增 180° SG90 出料閘門](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2)
 
-Issue #1 已完成設計討論並進入 `Eten/issue-1-upstream-feeder` branch。已接受的目標包括 GPIO `23` 單次開迴路送料、Dashboard 自動運轉／優雅暫停、可持久校正參數、相機 readiness、重新啟動防重與進料未確認提示；目前尚未完成 Django、Dashboard、Firmware 實作及實機驗收。
+Issue #1 的 Django、Dashboard 與 Firmware 已完成軟體實作；GPIO `23` 單次開迴路送料、可持久校正參數、相機 readiness、自動運轉／優雅暫停、重新啟動防重與進料未確認提示仍待實機驗收。
 
 ## 已知問題
 
@@ -49,4 +50,4 @@ Issue #1 已完成設計討論並進入 `Eten/issue-1-upstream-feeder` branch。
 
 ## 下一個里程碑
 
-依 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 實作 Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 的 runtime profile、單顆送料 command、自動運轉／優雅暫停、復原提示與測試，再完成實機驗收。Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 通過後，再處理 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 的分類後出料閘門。
+依 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 完成 Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 的單顆送料、重啟防重與完整分類實機驗收。Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 通過後，再處理 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 的分類後出料閘門。

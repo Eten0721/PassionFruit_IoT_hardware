@@ -1,6 +1,7 @@
 #include "DjangoApiClient.h"
 
 #include <ctype.h>
+#include <esp_system.h>
 
 #include "Config.h"
 #include "secrets.h"
@@ -25,7 +26,7 @@ void DjangoApiClient::begin() {
   WiFi.setAutoReconnect(true);
 
   secureClient_.setInsecure();
-  bootId_ = WiFi.macAddress() + "-" + String(millis(), HEX);
+  bootId_ = WiFi.macAddress() + "-" + String(esp_random(), HEX);
   startWiFiAttempt(millis());
 }
 

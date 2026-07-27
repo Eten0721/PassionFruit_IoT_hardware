@@ -137,6 +137,8 @@ APP_STATE = RuntimeState({
     'motor_command': None,
     'motor_command_id': 0,
     'last_error_reason': None,
+    'last_error_command': None,
+    'last_error_command_id': None,
     'wait_started_at': None,
     'wait_started_monotonic': None,
     'last_esp32_poll_at': None,
@@ -173,6 +175,7 @@ APP_STATE = RuntimeState({
     'esp32_feeder_state': None,
     'esp32_last_feed_command_id': 0,
     'last_completed_feed_command_id': 0,
+    'last_delayed_feed_command_id': 0,
     'discard_cleanup_last_monotonic': None,
     'dataset_operation': None,
     'sorter_status': 'idle',
@@ -456,6 +459,8 @@ def auto_run_api(request):
         recovery_confirmed = bool(APP_STATE.get('auto_run_recovery_reason'))
         APP_STATE['auto_run_recovery_reason'] = None
         APP_STATE['last_error_reason'] = None
+        APP_STATE['last_error_command'] = None
+        APP_STATE['last_error_command_id'] = None
         APP_STATE['status'] = 'idle'
         APP_STATE['esp32_feeder_state'] = 'idle'
         APP_STATE['auto_run_enabled'] = True
@@ -512,6 +517,8 @@ def esp32_command_api(request):
             _disable_auto_run()
             APP_STATE['auto_run_finishing'] = False
             APP_STATE['last_error_reason'] = 'esp32_restarted_during_feed'
+            APP_STATE['last_error_command'] = current_command.get('command')
+            APP_STATE['last_error_command_id'] = current_command.get('command_id')
             APP_STATE['auto_run_recovery_reason'] = 'esp32_restarted_during_feed'
             APP_STATE['status'] = 'error'
             APP_STATE['message'] = (
@@ -550,6 +557,8 @@ def esp32_command_api(request):
             _disable_auto_run()
             APP_STATE['auto_run_finishing'] = False
             APP_STATE['auto_run_recovery_reason'] = 'feed_arrival_unconfirmed'
+            APP_STATE['last_error_command'] = 'feed_one'
+            APP_STATE['last_error_command_id'] = APP_STATE['esp32_last_feed_command_id']
             if APP_STATE['status'] != 'error':
                 APP_STATE['status'] = 'waiting_fruit'
                 APP_STATE['message'] = '進料未確認；等待 HC-SR04 接手，請勿重新送料。'
@@ -1141,6 +1150,8 @@ def reset_runtime_state_for_tests():
             'motor_command': None,
             'motor_command_id': 0,
             'last_error_reason': None,
+            'last_error_command': None,
+            'last_error_command_id': None,
             'wait_started_at': None,
             'wait_started_monotonic': None,
             'last_esp32_poll_at': None,
@@ -1175,6 +1186,7 @@ def reset_runtime_state_for_tests():
             'esp32_feeder_state': None,
             'esp32_last_feed_command_id': 0,
             'last_completed_feed_command_id': 0,
+            'last_delayed_feed_command_id': 0,
             'discard_cleanup_last_monotonic': None,
             'dataset_operation': None,
             'sorter_status': 'idle',
@@ -2259,6 +2271,14 @@ def _handle_feed_cycle_completed(command_id):
 
 
 def _handle_fruit_arrival_delayed(command_id):
+    if command_id and command_id == APP_STATE.get('last_delayed_feed_command_id'):
+        return _state_payload(extra={
+            'ok': True,
+            'event': 'fruit_arrival_delayed',
+            'ignored': True,
+            'duplicate': True,
+            'reason': 'duplicate_fruit_arrival_delayed',
+        })
     if APP_STATE.get('active_fruit_id'):
         return _state_payload(extra={
             'ok': True,
@@ -2266,7 +2286,7 @@ def _handle_fruit_arrival_delayed(command_id):
             'ignored': True,
             'reason': 'fruit_already_detected',
         })
-    if command_id != APP_STATE.get('last_completed_feed_command_id'):
+    if not command_id or command_id != APP_STATE.get('last_completed_feed_command_id'):
         return _state_payload(extra={
             'ok': True,
             'event': 'fruit_arrival_delayed',
@@ -2274,6 +2294,9 @@ def _handle_fruit_arrival_delayed(command_id):
             'reason': 'stale_feed_command',
         })
     APP_STATE['last_error_reason'] = 'fruit_arrival_delayed'
+    APP_STATE['last_error_command'] = 'feed_one'
+    APP_STATE['last_error_command_id'] = command_id
+    APP_STATE['last_delayed_feed_command_id'] = command_id
     APP_STATE['auto_run_recovery_reason'] = 'fruit_arrival_delayed'
     APP_STATE['status'] = 'waiting_fruit'
     APP_STATE['message'] = (
@@ -2529,6 +2552,12 @@ def _apply_sorter_timeout():
     if current_command.get('command_id') == command_id:
         APP_STATE['motor_command'] = None
     reason = 'esp32_timeout' if previous_status == 'pending' else 'classifier_timeout'
+    _disable_auto_run()
+    APP_STATE['auto_run_recovery_reason'] = reason
+    APP_STATE['last_error_reason'] = reason
+    APP_STATE['last_error_command'] = current_command.get('command')
+    APP_STATE['last_error_command_id'] = command_id
+    APP_STATE['status'] = 'error'
     APP_STATE['sorter_status'] = 'timeout'
     APP_STATE['sorter_error'] = reason
     APP_STATE['sorter_deadline_monotonic'] = None
@@ -2543,9 +2572,12 @@ def _apply_sorter_timeout():
 
 
 def _set_error_state(reason, message):
+    command = APP_STATE.get('motor_command') or {}
     APP_STATE['pending_capture'] = False
     APP_STATE['motor_command'] = None
     APP_STATE['last_error_reason'] = reason
+    APP_STATE['last_error_command'] = command.get('command')
+    APP_STATE['last_error_command_id'] = command.get('command_id')
     APP_STATE['status'] = 'error'
     APP_STATE['message'] = message
     _clear_wait_timer()
@@ -2562,6 +2594,54 @@ def _capture_started_debug_payload(received_fruit_id, received_capture_token, re
         'received_capture_token': received_capture_token,
         'expected_station_index': APP_STATE.get('active_station_index'),
         'received_station_index': received_station_index,
+    }
+
+
+def _operator_alert_payload():
+    reason = (
+        APP_STATE.get('last_error_reason')
+        or APP_STATE.get('auto_run_recovery_reason')
+        or (
+            not APP_STATE.get('auto_run_enabled')
+            and _auto_run_disabled_reason()
+        )
+    )
+    if not reason:
+        return None
+
+    command = APP_STATE.get('motor_command') or {}
+    location = {
+        'fruit_arrival_delayed': 'upstream_feeder / HC-SR04',
+        'feed_arrival_unconfirmed': 'upstream_feeder / HC-SR04',
+        'esp32_restarted_during_feed': 'ESP32 / upstream_feeder',
+        'esp32_offline': 'ESP32',
+        'esp32_start_timeout': 'ESP32 / SG90 gates',
+        'hardware_timeout': 'ESP32 / SG90 gates',
+        'motor_error': 'ESP32 / actuator',
+        'feeder_capability_missing': 'ESP32 / upstream_feeder',
+        'feeder_calibration_required': 'upstream_feeder',
+        'feeder_timing_not_applied': 'ESP32 / upstream_feeder',
+        'feeder_state_not_idle': 'upstream_feeder',
+        'camera_not_ready': 'camera station',
+        'camera_upload_timeout': 'camera station',
+        'classifier_busy': 'MG996R classifier',
+        'classifier_timeout': 'MG996R classifier',
+        'esp32_timeout': 'ESP32 / MG996R classifier',
+        'active_fruit_exists': 'capture pipeline',
+        'pending_motor_command': 'ESP32 motor command',
+        'dataset_operation_in_progress': 'dataset storage',
+        'system_not_idle': 'Django state machine',
+    }.get(reason, APP_STATE.get('status') or 'unknown')
+    return {
+        'reason': reason,
+        'location': location,
+        'fruit_id': APP_STATE.get('active_fruit_id') or APP_STATE.get('sorter_fruit_id'),
+        'command': APP_STATE.get('last_error_command') or command.get('command'),
+        'command_id': APP_STATE.get('last_error_command_id') or command.get('command_id'),
+        'instruction': (
+            '暫停 → 排除／重新拍攝／刪除 → 開始執行'
+            '（請自行暫停、排除狀況後重新開始）'
+        ),
     }
 
 
@@ -2625,6 +2705,7 @@ def _state_payload(extra=None):
         'last_esp32_report_at': APP_STATE.get('last_esp32_report_at'),
         'motor_command': APP_STATE.get('motor_command') or _esp32_command_payload(),
         'last_error_reason': APP_STATE.get('last_error_reason'),
+        'operator_alert': _operator_alert_payload(),
         'home_angle': HOME_ANGLE,
         'release_angle': RELEASE_ANGLE,
         'first_station_settle_ms': APP_STATE['capture_timing']['first_station_settle_ms'],

@@ -300,17 +300,15 @@ const remoteVideo = document.getElementById('remote-video');
         sorterErrorEl.textContent = data.sorter_error || '無';
         renderStationStatuses(data.station_statuses || {});
         errorReasonEl.textContent = data.last_error_reason || '無';
-        const blockingReason = data.last_error_reason
-            || data.auto_run_recovery_reason
-            || (!data.auto_run_enabled && data.auto_run_disabled_reason);
-        if (blockingReason) {
-            const command = data.motor_command || {};
+        const alert = data.operator_alert;
+        if (alert) {
             setMessage(
-                `阻擋原因：${blockingReason}｜`
-                + `位置：${data.status || 'unknown'}｜`
-                + `fruit：${data.active_fruit_id || '無'}｜`
-                + `command：${command.command || 'none'} #${command.command_id || 0}｜`
-                + '操作：暫停 → 排除／重新拍攝／刪除 → 開始執行',
+                `阻擋原因：${alert.reason}｜`
+                + `位置：${alert.location}｜`
+                + `fruit：${alert.fruit_id || '無'}｜`
+                + `command：${alert.command || 'none'} #${alert.command_id || 0}｜`
+                + `操作：${alert.instruction
+                    || '暫停 → 排除／重新拍攝／刪除 → 開始執行（請自行暫停、排除狀況後重新開始）'}`,
             );
         } else {
             setMessage(data.message || '');

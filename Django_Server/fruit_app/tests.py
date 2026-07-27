@@ -363,6 +363,12 @@ class DataCollectionFlowTests(SimpleTestCase):
         state = self.client.get('/api/state/').json()
         self.assertEqual(state['sorter_status'], 'timeout')
         self.assertEqual(state['sorter_error'], 'classifier_timeout')
+        self.assertFalse(state['auto_run_enabled'])
+        self.assertEqual(state['operator_alert']['reason'], 'classifier_timeout')
+        self.assertEqual(state['operator_alert']['location'], 'MG996R classifier')
+        self.assertEqual(state['operator_alert']['fruit_id'], 'fruit_001')
+        self.assertEqual(state['operator_alert']['command'], 'classify_fruit')
+        self.assertEqual(state['operator_alert']['command_id'], command['command_id'])
         self.assertIsNone(views.APP_STATE['motor_command'])
         self.assertTrue((self.dataset_root / '加工' / 'fruit_001').exists())
 
@@ -1049,6 +1055,10 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(stale.status_code, 409)
         self.assertEqual(stale.json()['reason'], 'camera_not_ready')
         self.assertFalse(views.APP_STATE['auto_run_enabled'])
+        self.assertEqual(
+            self.client.get('/api/state/').json()['operator_alert']['location'],
+            'camera station',
+        )
 
         with mock.patch.object(views.time, 'monotonic', return_value=107):
             self.client.get('/api/camera/state/', {'camera_ready': '1'})
@@ -1110,11 +1120,30 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertFalse(views.APP_STATE['auto_run_enabled'])
         self.assertEqual(views.APP_STATE['last_error_reason'], 'esp32_restarted_during_feed')
         self.assertNotEqual(views.APP_STATE['esp32_last_feed_command_id'], feed_command_id)
+        alert = self.client.get('/api/state/').json()['operator_alert']
+        self.assertEqual(alert['reason'], 'esp32_restarted_during_feed')
+        self.assertEqual(alert['command_id'], feed_command_id)
 
         recovered = self._post_json('/api/auto_run/', {'enabled': True})
         self.assertEqual(recovered.status_code, 200)
         self.assertTrue(recovered.json()['auto_run_enabled'])
         self.assertEqual(recovered.json()['motor_command']['command'], 'feed_one')
+
+    def test_hcsr04_event_remains_available_after_esp32_restarts_during_feed(self):
+        self._prepare_auto_run(camera_ready=True)
+        self._post_json('/api/auto_run/', {'enabled': True})
+        self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-restarted',
+            'capability': 'feeder_v1',
+            'feeder_state': 'idle',
+            'last_feed_command_id': '0',
+        })
+
+        detected = self._report('hcsr04_trigger')
+        self.assertEqual(detected.status_code, 200)
+        self.assertEqual(detected.json()['active_fruit_id'], 'fruit_001')
+        self.assertEqual(views.APP_STATE['motor_command']['command'], 'start_sequence')
+        self.assertFalse(views.APP_STATE['auto_run_enabled'])
 
     def test_awaiting_fruit_poll_rebuilds_unconfirmed_feed_without_resending(self):
         self._prepare_auto_run(camera_ready=True)
@@ -1130,6 +1159,16 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(views.APP_STATE['status'], 'waiting_fruit')
         self.assertFalse(views.APP_STATE['auto_run_enabled'])
         self.assertEqual(views.APP_STATE['esp32_last_feed_command_id'], 17)
+        self.assertEqual(
+            self.client.get('/api/state/').json()['operator_alert']['command_id'],
+            17,
+        )
+
+        stale = self._report('feed_cycle_completed', command_id=17)
+        self.assertEqual(stale.status_code, 200)
+        self.assertTrue(stale.json()['ignored'])
+        self.assertEqual(views.APP_STATE['status'], 'waiting_fruit')
+        self.assertIsNone(views.APP_STATE['motor_command'])
 
         recovered = self._post_json('/api/auto_run/', {'enabled': True})
         self.assertEqual(recovered.status_code, 200)
@@ -1155,6 +1194,23 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(views.APP_STATE['last_error_reason'], 'fruit_arrival_delayed')
         self.assertEqual(views.APP_STATE['status'], 'waiting_fruit')
         self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertEqual(
+            self.client.get('/api/state/').json()['operator_alert']['command_id'],
+            command_id,
+        )
+        alert = self.client.get('/api/state/').json()['operator_alert']
+        self.assertEqual(alert['location'], 'upstream_feeder / HC-SR04')
+        self.assertEqual(alert['command'], 'feed_one')
+
+        duplicate = self._report('fruit_arrival_delayed', command_id=command_id)
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertTrue(duplicate.json()['duplicate'])
+        self.assertEqual(
+            [entry['event'] for entry in views.APP_STATE['transition_trace']].count(
+                'fruit_arrival_delayed'
+            ),
+            1,
+        )
 
         self._complete_auto_session('fruit_001')
         classified = self._post_json('/api/classify/', {'label': '上等'})
@@ -1171,6 +1227,18 @@ class DataCollectionFlowTests(SimpleTestCase):
         recovered = self._post_json('/api/auto_run/', {'enabled': True})
         self.assertEqual(recovered.status_code, 200)
         self.assertEqual(recovered.json()['motor_command']['command'], 'feed_one')
+
+    def test_zero_command_id_fruit_delay_report_is_ignored(self):
+        response = self._report('fruit_arrival_delayed', command_id=0)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['ignored'])
+        self.assertEqual(response.json()['reason'], 'stale_feed_command')
+        self.assertIsNone(views.APP_STATE['last_error_reason'])
+        self.assertNotIn(
+            'fruit_arrival_delayed',
+            [entry['event'] for entry in views.APP_STATE['transition_trace']],
+        )
 
     def test_pause_keeps_current_command_and_stops_after_current_fruit(self):
         self._prepare_auto_run(camera_ready=True)
@@ -1823,6 +1891,18 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn('id="sorter-error"', dashboard_html)
         self.assertIn('role="alert"', dashboard_html)
         self.assertIn("'正在完成目前果實'", dashboard_js)
+        self.assertIn('data.operator_alert', dashboard_js)
+        self.assertIn('自行暫停、排除狀況後重新開始', dashboard_js)
+
+    def test_firmware_boot_id_uses_per_boot_hardware_randomness(self):
+        project_root = Path(__file__).resolve().parents[2]
+        api_source = (
+            project_root
+            / 'firmware'
+            / 'Three_Gate_Data_Collection'
+            / 'DjangoApiClient.cpp'
+        ).read_text(encoding='utf-8')
+        self.assertIn('esp_random()', api_source)
 
     def _post_json(self, url, payload=None):
         return self.client.post(
