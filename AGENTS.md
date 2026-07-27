@@ -48,6 +48,7 @@ C:\Users\qoqoo\anaconda3\envs\pf_iot_env\python.exe manage.py test fruit_app
 - 相機 unavailable、capture failed、fruit not detected、low confidence、motor failed 等預期問題使用結構化結果，例如 `{ "ok": false, "reason": "camera_unavailable" }`。
 - 錯誤原因必須具體，不只回傳 `False` 或 `None`。
 - 優先擴充現有模組與標準函式庫，不為單一用途新增抽象或 dependency。
+- 設計或重構 module 時，遵循 `codebase-design` 的深模組原則：小介面、隱藏複雜度，避免 pass-through module。
 
 ## 硬體與資源安全
 
