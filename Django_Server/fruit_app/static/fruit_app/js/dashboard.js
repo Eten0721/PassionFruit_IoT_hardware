@@ -36,16 +36,27 @@ const remoteVideo = document.getElementById('remote-video');
     const timingFruitInput = document.getElementById('timing-fruit');
     const timingFinalReturnInput = document.getElementById('timing-final-return');
     const timingIdleCommandPollInput = document.getElementById('timing-idle-command-poll');
+    const timingFeederStopInput = document.getElementById('timing-feeder-stop');
+    const timingFeederDriveInput = document.getElementById('timing-feeder-drive');
+    const timingFeederRunInput = document.getElementById('timing-feeder-run');
+    const timingFruitArrivalWarningInput = document.getElementById('timing-fruit-arrival-warning');
+    const feederCalibratedInput = document.getElementById('feeder-calibrated');
     const timingInputs = [
         timingFirstStationInput,
         timingServoInput,
         timingFruitInput,
         timingFinalReturnInput,
         timingIdleCommandPollInput,
+        timingFeederStopInput,
+        timingFeederDriveInput,
+        timingFeederRunInput,
+        timingFruitArrivalWarningInput,
+        feederCalibratedInput,
     ];
     const timingConfigStatus = document.getElementById('timing-config-status');
     const applyTimingButton = document.getElementById('btn-apply-timing');
     const resetTimingButton = document.getElementById('btn-reset-timing');
+    const testFeederButton = document.getElementById('btn-test-feeder');
     const imageDialog = document.getElementById('image-dialog');
     const imageDialogImage = document.getElementById('image-dialog-image');
     const imageDialogTitle = document.getElementById('image-dialog-title');
@@ -425,6 +436,11 @@ const remoteVideo = document.getElementById('remote-video');
             fruit_settle_ms: 350,
             final_gate_return_delay_ms: 300,
             idle_command_poll_interval_ms: 250,
+            feeder_stop_us: 1500,
+            feeder_drive_us: 1700,
+            feeder_run_ms: 150,
+            fruit_arrival_warning_ms: 5000,
+            feeder_calibrated: false,
         };
     }
 
@@ -434,6 +450,11 @@ const remoteVideo = document.getElementById('remote-video');
         timingFruitInput.value = timing.fruit_settle_ms ?? 350;
         timingFinalReturnInput.value = timing.final_gate_return_delay_ms ?? 300;
         timingIdleCommandPollInput.value = timing.idle_command_poll_interval_ms ?? 250;
+        timingFeederStopInput.value = timing.feeder_stop_us ?? 1500;
+        timingFeederDriveInput.value = timing.feeder_drive_us ?? 1700;
+        timingFeederRunInput.value = timing.feeder_run_ms ?? 150;
+        timingFruitArrivalWarningInput.value = timing.fruit_arrival_warning_ms ?? 5000;
+        feederCalibratedInput.checked = Boolean(timing.feeder_calibrated);
     }
 
     function timingStatusText(data) {
@@ -464,6 +485,7 @@ const remoteVideo = document.getElementById('remote-video');
         });
         applyTimingButton.disabled = !editable || timingUpdateInFlight;
         resetTimingButton.disabled = !editable || timingUpdateInFlight;
+        testFeederButton.disabled = !data.can_test_feeder || timingUpdateInFlight;
         timingConfigStatus.textContent = timingStatusText(data);
     }
 
@@ -475,8 +497,16 @@ const remoteVideo = document.getElementById('remote-video');
         return value;
     }
 
+    function readSteppedInput(input, key, minimum, maximum, step, unit) {
+        const value = Number(input.value);
+        if (!Number.isInteger(value) || value < minimum || value > maximum || value % step !== 0) {
+            throw new Error(`${key} 必須介於 ${minimum} 到 ${maximum} ${unit}，且以 ${step} ${unit} 為間距。`);
+        }
+        return value;
+    }
+
     function captureTimingPayloadFromInputs() {
-        return {
+        const payload = {
             first_station_settle_ms: readTimingInput(timingFirstStationInput, '第 1 站停穩時間', 50),
             servo_settle_ms: readTimingInput(timingServoInput, '伺服穩定時間', 50),
             fruit_settle_ms: readTimingInput(timingFruitInput, '到站停穩時間', 50),
@@ -487,7 +517,23 @@ const remoteVideo = document.getElementById('remote-video');
                 100,
                 5000,
             ),
+            feeder_stop_us: readSteppedInput(timingFeederStopInput, '送料停止脈波', 1400, 1600, 5, 'us'),
+            feeder_drive_us: readSteppedInput(timingFeederDriveInput, '送料驅動脈波', 1000, 2000, 10, 'us'),
+            feeder_run_ms: readSteppedInput(timingFeederRunInput, '單次送料時間', 50, 500, 5, 'ms'),
+            fruit_arrival_warning_ms: readSteppedInput(
+                timingFruitArrivalWarningInput,
+                '到果警告時間',
+                1000,
+                30000,
+                500,
+                'ms',
+            ),
+            feeder_calibrated: feederCalibratedInput.checked,
         };
+        if (Math.abs(payload.feeder_drive_us - payload.feeder_stop_us) < 100) {
+            throw new Error('送料驅動脈波與停止脈波至少需相差 100 us。');
+        }
+        return payload;
     }
 
     function restoreRecommendedTiming() {
@@ -528,6 +574,24 @@ const remoteVideo = document.getElementById('remote-video');
             if (lastState) {
                 renderCaptureTiming(lastState);
             }
+        }
+    }
+
+    async function testFeederOnce() {
+        if (!confirm('請確認料斗為空，並準備觀察停止爬行、旋轉方向與單次轉量。')) {
+            return;
+        }
+        try {
+            const payload = await postJson('/api/feeder/test/');
+            lastState = payload;
+            renderState(payload);
+            setMessage('送料測試已送出；ESP32 會在本機計時到期後停止。');
+        } catch (error) {
+            if (error.payload) {
+                lastState = error.payload;
+                renderState(error.payload);
+            }
+            setMessage(`送料測試失敗：${error.message}`);
         }
     }
 
@@ -781,6 +845,7 @@ const remoteVideo = document.getElementById('remote-video');
     });
     resetTimingButton.addEventListener('click', restoreRecommendedTiming);
     applyTimingButton.addEventListener('click', applyCaptureTiming);
+    testFeederButton.addEventListener('click', testFeederOnce);
     manualCaptureButton.addEventListener('click', manualCapture);
     recaptureButton.addEventListener('click', recaptureCurrent);
     document.getElementById('btn-open-folder').addEventListener('click', openDatasetFolder);

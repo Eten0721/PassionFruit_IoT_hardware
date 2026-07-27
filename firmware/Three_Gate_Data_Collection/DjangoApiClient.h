@@ -16,7 +16,7 @@ class DjangoApiClient {
   bool wifiConnected() const;
   void closeConnection();
 
-  HttpResult pollCommand();
+  HttpResult pollCommand(const String& feederState, int lastFeedCommandId);
   HttpResult postReport(
       const String& event,
       int stationIndex,
@@ -49,6 +49,7 @@ class DjangoApiClient {
   uint32_t wifiAttemptStartedAt_;
   uint32_t nextWiFiAttemptAt_;
   String activeOrigin_;
+  String bootId_;
 
   void startWiFiAttempt(uint32_t currentTime);
   HttpResult executeGet(const char* url, uint32_t timeoutMS);

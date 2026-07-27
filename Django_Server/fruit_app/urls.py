@@ -11,6 +11,7 @@ urlpatterns = [
     path('api/camera/state/', views.camera_state_api, name='camera_state_api'),
     path('api/set_counter/', views.set_counter_api, name='set_counter_api'),
     path('api/capture_timing/', views.capture_timing_api, name='capture_timing_api'),
+    path('api/feeder/test/', views.feeder_test_api, name='feeder_test_api'),
     path('api/manual_capture/', views.manual_capture_api, name='manual_capture_api'),
     path('api/esp32_trigger/', views.esp32_trigger_api, name='esp32_trigger_api'),
     path('api/esp32/command/', views.esp32_command_api, name='esp32_command_api'),

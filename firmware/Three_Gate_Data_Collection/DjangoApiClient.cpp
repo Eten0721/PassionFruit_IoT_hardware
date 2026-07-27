@@ -25,6 +25,7 @@ void DjangoApiClient::begin() {
   WiFi.setAutoReconnect(true);
 
   secureClient_.setInsecure();
+  bootId_ = WiFi.macAddress() + "-" + String(millis(), HEX);
   startWiFiAttempt(millis());
 }
 
@@ -77,8 +78,16 @@ void DjangoApiClient::closeConnection() {
   activeOrigin_ = "";
 }
 
-HttpResult DjangoApiClient::pollCommand() {
-  return executeGet(commandUrl, FirmwareConfig::kCommandHttpTimeoutMS);
+HttpResult DjangoApiClient::pollCommand(
+    const String& feederState,
+    int lastFeedCommandId) {
+  String url(commandUrl);
+  url += url.indexOf('?') >= 0 ? "&" : "?";
+  url += "boot_id=" + encodeFormValue(bootId_);
+  url += "&capability=feeder_v1";
+  url += "&feeder_state=" + encodeFormValue(feederState);
+  url += "&last_feed_command_id=" + String(lastFeedCommandId);
+  return executeGet(url.c_str(), FirmwareConfig::kCommandHttpTimeoutMS);
 }
 
 HttpResult DjangoApiClient::postReport(
@@ -135,6 +144,11 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
       readTextValue(body, "final_gate_return_delay_ms");
   const String idleCommandPollIntervalValue =
       readTextValue(body, "idle_command_poll_interval_ms");
+  const String feederStopValue = readTextValue(body, "feeder_stop_us");
+  const String feederDriveValue = readTextValue(body, "feeder_drive_us");
+  const String feederRunValue = readTextValue(body, "feeder_run_ms");
+  const String fruitArrivalWarningValue =
+      readTextValue(body, "fruit_arrival_warning_ms");
 
   command.command = readTextValue(body, "command");
   command.commandId = readTextValue(body, "command_id").toInt();
@@ -145,6 +159,7 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
   command.hasAutoTriggerEnabled = autoTriggerValue.length() > 0;
   command.serverStatus = readTextValue(body, "server_status");
   command.classificationCode = readTextValue(body, "classification_code");
+  command.feedContext = readTextValue(body, "feed_context");
 
   if (command.command.length() == 0) {
     command.command = "none";
@@ -160,16 +175,25 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
       servoSettleValue.length() > 0 &&
       fruitSettleValue.length() > 0 &&
       finalGateReturnDelayValue.length() > 0 &&
-      idleCommandPollIntervalValue.length() > 0) {
+      idleCommandPollIntervalValue.length() > 0 &&
+      feederStopValue.length() > 0 &&
+      feederDriveValue.length() > 0 &&
+      feederRunValue.length() > 0 &&
+      fruitArrivalWarningValue.length() > 0) {
     const long revision = timingRevisionValue.toInt();
     const long firstStationSettleMS = firstStationSettleValue.toInt();
     const long servoSettleMS = servoSettleValue.toInt();
     const long fruitSettleMS = fruitSettleValue.toInt();
     const long finalGateReturnDelayMS = finalGateReturnDelayValue.toInt();
     const long idleCommandPollIntervalMS = idleCommandPollIntervalValue.toInt();
+    const long feederStopUS = feederStopValue.toInt();
+    const long feederDriveUS = feederDriveValue.toInt();
+    const long feederRunMS = feederRunValue.toInt();
+    const long fruitArrivalWarningMS = fruitArrivalWarningValue.toInt();
     if (revision >= 0 && firstStationSettleMS > 0 && servoSettleMS > 0 &&
         fruitSettleMS > 0 && finalGateReturnDelayMS >= 0 &&
-        idleCommandPollIntervalMS > 0) {
+        idleCommandPollIntervalMS > 0 && feederStopUS > 0 &&
+        feederDriveUS > 0 && feederRunMS > 0 && fruitArrivalWarningMS > 0) {
       command.timing.revision = static_cast<uint32_t>(revision);
       command.timing.firstStationSettleMS =
           static_cast<uint32_t>(firstStationSettleMS);
@@ -179,6 +203,11 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
           static_cast<uint32_t>(finalGateReturnDelayMS);
       command.timing.idleCommandPollIntervalMS =
           static_cast<uint32_t>(idleCommandPollIntervalMS);
+      command.timing.feederStopUS = static_cast<uint32_t>(feederStopUS);
+      command.timing.feederDriveUS = static_cast<uint32_t>(feederDriveUS);
+      command.timing.feederRunMS = static_cast<uint32_t>(feederRunMS);
+      command.timing.fruitArrivalWarningMS =
+          static_cast<uint32_t>(fruitArrivalWarningMS);
       command.hasTimingConfig = true;
     }
   }
@@ -220,6 +249,11 @@ bool DjangoApiClient::parseStartSequenceFromResponse(
       motorCommand, "final_gate_return_delay_ms", -1);
   const int idleCommandPollIntervalMS = readJsonInt(
       motorCommand, "idle_command_poll_interval_ms", -1);
+  const int feederStopUS = readJsonInt(motorCommand, "feeder_stop_us", -1);
+  const int feederDriveUS = readJsonInt(motorCommand, "feeder_drive_us", -1);
+  const int feederRunMS = readJsonInt(motorCommand, "feeder_run_ms", -1);
+  const int fruitArrivalWarningMS = readJsonInt(
+      motorCommand, "fruit_arrival_warning_ms", -1);
   command.serverStatus = "waiting_esp32_start";
 
   if (command.stationIndex <= 0) {
@@ -233,7 +267,9 @@ bool DjangoApiClient::parseStartSequenceFromResponse(
   }
   if (timingRevision >= 0 && firstStationSettleMS > 0 &&
       servoSettleMS > 0 && fruitSettleMS > 0 &&
-      finalGateReturnDelayMS >= 0 && idleCommandPollIntervalMS > 0) {
+      finalGateReturnDelayMS >= 0 && idleCommandPollIntervalMS > 0 &&
+      feederStopUS > 0 && feederDriveUS > 0 && feederRunMS > 0 &&
+      fruitArrivalWarningMS > 0) {
     command.timing.revision = static_cast<uint32_t>(timingRevision);
     command.timing.firstStationSettleMS =
         static_cast<uint32_t>(firstStationSettleMS);
@@ -245,6 +281,11 @@ bool DjangoApiClient::parseStartSequenceFromResponse(
         static_cast<uint32_t>(finalGateReturnDelayMS);
     command.timing.idleCommandPollIntervalMS =
         static_cast<uint32_t>(idleCommandPollIntervalMS);
+    command.timing.feederStopUS = static_cast<uint32_t>(feederStopUS);
+    command.timing.feederDriveUS = static_cast<uint32_t>(feederDriveUS);
+    command.timing.feederRunMS = static_cast<uint32_t>(feederRunMS);
+    command.timing.fruitArrivalWarningMS =
+        static_cast<uint32_t>(fruitArrivalWarningMS);
     command.hasTimingConfig = true;
   }
   return true;

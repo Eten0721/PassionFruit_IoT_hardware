@@ -10,6 +10,8 @@ void CaptureController::begin() {
   sensor_.begin();
   gates_.begin();
   gates_.moveAll(FirmwareConfig::kHomeAngle);
+  feeder_.attach(FirmwareConfig::kFeederPin, 1000, 2000);
+  feeder_.writeMicroseconds(FirmwareConfig::kFeederStopUS);
 
   const uint32_t currentTime = millis();
   classifier_.begin(currentTime);
@@ -62,6 +64,21 @@ void CaptureController::advanceMotion(uint32_t currentTime) {
     case MotionPhase::kBootHomeSettling:
       motionPhase_ = MotionPhase::kIdle;
       printTiming("gates_home_settled");
+      return;
+
+    case MotionPhase::kFeederDriving:
+      feeder_.writeMicroseconds(activeTiming_.feederStopUS);
+      lastFeedCommandId_ = activeCommand_.commandId;
+      motionPhase_ = MotionPhase::kWaitingForReport;
+      queueReport(
+          "feed_cycle_completed",
+          0,
+          activeCommand_.commandId,
+          "calibration_feed_cycle_completed",
+          activeTiming_.revision,
+          "",
+          false);
+      Serial.println("Feeder deadline reached; stop pulse written locally.");
       return;
 
     case MotionPhase::kStartHomeSettling:
@@ -565,6 +582,12 @@ void CaptureController::handlePendingReportSuccess(const String& event) {
     clearActiveTiming();
     return;
   }
+  if (event == "feed_cycle_completed") {
+    motionPhase_ = MotionPhase::kIdle;
+    activeCommand_ = MotorCommand();
+    clearActiveTiming();
+    return;
+  }
   if (event == "classification_sorter_completed" ||
       event == "classification_sorter_failed") {
     classifierCommandActive_ = false;
@@ -597,6 +620,10 @@ TimingConfig CaptureController::defaultTimingConfig() const {
   timing.fruitSettleMS = FirmwareConfig::kFruitSettleMS;
   timing.finalGateReturnDelayMS = FirmwareConfig::kFinalGateReturnDelayMS;
   timing.idleCommandPollIntervalMS = FirmwareConfig::kIdleCommandPollIntervalMS;
+  timing.feederStopUS = FirmwareConfig::kFeederStopUS;
+  timing.feederDriveUS = FirmwareConfig::kFeederDriveUS;
+  timing.feederRunMS = FirmwareConfig::kFeederRunMS;
+  timing.fruitArrivalWarningMS = FirmwareConfig::kFruitArrivalWarningMS;
   return timing;
 }
 
@@ -612,7 +639,18 @@ bool CaptureController::timingConfigIsValid(const TimingConfig& timing) const {
          timing.finalGateReturnDelayMS <= kMaximumSettleMS &&
          timing.idleCommandPollIntervalMS >= 100UL &&
          timing.idleCommandPollIntervalMS <= 5000UL &&
-         timing.idleCommandPollIntervalMS % 50UL == 0;
+         timing.idleCommandPollIntervalMS % 50UL == 0 &&
+         timing.feederStopUS >= 1400UL && timing.feederStopUS <= 1600UL &&
+         timing.feederStopUS % 5UL == 0 &&
+         timing.feederDriveUS >= 1000UL && timing.feederDriveUS <= 2000UL &&
+         timing.feederDriveUS % 10UL == 0 &&
+         abs(static_cast<int>(timing.feederDriveUS) -
+             static_cast<int>(timing.feederStopUS)) >= 100 &&
+         timing.feederRunMS >= 50UL && timing.feederRunMS <= 500UL &&
+         timing.feederRunMS % 5UL == 0 &&
+         timing.fruitArrivalWarningMS >= 1000UL &&
+         timing.fruitArrivalWarningMS <= 30000UL &&
+         timing.fruitArrivalWarningMS % 500UL == 0;
 }
 
 bool CaptureController::timingConfigCanApply() const {
@@ -706,7 +744,7 @@ void CaptureController::pollCommand(uint32_t currentTime) {
   }
   lastCommandPollAt_ = currentTime;
 
-  const HttpResult result = api_.pollCommand();
+  const HttpResult result = api_.pollCommand("idle", lastFeedCommandId_);
   if (!result.isSuccess()) {
     Serial.print("Command GET failed: ");
     Serial.print(result.statusCode);
@@ -778,6 +816,17 @@ void CaptureController::handleCommand(
     return;
   }
 
+  if (command.command == "feed_one") {
+    if (command.feedContext != "calibration" || sequenceActive_ ||
+        classifierCommandActive_ || classifier_.busy() ||
+        motionPhase_ != MotionPhase::kIdle) {
+      queueMotorError(command, "calibration_feed_not_safe");
+      return;
+    }
+    startFeeder(command, currentTime);
+    return;
+  }
+
   if (command.command == "start_sequence") {
     if (sequenceActive_) {
       queueMotorError(command, "start_sequence_while_sequence_active");
@@ -793,6 +842,22 @@ void CaptureController::handleCommand(
   }
 
   queueMotorError(command, "unknown_command");
+}
+
+void CaptureController::startFeeder(
+    const MotorCommand& command,
+    uint32_t currentTime) {
+  setAutoTriggerEnabled(false, "calibration_feed_active");
+  snapshotActiveTiming();
+  activeCommand_ = command;
+  executingCommandId_ = command.commandId;
+  feeder_.writeMicroseconds(activeTiming_.feederDriveUS);
+  motionPhase_ = MotionPhase::kFeederDriving;
+  phaseDeadlineAt_ = currentTime + activeTiming_.feederRunMS;
+  Serial.print("Calibration feeder started. command_id=");
+  Serial.print(command.commandId);
+  Serial.print(" run_ms=");
+  Serial.println(activeTiming_.feederRunMS);
 }
 
 void CaptureController::startClassifier(

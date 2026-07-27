@@ -110,11 +110,36 @@
                         <input id="timing-idle-command-poll" type="number" min="100" max="5000" step="50" inputmode="numeric" value="250">
                         <small>推薦：250 ms；數值越小，分類按鈕反應越快，但 HTTPS 請求越頻繁。</small>
                     </label>
+                    <label class="timing-config-field" for="timing-feeder-stop">
+                        <span>送料停止脈波（us）</span>
+                        <input id="timing-feeder-stop" type="number" min="1400" max="1600" step="5" inputmode="numeric" value="1500">
+                        <small>推薦：1500 us</small>
+                    </label>
+                    <label class="timing-config-field" for="timing-feeder-drive">
+                        <span>送料驅動脈波（us）</span>
+                        <input id="timing-feeder-drive" type="number" min="1000" max="2000" step="10" inputmode="numeric" value="1700">
+                        <small>與停止脈波至少相差 100 us；推薦：1700 us</small>
+                    </label>
+                    <label class="timing-config-field" for="timing-feeder-run">
+                        <span>單次送料時間（ms）</span>
+                        <input id="timing-feeder-run" type="number" min="50" max="500" step="5" inputmode="numeric" value="150">
+                        <small>推薦：150 ms</small>
+                    </label>
+                    <label class="timing-config-field" for="timing-fruit-arrival-warning">
+                        <span>到果警告時間（ms）</span>
+                        <input id="timing-fruit-arrival-warning" type="number" min="1000" max="30000" step="500" inputmode="numeric" value="5000">
+                        <small>推薦：5000 ms；只影響正式送料警告。</small>
+                    </label>
                 </div>
+                <label class="feeder-confirmation" for="feeder-calibrated">
+                    <input id="feeder-calibrated" type="checkbox">
+                    <span>送料校正已確認：空料斗測試後，停止不爬行、順時針且單次約 90°。</span>
+                </label>
                 <div id="timing-config-status" class="timing-config-status">等待 Django 載入拍攝停穩設定。</div>
                 <div class="timing-config-actions">
                     <button id="btn-reset-timing" type="button" class="secondary">恢復校正預設</button>
                     <button id="btn-apply-timing" type="button">套用停穩設定</button>
+                    <button id="btn-test-feeder" type="button" class="warning">測試送料一次</button>
                 </div>
             </div>
         </section>

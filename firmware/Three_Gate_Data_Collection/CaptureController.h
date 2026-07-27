@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <ESP32Servo.h>
 
 #include "Config.h"
 #include "ClassifierController.h"
@@ -18,6 +19,7 @@ class CaptureController {
   enum class MotionPhase : uint8_t {
     kBootHomeSettling,
     kIdle,
+    kFeederDriving,
     kStartHomeSettling,
     kStartStation1Settling,
     kReleaseServoSettling,
@@ -83,6 +85,7 @@ class CaptureController {
                          FirmwareConfig::kUltrasonicEchoPin};
   GateController gates_;
   ClassifierController classifier_;
+  Servo feeder_;
   DjangoApiClient api_;
 
   MotionPhase motionPhase_ = MotionPhase::kBootHomeSettling;
@@ -110,6 +113,7 @@ class CaptureController {
   int consecutiveCommandFailures_ = 0;
   int lastConfirmedCommandId_ = 0;
   int executingCommandId_ = 0;
+  int lastFeedCommandId_ = 0;
   bool triggerArmed_ = true;
   bool autoTriggerEnabled_ = false;
   String lastServerStatus_;
@@ -154,6 +158,7 @@ class CaptureController {
   void startSequence(const MotorCommand& command, uint32_t currentTime);
   void releaseGate(const MotorCommand& command, uint32_t currentTime);
   void startClassifier(const MotorCommand& command, uint32_t currentTime);
+  void startFeeder(const MotorCommand& command, uint32_t currentTime);
   void queueClassifierFailure(const MotorCommand& command, const String& reason);
   void logCommandRejected(const MotorCommand& command, const String& reason) const;
   void queueMotorError(const MotorCommand& command, const String& reason);

@@ -20,10 +20,12 @@ def normalise(
     *,
     fields: Iterable[str],
     require_all: bool,
-    step_ms: int,
-    minimum_ms: int,
-    maximum_ms: int,
+    default_step: int,
+    default_minimum: int,
+    default_maximum: int,
     field_limits: dict[str, tuple[int, int]] | None = None,
+    field_steps: dict[str, int] | None = None,
+    field_units: dict[str, str] | None = None,
 ) -> dict[str, int]:
     raw_timing = raw_timing if isinstance(raw_timing, dict) else {}
     timing: dict[str, int] = {}
@@ -44,18 +46,20 @@ def normalise(
                 'capture_timing_invalid_value',
             ) from None
 
-        field_minimum = 0 if field == 'final_gate_return_delay_ms' else minimum_ms
-        field_maximum = maximum_ms
+        field_minimum = 0 if field == 'final_gate_return_delay_ms' else default_minimum
+        field_maximum = default_maximum
         if field_limits and field in field_limits:
             field_minimum, field_maximum = field_limits[field]
+        unit = (field_units or {}).get(field, 'ms')
         if value < field_minimum or value > field_maximum:
             raise TimingValidationError(
-                f'{field} 必須介於 {field_minimum} 到 {field_maximum} ms。',
+                f'{field} 必須介於 {field_minimum} 到 {field_maximum} {unit}。',
                 'capture_timing_out_of_range',
             )
-        if value % step_ms != 0:
+        field_step = (field_steps or {}).get(field, default_step)
+        if value % field_step != 0:
             raise TimingValidationError(
-                f'{field} 必須以 {step_ms} ms 為間距。',
+                f'{field} 必須以 {field_step} {unit} 為間距。',
                 'capture_timing_invalid_step',
             )
         timing[field] = value
@@ -67,7 +71,7 @@ def read(
     normalise_profile,
     *,
     migration_defaults: dict[str, int] | None = None,
-) -> tuple[dict[str, int], int, bool] | None:
+) -> tuple[dict[str, int | bool], int, bool] | None:
     path = Path(path)
     try:
         with path.open('r', encoding='utf-8') as timing_file:
@@ -89,7 +93,7 @@ def read(
         return None
 
 
-def write(path: Path, timing: dict[str, int], revision: int) -> None:
+def write(path: Path, timing: dict[str, int | bool], revision: int) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     staging_path = path.with_suffix('.tmp')

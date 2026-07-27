@@ -264,8 +264,22 @@
 
         .timing-config-actions {
             display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 8px;
+        }
+
+        .feeder-confirmation {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            color: #31424f;
+            font-size: 14px;
+            line-height: 1.45;
+        }
+
+        .feeder-confirmation input {
+            width: auto;
+            margin-top: 3px;
         }
 
         .image-dialog {
@@ -370,6 +384,10 @@
             }
 
             .timing-config-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .timing-config-actions {
                 grid-template-columns: 1fr;
             }
         }

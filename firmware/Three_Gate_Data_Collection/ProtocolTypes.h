@@ -9,6 +9,10 @@ struct TimingConfig {
   uint32_t fruitSettleMS;
   uint32_t finalGateReturnDelayMS;
   uint32_t idleCommandPollIntervalMS;
+  uint32_t feederStopUS;
+  uint32_t feederDriveUS;
+  uint32_t feederRunMS;
+  uint32_t fruitArrivalWarningMS;
 
   TimingConfig()
       : revision(0),
@@ -16,7 +20,11 @@ struct TimingConfig {
         servoSettleMS(0),
         fruitSettleMS(0),
         finalGateReturnDelayMS(0),
-        idleCommandPollIntervalMS(0) {}
+        idleCommandPollIntervalMS(0),
+        feederStopUS(0),
+        feederDriveUS(0),
+        feederRunMS(0),
+        fruitArrivalWarningMS(0) {}
 };
 
 struct MotorCommand {
@@ -31,6 +39,7 @@ struct MotorCommand {
   bool hasTimingConfig;
   String serverStatus;
   String classificationCode;
+  String feedContext;
 
   MotorCommand()
       : command("none"),
@@ -43,7 +52,8 @@ struct MotorCommand {
         timing(),
         hasTimingConfig(false),
         serverStatus(""),
-        classificationCode("") {}
+        classificationCode(""),
+        feedContext("") {}
 };
 
 struct HttpResult {

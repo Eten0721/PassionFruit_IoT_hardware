@@ -9,6 +9,7 @@ constexpr uint8_t kGatePins[kGateCount] = {18, 19, 21};
 constexpr uint8_t kUltrasonicTrigPin = 26;
 constexpr uint8_t kUltrasonicEchoPin = 27;
 constexpr uint8_t kClassifierPin = 25;
+constexpr uint8_t kFeederPin = 23;
 
 constexpr int kHomeAngle = 0;
 constexpr int kReleaseAngle = 90;
@@ -28,6 +29,10 @@ constexpr uint32_t kTriggerDebugIntervalMS = 1000UL;
 constexpr uint32_t kCooldownMS = 3000UL;
 
 constexpr uint32_t kIdleCommandPollIntervalMS = 250UL;
+constexpr uint32_t kFeederStopUS = 1500UL;
+constexpr uint32_t kFeederDriveUS = 1700UL;
+constexpr uint32_t kFeederRunMS = 150UL;
+constexpr uint32_t kFruitArrivalWarningMS = 5000UL;
 constexpr uint32_t kStartSequenceCommandPollIntervalMS = 100UL;
 constexpr uint32_t kAwaitReleaseCommandPollIntervalMS = 50UL;
 
@@ -60,5 +65,9 @@ constexpr bool kVerboseHttpResponseLog = false;
 static_assert(kClassifierPin != kGatePins[0], "Classifier pin conflicts with Gate 1");
 static_assert(kClassifierPin != kGatePins[1], "Classifier pin conflicts with Gate 2");
 static_assert(kClassifierPin != kGatePins[2], "Classifier pin conflicts with Gate 3");
+static_assert(kFeederPin != kClassifierPin, "Feeder pin conflicts with classifier");
+static_assert(kFeederPin != kGatePins[0], "Feeder pin conflicts with Gate 1");
+static_assert(kFeederPin != kGatePins[1], "Feeder pin conflicts with Gate 2");
+static_assert(kFeederPin != kGatePins[2], "Feeder pin conflicts with Gate 3");
 
 }  // namespace FirmwareConfig
