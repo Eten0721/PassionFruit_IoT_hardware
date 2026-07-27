@@ -677,16 +677,18 @@ def recapture_api(request):
             )
         if APP_STATE['status'] == 'uploading':
             return _json_error('照片正在上傳中，請等待上傳完成後再重新拍攝。', status=409)
+        fruit_id = APP_STATE['active_fruit_id']
+        if not fruit_id:
+            return _json_error('目前沒有可重新拍攝的資料。', status=409)
+
+        _disable_auto_run()
+        APP_STATE['auto_run_finishing'] = False
         if not _esp32_is_online():
             return _json_error(
                 'ESP32 尚未連線或已超過 20 秒未輪詢，無法重新啟動三站流程。',
                 status=503,
                 reason='esp32_offline',
             )
-        fruit_id = APP_STATE['active_fruit_id']
-        if not fruit_id:
-            return _json_error('目前沒有可重新拍攝的資料。', status=409)
-
         fruit_dir = _temp_dir() / fruit_id
         if not fruit_dir.exists():
             return _json_error('暫存資料夾不存在，請重新建立拍攝。', status=404)
@@ -702,8 +704,6 @@ def recapture_api(request):
             status='waiting_esp32_start',
             message=f'已重新啟動 {fruit_id}，等待 ESP32 開始三站閘門流程。',
         )
-        _disable_auto_run()
-        APP_STATE['auto_run_finishing'] = False
         _set_motor_command('start_sequence', station_index=1)
         payload = _state_payload(extra={'recaptured_fruit_id': fruit_id})
     return JsonResponse(payload)
@@ -954,6 +954,8 @@ def discard_api(request):
         if not fruit_id:
             return _json_error('目前沒有可刪除的暫存資料。', status=409)
 
+        _disable_auto_run()
+        APP_STATE['auto_run_finishing'] = False
         fruit_dir = _temp_dir() / fruit_id
         operation_token = APP_STATE.begin_dataset_operation('discard', fruit_id)
         APP_STATE['message'] = f'{fruit_id} 正在刪除或隔離。'
@@ -980,8 +982,6 @@ def discard_api(request):
         if not APP_STATE.operation_matches(operation_token):
             return _json_error('刪除完成時狀態已變更。', status=409, reason='stale_operation')
         APP_STATE.finish_dataset_operation(operation_token)
-        _disable_auto_run()
-        APP_STATE['auto_run_finishing'] = False
         _clear_active_state(message, status='idle')
         _record_transition(
             'fruit_discarded',

@@ -625,6 +625,17 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(refreshed['status'], 'idle')
         self.assertNotIn('can_manual_capture', refreshed)
 
+    def test_discard_stops_auto_run_before_file_deletion(self):
+        self._mark_esp32_online()
+        self._report('hcsr04_trigger')
+        views.APP_STATE['auto_run_enabled'] = True
+
+        with mock.patch.object(views, '_discard_temp_fruit', side_effect=OSError('delete failed')):
+            response = self._post_json('/api/discard/')
+
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(self.client.get('/api/state/').json()['auto_run_enabled'])
+
     def test_recapture_stops_auto_run_without_feeding(self):
         self._mark_esp32_online()
         started = self._report('hcsr04_trigger')
@@ -635,6 +646,21 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(recaptured.status_code, 200)
         self.assertFalse(recaptured.json()['auto_run_enabled'])
         self.assertEqual(recaptured.json()['motor_command']['command'], 'start_sequence')
+
+    def test_recapture_stops_auto_run_before_file_deletion(self):
+        self._mark_esp32_online()
+        self._report('hcsr04_trigger')
+        views.APP_STATE['auto_run_enabled'] = True
+
+        with mock.patch.object(
+            views,
+            '_clear_temp_images',
+            side_effect=views.DatasetFileBusyError('delete failed'),
+        ):
+            response = self._post_json('/api/recapture/')
+
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(self.client.get('/api/state/').json()['auto_run_enabled'])
 
     def test_discard_quarantines_busy_temp_folder_and_reenables_auto_trigger(self):
         self._post_json('/api/set_counter/', {'start_id': 5})

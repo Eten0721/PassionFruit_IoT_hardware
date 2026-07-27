@@ -6,7 +6,7 @@
 
 ## 現行穩定功能
 
-- Django 中央狀態機可協調 HC-SR04／手動觸發、手機單站拍攝與 ESP32 三站閘門。
+- Django 中央狀態機可協調 HC-SR04 自動觸發、手機單站拍攝與 ESP32 三站閘門。
 - 每顆果實保存三張站點照片，照片保存成功後才放行下一閘門。
 - 首站捷徑、timeout retry、transition trace、照片原子保存與未分類資料鎖定可運作。
 - Capture 與 sorter 共用單一 motor command slot，command ID 可跨 Django 重啟保持遞增。
