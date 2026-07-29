@@ -11,8 +11,7 @@ struct TimingConfig {
   uint32_t idleCommandPollIntervalMS;
   uint32_t feederStopUS;
   uint32_t feederDriveUS;
-  uint32_t feederRunMS;
-  uint32_t fruitArrivalWarningMS;
+  uint32_t feederMaxRunMS;
 
   TimingConfig()
       : revision(0),
@@ -23,8 +22,7 @@ struct TimingConfig {
         idleCommandPollIntervalMS(0),
         feederStopUS(0),
         feederDriveUS(0),
-        feederRunMS(0),
-        fruitArrivalWarningMS(0) {}
+        feederMaxRunMS(0) {}
 };
 
 struct MotorCommand {

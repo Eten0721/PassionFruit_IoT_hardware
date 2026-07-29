@@ -71,6 +71,7 @@ def read(
     normalise_profile,
     *,
     migration_defaults: dict[str, int] | None = None,
+    migrate_profile=None,
 ) -> tuple[dict[str, int | bool], int, bool] | None:
     path = Path(path)
     try:
@@ -80,6 +81,8 @@ def read(
         raw_timing = dict(raw_timing) if isinstance(raw_timing, dict) else raw_timing
         migrated = False
         if isinstance(raw_timing, dict):
+            if migrate_profile:
+                raw_timing, migrated = migrate_profile(raw_timing)
             for field, default_value in (migration_defaults or {}).items():
                 if field not in raw_timing:
                     raw_timing[field] = default_value

@@ -48,6 +48,9 @@ class CaptureController {
     uint32_t timingRevision;
     String classificationCode;
     bool includeStationIndex;
+    uint32_t feederElapsedMS;
+    uint32_t feederMaxRunMS;
+    String feederStopReason;
     uint32_t lastAttemptAt;
 
     PendingReport()
@@ -59,6 +62,9 @@ class CaptureController {
           timingRevision(0),
           classificationCode(""),
           includeStationIndex(true),
+          feederElapsedMS(0),
+          feederMaxRunMS(0),
+          feederStopReason(""),
           lastAttemptAt(0) {}
   };
 
@@ -114,16 +120,14 @@ class CaptureController {
   int lastConfirmedCommandId_ = 0;
   int executingCommandId_ = 0;
   int lastFeedCommandId_ = 0;
-  bool awaitingFruit_ = false;
-  bool fruitArrivalWarningReported_ = false;
-  uint32_t fruitArrivalWarningAt_ = 0;
+  uint32_t feederStartedAt_ = 0;
+  String feederSensorState_ = "unavailable";
   bool triggerArmed_ = true;
   bool autoTriggerEnabled_ = false;
   String lastServerStatus_;
 
   void advanceMotion(uint32_t currentTime);
   void handleSensor(uint32_t currentTime);
-  void checkFruitArrivalWarning(uint32_t currentTime);
   bool shouldStartAutoTrigger(float distanceCM, uint32_t currentTime, String& reason) const;
   void startAutoTrigger(uint32_t currentTime);
   bool processAutoTrigger(uint32_t currentTime);
@@ -144,7 +148,10 @@ class CaptureController {
       const String& message,
       uint32_t timingRevision = 0,
       const String& classificationCode = "",
-      bool includeStationIndex = true);
+      bool includeStationIndex = true,
+      uint32_t feederElapsedMS = 0,
+      uint32_t feederMaxRunMS = 0,
+      const String& feederStopReason = "");
   void handlePendingReportSuccess(const String& event);
   void collectClassifierResult();
 
@@ -163,6 +170,10 @@ class CaptureController {
   void releaseGate(const MotorCommand& command, uint32_t currentTime);
   void startClassifier(const MotorCommand& command, uint32_t currentTime);
   void startFeeder(const MotorCommand& command, uint32_t currentTime);
+  void stopFeeder(
+      const String& event,
+      const String& stopReason,
+      uint32_t currentTime);
   void queueClassifierFailure(const MotorCommand& command, const String& reason);
   void logCommandRejected(const MotorCommand& command, const String& reason) const;
   void queueMotorError(const MotorCommand& command, const String& reason);

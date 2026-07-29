@@ -44,7 +44,6 @@ void CaptureController::tick() {
     return;
   }
   handleSensor(currentTime);
-  checkFruitArrivalWarning(currentTime);
   checkStartSequenceWaitTimeout(currentTime);
 
   if (flushPendingReport(currentTime)) {
@@ -68,23 +67,7 @@ void CaptureController::advanceMotion(uint32_t currentTime) {
       return;
 
     case MotionPhase::kFeederDriving:
-      feeder_.writeMicroseconds(activeTiming_.feederStopUS);
-      lastFeedCommandId_ = activeCommand_.commandId;
-      awaitingFruit_ = activeCommand_.feedContext == "production";
-      fruitArrivalWarningReported_ = false;
-      fruitArrivalWarningAt_ = awaitingFruit_
-          ? currentTime + activeTiming_.fruitArrivalWarningMS
-          : 0;
-      motionPhase_ = MotionPhase::kWaitingForReport;
-      queueReport(
-          "feed_cycle_completed",
-          0,
-          activeCommand_.commandId,
-          activeCommand_.feedContext + "_feed_cycle_completed",
-          activeTiming_.revision,
-          "",
-          false);
-      Serial.println("Feeder deadline reached; stop pulse written locally.");
+      stopFeeder("feeder_max_run_timeout", "max_run_timeout", currentTime);
       return;
 
     case MotionPhase::kStartHomeSettling:
@@ -165,6 +148,9 @@ void CaptureController::handleSensor(uint32_t currentTime) {
 
   uint32_t elapsedUS = 0;
   const float distanceCM = sensor_.readCentimeters(&elapsedUS);
+  feederSensorState_ = distanceCM <= 0.0F
+      ? "unavailable"
+      : (distanceCM > FirmwareConfig::kRearmDistanceCM ? "clear" : "blocked");
 
   if (currentTime - lastDistancePrintAt_ >= FirmwareConfig::kDistancePrintIntervalMS) {
     Serial.print("Distance: ");
@@ -182,9 +168,21 @@ void CaptureController::handleSensor(uint32_t currentTime) {
   if (
       !sequenceActive_ &&
       !triggerArmed_ &&
-      (distanceCM <= 0.0F || distanceCM > FirmwareConfig::kRearmDistanceCM)) {
+      distanceCM > FirmwareConfig::kRearmDistanceCM) {
     triggerArmed_ = true;
     Serial.println("Sensor area cleared. Trigger rearmed.");
+  }
+
+  if (motionPhase_ == MotionPhase::kFeederDriving) {
+    if (feederSensorState_ == "unavailable") {
+      stopFeeder(
+          "feeder_sensor_unavailable",
+          "feeder_sensor_unavailable",
+          currentTime);
+    } else if (distanceCM <= FirmwareConfig::kTriggerDistanceCM) {
+      stopFeeder("feed_cycle_completed", "hcsr04", currentTime);
+    }
+    return;
   }
 
   String blockedReason;
@@ -196,23 +194,6 @@ void CaptureController::handleSensor(uint32_t currentTime) {
   }
 
   startAutoTrigger(currentTime);
-}
-
-void CaptureController::checkFruitArrivalWarning(uint32_t currentTime) {
-  if (!awaitingFruit_ || fruitArrivalWarningReported_ ||
-      pendingReport_.active ||
-      !timeReached(currentTime, fruitArrivalWarningAt_)) {
-    return;
-  }
-  fruitArrivalWarningReported_ = true;
-  queueReport(
-      "fruit_arrival_delayed",
-      0,
-      lastFeedCommandId_,
-      "fruit_arrival_delayed",
-      0,
-      "",
-      false);
 }
 
 bool CaptureController::shouldStartAutoTrigger(
@@ -263,8 +244,6 @@ bool CaptureController::shouldStartAutoTrigger(
 void CaptureController::startAutoTrigger(uint32_t currentTime) {
   lastTriggerAt_ = currentTime;
   triggerArmed_ = false;
-  awaitingFruit_ = false;
-  fruitArrivalWarningAt_ = 0;
   setAutoTriggerEnabled(false, "local_hcsr04_trigger");
 
   autoTrigger_ = AutoTrigger();
@@ -546,7 +525,10 @@ bool CaptureController::flushPendingReport(uint32_t currentTime) {
       false,
       pendingReport_.timingRevision,
       pendingReport_.classificationCode,
-      pendingReport_.includeStationIndex);
+      pendingReport_.includeStationIndex,
+      pendingReport_.feederElapsedMS,
+      pendingReport_.feederMaxRunMS,
+      pendingReport_.feederStopReason);
   printReportSummary(pendingReport_.event, result);
 
   if (!result.isSuccess()) {
@@ -575,7 +557,10 @@ void CaptureController::queueReport(
     const String& message,
     uint32_t timingRevision,
     const String& classificationCode,
-    bool includeStationIndex) {
+    bool includeStationIndex,
+    uint32_t feederElapsedMS,
+    uint32_t feederMaxRunMS,
+    const String& feederStopReason) {
   if (pendingReport_.active) {
     Serial.println("WARN attempted to overwrite an unsent ESP32 report.");
     return;
@@ -589,6 +574,9 @@ void CaptureController::queueReport(
   pendingReport_.timingRevision = timingRevision;
   pendingReport_.classificationCode = classificationCode;
   pendingReport_.includeStationIndex = includeStationIndex;
+  pendingReport_.feederElapsedMS = feederElapsedMS;
+  pendingReport_.feederMaxRunMS = feederMaxRunMS;
+  pendingReport_.feederStopReason = feederStopReason;
   pendingReport_.lastAttemptAt = 0;
   printTiming(event + String("_queued"));
 }
@@ -607,7 +595,10 @@ void CaptureController::handlePendingReportSuccess(const String& event) {
     clearActiveTiming();
     return;
   }
-  if (event == "feed_cycle_completed") {
+  if (event == "feed_cycle_completed" ||
+      event == "feeder_max_run_timeout" ||
+      event == "feeder_sensor_unavailable" ||
+      event == "feeder_sensor_not_clear") {
     motionPhase_ = MotionPhase::kIdle;
     activeCommand_ = MotorCommand();
     clearActiveTiming();
@@ -647,8 +638,7 @@ TimingConfig CaptureController::defaultTimingConfig() const {
   timing.idleCommandPollIntervalMS = FirmwareConfig::kIdleCommandPollIntervalMS;
   timing.feederStopUS = FirmwareConfig::kFeederStopUS;
   timing.feederDriveUS = FirmwareConfig::kFeederDriveUS;
-  timing.feederRunMS = FirmwareConfig::kFeederRunMS;
-  timing.fruitArrivalWarningMS = FirmwareConfig::kFruitArrivalWarningMS;
+  timing.feederMaxRunMS = FirmwareConfig::kFeederMaxRunMS;
   return timing;
 }
 
@@ -669,19 +659,15 @@ bool CaptureController::timingConfigIsValid(const TimingConfig& timing) const {
          timing.feederStopUS % 5UL == 0 &&
          timing.feederDriveUS >= 1000UL && timing.feederDriveUS <= 2000UL &&
          timing.feederDriveUS % 10UL == 0 &&
-         abs(static_cast<int>(timing.feederDriveUS) -
-             static_cast<int>(timing.feederStopUS)) >= 100 &&
-         timing.feederRunMS >= 50UL && timing.feederRunMS <= 500UL &&
-         timing.feederRunMS % 5UL == 0 &&
-         timing.fruitArrivalWarningMS >= 1000UL &&
-         timing.fruitArrivalWarningMS <= 30000UL &&
-         timing.fruitArrivalWarningMS % 500UL == 0;
+         timing.feederDriveUS != timing.feederStopUS &&
+         timing.feederMaxRunMS >= 50UL && timing.feederMaxRunMS <= 500UL &&
+         timing.feederMaxRunMS % 5UL == 0;
 }
 
 bool CaptureController::timingConfigCanApply() const {
   return motionPhase_ == MotionPhase::kIdle && !sequenceActive_ &&
          !classifierCommandActive_ && !classifier_.busy() &&
-         !awaitingFruit_ && !autoTrigger_.active() &&
+         !autoTrigger_.active() &&
          !pendingReport_.active && gates_.atHome();
 }
 
@@ -771,7 +757,8 @@ void CaptureController::pollCommand(uint32_t currentTime) {
   lastCommandPollAt_ = currentTime;
 
   const HttpResult result = api_.pollCommand(
-      awaitingFruit_ ? "awaiting_fruit" : "idle",
+      "idle",
+      feederSensorState_,
       lastFeedCommandId_);
   if (!result.isSuccess()) {
     Serial.print("Command GET failed: ");
@@ -878,21 +865,71 @@ void CaptureController::handleCommand(
 void CaptureController::startFeeder(
     const MotorCommand& command,
     uint32_t currentTime) {
-  awaitingFruit_ = false;
-  fruitArrivalWarningAt_ = 0;
-  setAutoTriggerEnabled(false, command.feedContext + "_feed_active");
   snapshotActiveTiming();
   activeCommand_ = command;
+  const float distanceCM = sensor_.readCentimeters();
+  feederSensorState_ = distanceCM <= 0.0F
+      ? "unavailable"
+      : (distanceCM > FirmwareConfig::kRearmDistanceCM ? "clear" : "blocked");
+  if (feederSensorState_ != "clear") {
+    feeder_.writeMicroseconds(activeTiming_.feederStopUS);
+    motionPhase_ = MotionPhase::kWaitingForReport;
+    const String event = feederSensorState_ == "unavailable"
+        ? "feeder_sensor_unavailable"
+        : "feeder_sensor_not_clear";
+    queueReport(
+        event,
+        0,
+        command.commandId,
+        feederSensorState_,
+        activeTiming_.revision,
+        "",
+        false,
+        0,
+        activeTiming_.feederMaxRunMS,
+        event);
+    return;
+  }
+  setAutoTriggerEnabled(false, command.feedContext + "_feed_active");
   executingCommandId_ = command.commandId;
   feeder_.writeMicroseconds(activeTiming_.feederDriveUS);
+  feederStartedAt_ = currentTime;
   motionPhase_ = MotionPhase::kFeederDriving;
-  phaseDeadlineAt_ = currentTime + activeTiming_.feederRunMS;
+  phaseDeadlineAt_ = currentTime + activeTiming_.feederMaxRunMS;
   Serial.print("Feeder started. context=");
   Serial.print(command.feedContext);
   Serial.print(" command_id=");
   Serial.print(command.commandId);
-  Serial.print(" run_ms=");
-  Serial.println(activeTiming_.feederRunMS);
+  Serial.print(" max_run_ms=");
+  Serial.println(activeTiming_.feederMaxRunMS);
+}
+
+void CaptureController::stopFeeder(
+    const String& event,
+    const String& stopReason,
+    uint32_t currentTime) {
+  feeder_.writeMicroseconds(activeTiming_.feederStopUS);
+  if (stopReason == "hcsr04") {
+    triggerArmed_ = false;
+  }
+  const uint32_t elapsedMS = currentTime - feederStartedAt_;
+  lastFeedCommandId_ = activeCommand_.commandId;
+  motionPhase_ = MotionPhase::kWaitingForReport;
+  queueReport(
+      event,
+      0,
+      activeCommand_.commandId,
+      activeCommand_.feedContext + "_" + stopReason,
+      activeTiming_.revision,
+      "",
+      false,
+      elapsedMS,
+      activeTiming_.feederMaxRunMS,
+      stopReason);
+  Serial.print("Feeder stopped locally. reason=");
+  Serial.print(stopReason);
+  Serial.print(" elapsed_ms=");
+  Serial.println(elapsedMS);
 }
 
 void CaptureController::startClassifier(

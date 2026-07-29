@@ -45,6 +45,8 @@
                     <div><span>流程狀態</span><strong id="state-label">idle</strong></div>
                     <div><span>照片數量</span><strong id="image-count">0 / 3</strong></div>
                     <div><span>ESP32</span><strong id="esp32-status">離線</strong></div>
+                    <div><span>HC-SR04</span><strong id="feeder-sensor-state">unavailable</strong></div>
+                    <div><span>測試送料結果</span><strong id="feeder-test-result">尚無資料</strong></div>
                     <div><span>馬達命令</span><strong id="motor-command">none</strong></div>
                     <div><span>硬體分類器</span><strong id="sorter-status">閒置</strong></div>
                     <div><span>分類器資料</span><strong id="sorter-fruit">無</strong></div>
@@ -59,7 +61,8 @@
                     <input id="counter-input" type="number" min="1" inputmode="numeric" placeholder="輸入起始 ID，例如 120">
                     <button id="btn-set-counter" type="button" class="secondary">設定起始 ID</button>
                 </div>
-                <button id="btn-auto-run" type="button">開始執行</button>
+                <button id="btn-auto-run" type="button" disabled>開始執行（待實機驗證）</button>
+                <div>正式自動運轉待 HC-SR04 實機驗證，本版本僅開放測試送料。</div>
                 <button id="btn-recapture" type="button" class="warning">重新拍攝目前 fruit</button>
                 <button id="btn-open-folder" type="button" class="secondary">開啟資料夾</button>
                 <button id="btn-reset-dataset" type="button" class="danger">重置 dataset</button>
@@ -117,20 +120,17 @@
                     </label>
                     <label class="timing-config-field" for="timing-feeder-drive">
                         <span>送料驅動脈波（us）</span>
-                        <input id="timing-feeder-drive" type="number" min="1000" max="2000" step="10" inputmode="numeric" value="1700">
-                        <small>與停止脈波至少相差 100 us；推薦：1700 us</small>
+                        <input id="timing-feeder-drive" type="number" min="1000" max="2000" step="10" inputmode="numeric" value="1300">
+                        <small>不得與停止脈波相同；推薦：1300 us</small>
                     </label>
-                    <label class="timing-config-field" for="timing-feeder-run">
-                        <span>單次送料時間（ms）</span>
-                        <input id="timing-feeder-run" type="number" min="50" max="500" step="5" inputmode="numeric" value="150">
+                    <label class="timing-config-field" for="timing-feeder-max-run">
+                        <span>送料最長運轉時間（ms）</span>
+                        <input id="timing-feeder-max-run" type="number" min="50" max="500" step="5" inputmode="numeric" value="150">
                         <small>推薦：150 ms</small>
                     </label>
-                    <label class="timing-config-field" for="timing-fruit-arrival-warning">
-                        <span>到果警告時間（ms）</span>
-                        <input id="timing-fruit-arrival-warning" type="number" min="1000" max="30000" step="500" inputmode="numeric" value="5000">
-                        <small>推薦：5000 ms；只影響正式送料警告。</small>
-                    </label>
                 </div>
+                <div role="alert">警告 : 若設定過長將導致連續送料之情形發生</div>
+                <div id="capture-timing-warning" role="alert"></div>
                 <label class="feeder-confirmation" for="feeder-calibrated">
                     <input id="feeder-calibrated" type="checkbox">
                     <span>送料校正已確認：空料斗測試後，停止不爬行、順時針且單次約 90°。</span>

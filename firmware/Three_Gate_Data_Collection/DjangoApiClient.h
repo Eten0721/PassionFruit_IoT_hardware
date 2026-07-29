@@ -16,7 +16,10 @@ class DjangoApiClient {
   bool wifiConnected() const;
   void closeConnection();
 
-  HttpResult pollCommand(const String& feederState, int lastFeedCommandId);
+  HttpResult pollCommand(
+      const String& feederState,
+      const String& feederSensorState,
+      int lastFeedCommandId);
   HttpResult postReport(
       const String& event,
       int stationIndex,
@@ -29,7 +32,10 @@ class DjangoApiClient {
       bool stationSettled = false,
       uint32_t timingRevision = 0,
       const String& classificationCode = "",
-      bool includeStationIndex = true);
+      bool includeStationIndex = true,
+      uint32_t feederElapsedMS = 0,
+      uint32_t feederMaxRunMS = 0,
+      const String& feederStopReason = "");
 
   MotorCommand parseCommandText(const String& body) const;
   bool parseStartSequenceFromResponse(const String& body, MotorCommand& command) const;

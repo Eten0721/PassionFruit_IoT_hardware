@@ -7,6 +7,8 @@ const remoteVideo = document.getElementById('remote-video');
     const stateLabelEl = document.getElementById('state-label');
     const imageCountEl = document.getElementById('image-count');
     const esp32StatusEl = document.getElementById('esp32-status');
+    const feederSensorStateEl = document.getElementById('feeder-sensor-state');
+    const feederTestResultEl = document.getElementById('feeder-test-result');
     const motorCommandEl = document.getElementById('motor-command');
     const sorterStatusEl = document.getElementById('sorter-status');
     const sorterFruitEl = document.getElementById('sorter-fruit');
@@ -38,9 +40,9 @@ const remoteVideo = document.getElementById('remote-video');
     const timingIdleCommandPollInput = document.getElementById('timing-idle-command-poll');
     const timingFeederStopInput = document.getElementById('timing-feeder-stop');
     const timingFeederDriveInput = document.getElementById('timing-feeder-drive');
-    const timingFeederRunInput = document.getElementById('timing-feeder-run');
-    const timingFruitArrivalWarningInput = document.getElementById('timing-fruit-arrival-warning');
+    const timingFeederMaxRunInput = document.getElementById('timing-feeder-max-run');
     const feederCalibratedInput = document.getElementById('feeder-calibrated');
+    const captureTimingWarning = document.getElementById('capture-timing-warning');
     const timingInputs = [
         timingFirstStationInput,
         timingServoInput,
@@ -49,8 +51,7 @@ const remoteVideo = document.getElementById('remote-video');
         timingIdleCommandPollInput,
         timingFeederStopInput,
         timingFeederDriveInput,
-        timingFeederRunInput,
-        timingFruitArrivalWarningInput,
+        timingFeederMaxRunInput,
         feederCalibratedInput,
     ];
     const timingConfigStatus = document.getElementById('timing-config-status');
@@ -290,6 +291,11 @@ const remoteVideo = document.getElementById('remote-video');
         stateLabelEl.textContent = data.status || 'idle';
         imageCountEl.textContent = `${data.image_total ?? images.length} / ${data.image_count || 3}`;
         esp32StatusEl.textContent = data.esp32_online ? '在線' : '離線';
+        feederSensorStateEl.textContent = data.feeder_sensor_state || 'unavailable';
+        const feederResult = data.feeder_test_result;
+        feederTestResultEl.textContent = feederResult
+            ? `${feederResult.elapsed_ms} / ${feederResult.max_run_ms} ms｜${feederResult.stop_reason}`
+            : '尚無資料';
         const motorCommand = data.motor_command || {};
         motorCommandEl.textContent = motorCommand.command && motorCommand.command !== 'none'
             ? `${motorCommand.command} #${motorCommand.command_id || 0}`
@@ -322,13 +328,8 @@ const remoteVideo = document.getElementById('remote-video');
             button.disabled = classificationInFlight || data.sorter_busy || !data.can_classify;
         });
         discardButton.disabled = classificationInFlight || !data.can_discard;
-        autoRunButton.textContent = data.auto_run_enabled
-            ? '暫停'
-            : data.auto_run_finishing
-                ? '正在完成目前果實'
-                : '開始執行';
-        autoRunButton.disabled = data.auto_run_finishing
-            || (!data.auto_run_enabled && !data.can_start_auto_run);
+        autoRunButton.textContent = '開始執行（待實機驗證）';
+        autoRunButton.disabled = true;
         recaptureButton.disabled = data.sorter_busy || !data.can_recapture;
         resetDatasetButton.disabled = data.sorter_busy;
     }
@@ -455,9 +456,8 @@ const remoteVideo = document.getElementById('remote-video');
             final_gate_return_delay_ms: 300,
             idle_command_poll_interval_ms: 250,
             feeder_stop_us: 1500,
-            feeder_drive_us: 1700,
-            feeder_run_ms: 150,
-            fruit_arrival_warning_ms: 5000,
+            feeder_drive_us: 1300,
+            feeder_max_run_ms: 150,
             feeder_calibrated: false,
         };
     }
@@ -469,9 +469,8 @@ const remoteVideo = document.getElementById('remote-video');
         timingFinalReturnInput.value = timing.final_gate_return_delay_ms ?? 300;
         timingIdleCommandPollInput.value = timing.idle_command_poll_interval_ms ?? 250;
         timingFeederStopInput.value = timing.feeder_stop_us ?? 1500;
-        timingFeederDriveInput.value = timing.feeder_drive_us ?? 1700;
-        timingFeederRunInput.value = timing.feeder_run_ms ?? 150;
-        timingFruitArrivalWarningInput.value = timing.fruit_arrival_warning_ms ?? 5000;
+        timingFeederDriveInput.value = timing.feeder_drive_us ?? 1300;
+        timingFeederMaxRunInput.value = timing.feeder_max_run_ms ?? 150;
         feederCalibratedInput.checked = Boolean(timing.feeder_calibrated);
     }
 
@@ -504,6 +503,12 @@ const remoteVideo = document.getElementById('remote-video');
         applyTimingButton.disabled = !editable || timingUpdateInFlight;
         resetTimingButton.disabled = !editable || timingUpdateInFlight;
         testFeederButton.disabled = !data.can_test_feeder || timingUpdateInFlight;
+        feederCalibratedInput.disabled = (
+            !editable
+            || timingUpdateInFlight
+            || (!timing.feeder_calibrated && !data.can_confirm_feeder_calibration)
+        );
+        captureTimingWarning.textContent = data.capture_timing_warning || '';
         timingConfigStatus.textContent = timingStatusText(data);
     }
 
@@ -537,19 +542,18 @@ const remoteVideo = document.getElementById('remote-video');
             ),
             feeder_stop_us: readSteppedInput(timingFeederStopInput, '送料停止脈波', 1400, 1600, 5, 'us'),
             feeder_drive_us: readSteppedInput(timingFeederDriveInput, '送料驅動脈波', 1000, 2000, 10, 'us'),
-            feeder_run_ms: readSteppedInput(timingFeederRunInput, '單次送料時間', 50, 500, 5, 'ms'),
-            fruit_arrival_warning_ms: readSteppedInput(
-                timingFruitArrivalWarningInput,
-                '到果警告時間',
-                1000,
-                30000,
+            feeder_max_run_ms: readSteppedInput(
+                timingFeederMaxRunInput,
+                '送料最長運轉時間',
+                50,
                 500,
+                5,
                 'ms',
             ),
             feeder_calibrated: feederCalibratedInput.checked,
         };
-        if (Math.abs(payload.feeder_drive_us - payload.feeder_stop_us) < 100) {
-            throw new Error('送料驅動脈波與停止脈波至少需相差 100 us。');
+        if (payload.feeder_drive_us === payload.feeder_stop_us) {
+            throw new Error('送料驅動脈波不得與停止脈波相同。');
         }
         return payload;
     }
@@ -596,7 +600,7 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     async function testFeederOnce() {
-        if (!confirm('請確認料斗為空，並準備觀察停止爬行、旋轉方向與單次轉量。')) {
+        if (!confirm('請確認 HC-SR04 區域淨空，並在送料入口放置一顆百香果，再執行測試送料。')) {
             return;
         }
         try {
@@ -864,6 +868,13 @@ const remoteVideo = document.getElementById('remote-video');
     timingInputs.forEach((input) => {
         input.addEventListener('input', () => {
             timingInputsDirty = true;
+            if ([
+                timingFeederStopInput,
+                timingFeederDriveInput,
+                timingFeederMaxRunInput,
+            ].includes(input)) {
+                feederCalibratedInput.checked = false;
+            }
         });
     });
     resetTimingButton.addEventListener('click', restoreRecommendedTiming);

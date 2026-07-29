@@ -12,7 +12,7 @@
 - Capture 與 sorter 共用單一 motor command slot，command ID 可跨 Django 重啟保持遞增。
 - 人工分類先提交 Dataset 與 metadata，再驅動 MG996R；硬體失敗不回滾資料。
 - Dashboard 可管理拍攝 timing、檢查三張照片、分類與刪除；手機頁使用 single in-flight polling。
-- 目前上游送料軟體仍支援固定時間校正、單顆自動運轉、優雅暫停、延遲警示及 Django／ESP32 重啟防重復原。
+- 上游送料測試使用 HC-SR04 回授停止，並具備本機 max timeout、sensor unavailable 安全停止與同 revision 校正確認。
 - 正式 Firmware 已按感測、閘門、分類器、HTTPS 與流程控制拆分模組。
 - 硬體與模型採獨立 Repository，照片快照存於獨立資料目錄。
 - 目前 Dataset 快照包含 `327` 顆果實與 `981` 張照片，尚待建立正式 train／valid／test 切分與第二份備份。
@@ -23,15 +23,16 @@
 
 - [#1 整合上游送料機構與 360° SG90](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1)
 - [#2 分類器新增 180° SG90 出料閘門](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2)
+- [#9 讓測試送料以 HC-SR04 回授停止](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/9)
 
-Issue #1 已完成固定時間送料的軟體基線。2026-07-30 接受 [ADR-0014](adr/0014-hcsr04-terminated-upstream-feed.md)：GPIO `23` 正常改由 HC-SR04 觸發停止，固定時間改為唯一的安全上限；Dashboard、Django、Firmware、測試與舊設定遷移尚未依新契約實作。
+Issue #9 的 Django、Dashboard 與 Firmware 已完成軟體實作；GPIO `23` 測試送料會在 HC-SR04 `<= 6.0 cm` 時停止，`150 ms` max timeout 與感測器 unavailable 均在 ESP32 本機先停止。正式自動運轉仍停用，待 HC-SR04 實機驗證後另行開放。
 
 ## 已知問題
 
 - ESP32 HTTPS 偶爾出現 read timeout；目前依冪等 retry 與 client 重建復原。
 - WebRTC 預覽可能受瀏覽器、熱點或 ICE 狀態影響，但不應阻塞拍攝上傳。
 - 分類器沒有位置回授，completed 只表示控制時序完成。
-- 連續旋轉送料 SG90 受外力後會偏離原角度，固定時間不能可靠代表送料完成；新 HC-SR04 終止策略尚未實作與實機驗證。
+- 連續旋轉送料 SG90 受外力後會偏離原角度；HC-SR04 終止策略已完成軟體實作，尚待實機驗證。
 - 現有 metadata note 尚未正規化，不能直接作為完整模型特徵。
 - 安全稽核仍限制系統只能部署於可信任、隔離的實驗室區網；詳見 [SECURITY_AUDIT_2026-07-11.md](SECURITY_AUDIT_2026-07-11.md)。
 
@@ -53,4 +54,4 @@ Issue #1 已完成固定時間送料的軟體基線。2026-07-30 接受 [ADR-001
 
 ## 下一個里程碑
 
-依 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 與 [ADR-0014](adr/0014-hcsr04-terminated-upstream-feed.md) 實作 HC-SR04 終止送料，再完成 Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 的重啟防重與完整分類實機驗收。Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 通過後，再處理 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 的分類後出料閘門。
+依 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 與 [ADR-0014](adr/0014-hcsr04-terminated-upstream-feed.md) 完成 HC-SR04 終止送料、重啟防重與完整分類實機驗收。Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 通過後，再處理 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 的分類後出料閘門。

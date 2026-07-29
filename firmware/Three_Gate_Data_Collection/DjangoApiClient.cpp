@@ -81,12 +81,14 @@ void DjangoApiClient::closeConnection() {
 
 HttpResult DjangoApiClient::pollCommand(
     const String& feederState,
+    const String& feederSensorState,
     int lastFeedCommandId) {
   String url(commandUrl);
   url += url.indexOf('?') >= 0 ? "&" : "?";
   url += "boot_id=" + encodeFormValue(bootId_);
   url += "&capability=feeder_v1";
   url += "&feeder_state=" + encodeFormValue(feederState);
+  url += "&feeder_sensor_state=" + encodeFormValue(feederSensorState);
   url += "&last_feed_command_id=" + String(lastFeedCommandId);
   return executeGet(url.c_str(), FirmwareConfig::kCommandHttpTimeoutMS);
 }
@@ -103,7 +105,10 @@ HttpResult DjangoApiClient::postReport(
     bool stationSettled,
     uint32_t timingRevision,
     const String& classificationCode,
-    bool includeStationIndex) {
+    bool includeStationIndex,
+    uint32_t feederElapsedMS,
+    uint32_t feederMaxRunMS,
+    const String& feederStopReason) {
   String body;
   body.reserve(160 + ((event.length() + message.length() + triggerId.length()) * 3));
   body = "event=" + encodeFormValue(event);
@@ -127,6 +132,11 @@ HttpResult DjangoApiClient::postReport(
   if (timingRevision > 0) {
     body += "&timing_revision=" + String(timingRevision);
   }
+  if (feederStopReason.length() > 0) {
+    body += "&feeder_elapsed_ms=" + String(feederElapsedMS);
+    body += "&feeder_max_run_ms=" + String(feederMaxRunMS);
+    body += "&feeder_stop_reason=" + encodeFormValue(feederStopReason);
+  }
 
   return executePost(reportUrl, body, timeoutMS);
 }
@@ -147,9 +157,7 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
       readTextValue(body, "idle_command_poll_interval_ms");
   const String feederStopValue = readTextValue(body, "feeder_stop_us");
   const String feederDriveValue = readTextValue(body, "feeder_drive_us");
-  const String feederRunValue = readTextValue(body, "feeder_run_ms");
-  const String fruitArrivalWarningValue =
-      readTextValue(body, "fruit_arrival_warning_ms");
+  const String feederMaxRunValue = readTextValue(body, "feeder_max_run_ms");
 
   command.command = readTextValue(body, "command");
   command.commandId = readTextValue(body, "command_id").toInt();
@@ -179,8 +187,7 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
       idleCommandPollIntervalValue.length() > 0 &&
       feederStopValue.length() > 0 &&
       feederDriveValue.length() > 0 &&
-      feederRunValue.length() > 0 &&
-      fruitArrivalWarningValue.length() > 0) {
+      feederMaxRunValue.length() > 0) {
     const long revision = timingRevisionValue.toInt();
     const long firstStationSettleMS = firstStationSettleValue.toInt();
     const long servoSettleMS = servoSettleValue.toInt();
@@ -189,12 +196,11 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
     const long idleCommandPollIntervalMS = idleCommandPollIntervalValue.toInt();
     const long feederStopUS = feederStopValue.toInt();
     const long feederDriveUS = feederDriveValue.toInt();
-    const long feederRunMS = feederRunValue.toInt();
-    const long fruitArrivalWarningMS = fruitArrivalWarningValue.toInt();
+    const long feederMaxRunMS = feederMaxRunValue.toInt();
     if (revision >= 0 && firstStationSettleMS > 0 && servoSettleMS > 0 &&
         fruitSettleMS > 0 && finalGateReturnDelayMS >= 0 &&
         idleCommandPollIntervalMS > 0 && feederStopUS > 0 &&
-        feederDriveUS > 0 && feederRunMS > 0 && fruitArrivalWarningMS > 0) {
+        feederDriveUS > 0 && feederMaxRunMS > 0) {
       command.timing.revision = static_cast<uint32_t>(revision);
       command.timing.firstStationSettleMS =
           static_cast<uint32_t>(firstStationSettleMS);
@@ -206,9 +212,7 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
           static_cast<uint32_t>(idleCommandPollIntervalMS);
       command.timing.feederStopUS = static_cast<uint32_t>(feederStopUS);
       command.timing.feederDriveUS = static_cast<uint32_t>(feederDriveUS);
-      command.timing.feederRunMS = static_cast<uint32_t>(feederRunMS);
-      command.timing.fruitArrivalWarningMS =
-          static_cast<uint32_t>(fruitArrivalWarningMS);
+      command.timing.feederMaxRunMS = static_cast<uint32_t>(feederMaxRunMS);
       command.hasTimingConfig = true;
     }
   }
@@ -252,9 +256,7 @@ bool DjangoApiClient::parseStartSequenceFromResponse(
       motorCommand, "idle_command_poll_interval_ms", -1);
   const int feederStopUS = readJsonInt(motorCommand, "feeder_stop_us", -1);
   const int feederDriveUS = readJsonInt(motorCommand, "feeder_drive_us", -1);
-  const int feederRunMS = readJsonInt(motorCommand, "feeder_run_ms", -1);
-  const int fruitArrivalWarningMS = readJsonInt(
-      motorCommand, "fruit_arrival_warning_ms", -1);
+  const int feederMaxRunMS = readJsonInt(motorCommand, "feeder_max_run_ms", -1);
   command.serverStatus = "waiting_esp32_start";
 
   if (command.stationIndex <= 0) {
@@ -269,8 +271,7 @@ bool DjangoApiClient::parseStartSequenceFromResponse(
   if (timingRevision >= 0 && firstStationSettleMS > 0 &&
       servoSettleMS > 0 && fruitSettleMS > 0 &&
       finalGateReturnDelayMS >= 0 && idleCommandPollIntervalMS > 0 &&
-      feederStopUS > 0 && feederDriveUS > 0 && feederRunMS > 0 &&
-      fruitArrivalWarningMS > 0) {
+      feederStopUS > 0 && feederDriveUS > 0 && feederMaxRunMS > 0) {
     command.timing.revision = static_cast<uint32_t>(timingRevision);
     command.timing.firstStationSettleMS =
         static_cast<uint32_t>(firstStationSettleMS);
@@ -284,9 +285,7 @@ bool DjangoApiClient::parseStartSequenceFromResponse(
         static_cast<uint32_t>(idleCommandPollIntervalMS);
     command.timing.feederStopUS = static_cast<uint32_t>(feederStopUS);
     command.timing.feederDriveUS = static_cast<uint32_t>(feederDriveUS);
-    command.timing.feederRunMS = static_cast<uint32_t>(feederRunMS);
-    command.timing.fruitArrivalWarningMS =
-        static_cast<uint32_t>(fruitArrivalWarningMS);
+    command.timing.feederMaxRunMS = static_cast<uint32_t>(feederMaxRunMS);
     command.hasTimingConfig = true;
   }
   return true;

@@ -49,9 +49,8 @@ FRUIT_SETTLE_MS = 350
 FINAL_GATE_RETURN_DELAY_MS = 300
 IDLE_COMMAND_POLL_INTERVAL_MS = 250
 FEEDER_STOP_US = 1500
-FEEDER_DRIVE_US = 1700
-FEEDER_RUN_MS = 150
-FRUIT_ARRIVAL_WARNING_MS = 5000
+FEEDER_DRIVE_US = 1300
+FEEDER_MAX_RUN_MS = 150
 CAPTURE_TIMING_RECOMMENDED = {
     'first_station_settle_ms': FIRST_STATION_SETTLE_MS,
     'servo_settle_ms': SERVO_SETTLE_MS,
@@ -60,8 +59,7 @@ CAPTURE_TIMING_RECOMMENDED = {
     'idle_command_poll_interval_ms': IDLE_COMMAND_POLL_INTERVAL_MS,
     'feeder_stop_us': FEEDER_STOP_US,
     'feeder_drive_us': FEEDER_DRIVE_US,
-    'feeder_run_ms': FEEDER_RUN_MS,
-    'fruit_arrival_warning_ms': FRUIT_ARRIVAL_WARNING_MS,
+    'feeder_max_run_ms': FEEDER_MAX_RUN_MS,
     'feeder_calibrated': False,
 }
 CAPTURE_TIMING_FIELDS = tuple(
@@ -71,7 +69,7 @@ CAPTURE_TIMING_FIELDS = tuple(
 FEEDER_MECHANICAL_FIELDS = (
     'feeder_stop_us',
     'feeder_drive_us',
-    'feeder_run_ms',
+    'feeder_max_run_ms',
 )
 CAPTURE_TIMING_STEP_MS = 50
 CAPTURE_TIMING_MIN_MS = 50
@@ -80,14 +78,12 @@ CAPTURE_TIMING_FIELD_LIMITS = {
     'idle_command_poll_interval_ms': (100, 5000),
     'feeder_stop_us': (1400, 1600),
     'feeder_drive_us': (1000, 2000),
-    'feeder_run_ms': (50, 500),
-    'fruit_arrival_warning_ms': (1000, 30000),
+    'feeder_max_run_ms': (50, 500),
 }
 CAPTURE_TIMING_FIELD_STEPS = {
     'feeder_stop_us': 5,
     'feeder_drive_us': 10,
-    'feeder_run_ms': 5,
-    'fruit_arrival_warning_ms': 500,
+    'feeder_max_run_ms': 5,
 }
 CAPTURE_TIMING_FIELD_UNITS = {
     'feeder_stop_us': 'us',
@@ -164,6 +160,7 @@ APP_STATE = RuntimeState({
     'capture_timing_applied_revision': 0,
     'capture_timing_applied_at': None,
     'capture_timing_loaded_path': None,
+    'capture_timing_warning': None,
     'auto_run_enabled': False,
     'auto_feed_pending': False,
     'auto_run_finishing': False,
@@ -173,8 +170,11 @@ APP_STATE = RuntimeState({
     'esp32_boot_id': None,
     'esp32_feeder_capable': False,
     'esp32_feeder_state': None,
+    'esp32_feeder_sensor_state': None,
     'esp32_last_feed_command_id': 0,
     'last_completed_feed_command_id': 0,
+    'feeder_test_passed_revision': None,
+    'feeder_test_result': None,
     'last_delayed_feed_command_id': 0,
     'discard_cleanup_last_monotonic': None,
     'dataset_operation': None,
@@ -334,8 +334,7 @@ def capture_timing_api(request):
             for field in (
                 'feeder_stop_us',
                 'feeder_drive_us',
-                'feeder_run_ms',
-                'fruit_arrival_warning_ms',
+                'feeder_max_run_ms',
                 'feeder_calibrated',
             ):
                 timing_data.setdefault(field, APP_STATE['capture_timing'][field])
@@ -343,11 +342,23 @@ def capture_timing_api(request):
         except CaptureCommandError as exc:
             return _json_error(exc.message, status=exc.status, reason=exc.reason)
 
-        if any(
+        feeder_changed = any(
             timing[field] != APP_STATE['capture_timing'][field]
             for field in FEEDER_MECHANICAL_FIELDS
-        ):
+        )
+        if feeder_changed:
             timing['feeder_calibrated'] = False
+        elif (
+            timing['feeder_calibrated']
+            and not APP_STATE['capture_timing']['feeder_calibrated']
+            and APP_STATE.get('feeder_test_passed_revision')
+            != APP_STATE['capture_timing_revision']
+        ):
+            return _json_error(
+                '必須先以相同 revision 完成 HC-SR04 測試送料，才能確認校正。',
+                status=409,
+                reason='feeder_test_required',
+            )
 
         if timing == APP_STATE['capture_timing']:
             return JsonResponse(_state_payload(extra={
@@ -358,9 +369,17 @@ def capture_timing_api(request):
         previous_timing = APP_STATE['capture_timing']
         previous_revision = APP_STATE['capture_timing_revision']
         previous_applied_at = APP_STATE['capture_timing_applied_at']
+        previous_passed_revision = APP_STATE.get('feeder_test_passed_revision')
         APP_STATE['capture_timing'] = timing
-        APP_STATE['capture_timing_revision'] = previous_revision + 1
-        APP_STATE['capture_timing_applied_at'] = None
+        profile_changed = any(
+            timing[field] != previous_timing[field]
+            for field in CAPTURE_TIMING_FIELDS
+        )
+        APP_STATE['capture_timing_revision'] = previous_revision + int(profile_changed)
+        if profile_changed:
+            APP_STATE['capture_timing_applied_at'] = None
+        if feeder_changed:
+            APP_STATE['feeder_test_passed_revision'] = None
         try:
             capture_timing.write(
                 _capture_timing_path(),
@@ -371,6 +390,7 @@ def capture_timing_api(request):
             APP_STATE['capture_timing'] = previous_timing
             APP_STATE['capture_timing_revision'] = previous_revision
             APP_STATE['capture_timing_applied_at'] = previous_applied_at
+            APP_STATE['feeder_test_passed_revision'] = previous_passed_revision
             return _json_error(
                 f'無法保存拍攝停穩設定：{exc}',
                 status=500,
@@ -407,6 +427,10 @@ def feeder_test_api(request):
             command = _set_motor_command('feed_one', feed_context='calibration')
         except CaptureCommandError as exc:
             return _json_error(exc.message, status=exc.status, reason=exc.reason)
+        APP_STATE['feeder_test_passed_revision'] = None
+        APP_STATE['last_error_reason'] = None
+        APP_STATE['last_error_command'] = None
+        APP_STATE['last_error_command_id'] = None
         APP_STATE['status'] = 'waiting_feeder'
         APP_STATE['message'] = 'ESP32 正在執行一次送料校正測試。'
         payload = _state_payload(extra={'ok': True, 'feeder_test_started': True})
@@ -506,6 +530,7 @@ def esp32_command_api(request):
         previous_boot_id = APP_STATE.get('esp32_boot_id')
         boot_id = (request.GET.get('boot_id') or '').strip() or None
         feeder_state = (request.GET.get('feeder_state') or '').strip()
+        feeder_sensor_state = (request.GET.get('feeder_sensor_state') or '').strip()
         current_command = APP_STATE.get('motor_command') or {}
         if (
             previous_boot_id
@@ -534,6 +559,11 @@ def esp32_command_api(request):
         APP_STATE['esp32_feeder_capable'] = request.GET.get('capability') == 'feeder_v1'
         APP_STATE['esp32_feeder_state'] = (
             feeder_state if feeder_state in ('idle', 'awaiting_fruit') else None
+        )
+        APP_STATE['esp32_feeder_sensor_state'] = (
+            feeder_sensor_state
+            if feeder_sensor_state in ('clear', 'blocked', 'unavailable')
+            else None
         )
         APP_STATE['esp32_last_feed_command_id'] = max(
             _safe_int(request.GET.get('last_feed_command_id')) or 0,
@@ -588,9 +618,14 @@ def esp32_report_api(request):
                 return _json_error(exc.message, status=exc.status, reason=exc.reason, extra={'ok': False})
             return JsonResponse(_compact_esp32_payload(payload))
 
-        if event == 'feed_cycle_completed':
+        if event in (
+            'feed_cycle_completed',
+            'feeder_max_run_timeout',
+            'feeder_sensor_unavailable',
+            'feeder_sensor_not_clear',
+        ):
             try:
-                payload = _handle_feed_cycle_completed(command_id)
+                payload = _handle_feed_result(event, data, command_id)
             except CaptureCommandError as exc:
                 return _json_error(exc.message, status=exc.status, reason=exc.reason, extra={'ok': False})
             return JsonResponse(_compact_esp32_payload(payload))
@@ -1175,6 +1210,7 @@ def reset_runtime_state_for_tests():
             'capture_timing_applied_revision': 0,
             'capture_timing_applied_at': None,
             'capture_timing_loaded_path': None,
+            'capture_timing_warning': None,
             'auto_run_enabled': False,
             'auto_feed_pending': False,
             'auto_run_finishing': False,
@@ -1184,8 +1220,11 @@ def reset_runtime_state_for_tests():
             'esp32_boot_id': None,
             'esp32_feeder_capable': False,
             'esp32_feeder_state': None,
+            'esp32_feeder_sensor_state': None,
             'esp32_last_feed_command_id': 0,
             'last_completed_feed_command_id': 0,
+            'feeder_test_passed_revision': None,
+            'feeder_test_result': None,
             'last_delayed_feed_command_id': 0,
             'discard_cleanup_last_monotonic': None,
             'dataset_operation': None,
@@ -1330,11 +1369,11 @@ def _normalise_capture_timing(raw_timing, *, require_all):
         )
     except capture_timing.TimingValidationError as exc:
         raise CaptureCommandError(exc.message, status=400, reason=exc.reason) from None
-    if abs(timing['feeder_drive_us'] - timing['feeder_stop_us']) < 100:
+    if timing['feeder_drive_us'] == timing['feeder_stop_us']:
         raise CaptureCommandError(
-            'feeder_drive_us 與 feeder_stop_us 至少需相差 100 us。',
+            'feeder_drive_us 不得與 feeder_stop_us 相同。',
             status=400,
-            reason='feeder_drive_too_close_to_stop',
+            reason='feeder_drive_matches_stop',
         )
     timing['feeder_calibrated'] = bool(raw_calibrated)
     return timing
@@ -1349,13 +1388,23 @@ def _read_capture_timing_config(path):
                 'idle_command_poll_interval_ms': IDLE_COMMAND_POLL_INTERVAL_MS,
                 'feeder_stop_us': FEEDER_STOP_US,
                 'feeder_drive_us': FEEDER_DRIVE_US,
-                'feeder_run_ms': FEEDER_RUN_MS,
-                'fruit_arrival_warning_ms': FRUIT_ARRIVAL_WARNING_MS,
+                'feeder_max_run_ms': FEEDER_MAX_RUN_MS,
                 'feeder_calibrated': False,
             },
+            migrate_profile=_migrate_feeder_profile,
         )
     except CaptureCommandError:
         return None
+
+
+def _migrate_feeder_profile(timing):
+    if not ({'feeder_run_ms', 'fruit_arrival_warning_ms'} & timing.keys()):
+        return timing, False
+    timing.pop('feeder_run_ms', None)
+    timing.pop('fruit_arrival_warning_ms', None)
+    timing['feeder_max_run_ms'] = FEEDER_MAX_RUN_MS
+    timing['feeder_calibrated'] = False
+    return timing, True
 
 
 def _ensure_capture_timing_config():
@@ -1364,12 +1413,19 @@ def _ensure_capture_timing_config():
     if APP_STATE.get('capture_timing_loaded_path') == path_key:
         return
 
+    path_existed = path.exists()
     loaded_config = _read_capture_timing_config(path)
     needs_write = False
+    warning = None
     if loaded_config is None:
         loaded_config = _read_capture_timing_config(_legacy_capture_timing_path())
         if loaded_config is None:
             loaded_config = (dict(CAPTURE_TIMING_RECOMMENDED), 1, False)
+            warning = (
+                '送料 runtime profile 損壞或驗證失敗，已載入推薦值並取消校正。'
+                if path_existed
+                else '送料 runtime profile 遺失，已載入推薦值並取消校正。'
+            )
         needs_write = True
 
     timing, revision, migrated = loaded_config
@@ -1383,6 +1439,7 @@ def _ensure_capture_timing_config():
     APP_STATE['capture_timing_applied_revision'] = 0
     APP_STATE['capture_timing_applied_at'] = None
     APP_STATE['capture_timing_loaded_path'] = path_key
+    APP_STATE['capture_timing_warning'] = warning
     _remove_legacy_capture_timing_config()
 
 
@@ -2039,8 +2096,7 @@ def _set_motor_command(
             'feed_context': feed_context or 'production',
             'feeder_stop_us': timing['feeder_stop_us'],
             'feeder_drive_us': timing['feeder_drive_us'],
-            'feeder_run_ms': timing['feeder_run_ms'],
-            'fruit_arrival_warning_ms': timing['fruit_arrival_warning_ms'],
+            'feeder_max_run_ms': timing['feeder_max_run_ms'],
         })
     _start_wait_timer()
     _record_transition(
@@ -2222,17 +2278,16 @@ def _esp32_command_payload():
         'idle_command_poll_interval_ms': timing['idle_command_poll_interval_ms'],
         'feeder_stop_us': timing['feeder_stop_us'],
         'feeder_drive_us': timing['feeder_drive_us'],
-        'feeder_run_ms': timing['feeder_run_ms'],
-        'fruit_arrival_warning_ms': timing['fruit_arrival_warning_ms'],
+        'feeder_max_run_ms': timing['feeder_max_run_ms'],
         'message': APP_STATE['message'],
     }
 
 
-def _handle_feed_cycle_completed(command_id):
+def _handle_feed_result(event, data, command_id):
     if command_id and command_id == APP_STATE.get('last_completed_feed_command_id'):
         return _state_payload(extra={
             'ok': True,
-            'event': 'feed_cycle_completed',
+            'event': event,
             'ignored': True,
             'duplicate': True,
             'reason': 'duplicate_feed_report',
@@ -2241,7 +2296,7 @@ def _handle_feed_cycle_completed(command_id):
     if command.get('command') != 'feed_one':
         return _state_payload(extra={
             'ok': True,
-            'event': 'feed_cycle_completed',
+            'event': event,
             'ignored': True,
             'reason': 'no_pending_feed_command',
         })
@@ -2252,22 +2307,45 @@ def _handle_feed_cycle_completed(command_id):
         )
     APP_STATE['last_completed_feed_command_id'] = command_id
     APP_STATE['motor_command'] = None
+    stop_reason = (data.get('feeder_stop_reason') or '').strip() or event
+    result = {
+        'event': event,
+        'timing_revision': command.get('timing_revision'),
+        'elapsed_ms': max(_safe_int(data.get('feeder_elapsed_ms')) or 0, 0),
+        'max_run_ms': max(
+            _safe_int(data.get('feeder_max_run_ms'))
+            or command.get('feeder_max_run_ms')
+            or 0,
+            0,
+        ),
+        'stop_reason': stop_reason,
+        'ok': event == 'feed_cycle_completed' and stop_reason == 'hcsr04',
+    }
+    APP_STATE['feeder_test_result'] = result
     APP_STATE['status'] = (
-        'waiting_fruit'
-        if command.get('feed_context') == 'production'
-        else 'idle'
+        'idle'
+        if command.get('feed_context') == 'calibration'
+        else ('idle' if result['ok'] else 'error')
     )
-    if command.get('feed_context') == 'production':
-        APP_STATE['message'] = '送料 cycle 已完成，等待百香果抵達 HC-SR04。'
-    else:
-        APP_STATE['message'] = '一次送料校正測試已完成，請確認停止、方向與轉量。'
+    APP_STATE['message'] = (
+        'HC-SR04 已偵測百香果，測試送料正常停止。'
+        if result['ok']
+        else f'測試送料已停止：{result["stop_reason"]}。'
+    )
+    if result['ok'] and command.get('feed_context') == 'calibration':
+        APP_STATE['feeder_test_passed_revision'] = command.get('timing_revision')
+    elif not result['ok']:
+        APP_STATE['feeder_test_passed_revision'] = None
+        APP_STATE['last_error_reason'] = event
+        APP_STATE['last_error_command'] = 'feed_one'
+        APP_STATE['last_error_command_id'] = command_id
     _clear_wait_timer()
     _record_transition(
-        'feed_cycle_completed',
+        event,
         command_id=command_id,
-        details={'feed_context': command.get('feed_context')},
+        details={**result, 'feed_context': command.get('feed_context')},
     )
-    return _state_payload(extra={'ok': True, 'event': 'feed_cycle_completed'})
+    return _state_payload(extra={'ok': True, 'event': event})
 
 
 def _handle_fruit_arrival_delayed(command_id):
@@ -2419,8 +2497,7 @@ def _format_command_text(payload):
             'idle_command_poll_interval_ms',
             'feeder_stop_us',
             'feeder_drive_us',
-            'feeder_run_ms',
-            'fruit_arrival_warning_ms',
+            'feeder_max_run_ms',
         ])
         if payload.get('command') == 'feed_one':
             keys.append('feed_context')
@@ -2462,22 +2539,17 @@ def _feeder_hardware_disabled_reason(*, allow_recovery=False):
         allow_recovery and recovery and APP_STATE.get('esp32_feeder_state') == 'awaiting_fruit'
     ):
         return 'feeder_state_not_idle'
+    if APP_STATE.get('esp32_feeder_sensor_state') == 'unavailable':
+        return 'feeder_sensor_unavailable'
+    if APP_STATE.get('esp32_feeder_sensor_state') != 'clear':
+        return 'feeder_sensor_not_clear'
     if APP_STATE['capture_timing_applied_revision'] != APP_STATE['capture_timing_revision']:
         return 'feeder_timing_not_applied'
     return None
 
 
 def _auto_run_disabled_reason(*, allow_recovery=False):
-    reason = _feeder_hardware_disabled_reason(allow_recovery=allow_recovery)
-    if reason:
-        return reason
-    if not APP_STATE['capture_timing']['feeder_calibrated']:
-        return 'feeder_calibration_required'
-    if not _camera_is_ready():
-        return 'camera_not_ready'
-    if APP_STATE.get('auto_run_recovery_reason') and not allow_recovery:
-        return APP_STATE['auto_run_recovery_reason']
-    return None
+    return 'feeder_hardware_validation_required'
 
 
 def _camera_is_ready():
@@ -2620,6 +2692,10 @@ def _operator_alert_payload():
         'motor_error': 'ESP32 / actuator',
         'feeder_capability_missing': 'ESP32 / upstream_feeder',
         'feeder_calibration_required': 'upstream_feeder',
+        'feeder_sensor_not_clear': 'upstream_feeder / HC-SR04',
+        'feeder_sensor_unavailable': 'upstream_feeder / HC-SR04',
+        'feeder_max_run_timeout': 'upstream_feeder',
+        'feeder_hardware_validation_required': 'upstream_feeder / HC-SR04',
         'feeder_timing_not_applied': 'ESP32 / upstream_feeder',
         'feeder_state_not_idle': 'upstream_feeder',
         'camera_not_ready': 'camera station',
@@ -2697,6 +2773,14 @@ def _state_payload(extra=None):
         'esp32_boot_id': APP_STATE.get('esp32_boot_id'),
         'esp32_feeder_capable': APP_STATE.get('esp32_feeder_capable', False),
         'esp32_feeder_state': APP_STATE.get('esp32_feeder_state'),
+        'feeder_sensor_state': APP_STATE.get('esp32_feeder_sensor_state'),
+        'feeder_test_result': APP_STATE.get('feeder_test_result'),
+        'feeder_test_passed_revision': APP_STATE.get('feeder_test_passed_revision'),
+        'can_confirm_feeder_calibration': (
+            APP_STATE.get('feeder_test_passed_revision')
+            == APP_STATE['capture_timing_revision']
+        ),
+        'capture_timing_warning': APP_STATE.get('capture_timing_warning'),
         'can_test_feeder': _feeder_test_disabled_reason() is None,
         'feeder_test_disabled_reason': _feeder_test_disabled_reason(),
         'can_start_auto_run': _auto_run_disabled_reason(allow_recovery=True) is None,

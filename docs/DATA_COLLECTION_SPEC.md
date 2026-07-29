@@ -75,9 +75,9 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 
 每顆 fruit 開始時 snapshot 前四項拍攝機構 timing；每次建立 `feed_one` 時 snapshot 三項送料設定，流程中不得覆寫。
 
-`feeder_calibrated` 與 profile 一起原子保存。操作員先在空料斗確認停止脈波沒有爬行，再以滿載漏斗執行「測試送料一次」；驅動脈波由 `1300 us` 起測，校正為滿載下能可靠起轉的最慢值，最大運轉時間則由 `150 ms` 起由低往高增加。測試成功觸發 HC-SR04 後，只開放同一 revision 的「送料校正已確認」checkbox；操作員目視確認恰好送出一顆後才可勾選。測試模式不得建立 Capture session。
+`feeder_calibrated` 預設為 false，並與 profile 一起原子保存。操作員先在空料斗確認停止脈波沒有爬行，再以滿載漏斗執行「測試送料一次」；驅動脈波由 `1300 us` 起測，校正為滿載下能可靠起轉的最慢值，最大運轉時間則由 `150 ms` 起由低往高增加。測試成功觸發 HC-SR04 後，只開放同一 revision 的「送料校正已確認」checkbox；操作員目視確認恰好送出一顆後才可勾選。測試模式不得建立 Capture session。
 
-修改 `feeder_stop_us`、`feeder_drive_us` 或 `feeder_max_run_ms` 都會取消確認。舊設定檔升級時保留停止與驅動脈波，移除 `feeder_run_ms` 與 `fruit_arrival_warning_ms`，將 `feeder_max_run_ms` 設為 `150 ms` 並取消確認。設定檔遺失、損壞或驗證失敗時載入推薦值、取消確認並在 Dashboard 明確警示，不得靜默恢復正式送料。ESP32 尚未 ACK 最新 revision 或送料尚未確認時，「開始執行」保持停用。
+修改 `feeder_stop_us`、`feeder_drive_us` 或 `feeder_max_run_ms` 都會取消確認。舊設定檔升級時保留停止與驅動脈波，移除 `feeder_run_ms` 與 `fruit_arrival_warning_ms`，將 `feeder_max_run_ms` 設為 `150 ms`、取消確認並提高 revision。設定檔遺失、損壞或驗證失敗時載入推薦值、取消確認並在 Dashboard 明確警示，不得靜默恢復正式送料。ESP32 尚未 ACK 最新 revision 時不得測試送料；本階段正式「開始執行」固定停用。
 
 其他 interval 與 request deadline：
 
@@ -102,7 +102,7 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 | `GET` | `/api/state/` | Dashboard 完整狀態 |
 | `GET` | `/api/camera/state/` | 手機精簡 capture state 與相機 ready heartbeat |
 | `POST` | `/api/capture_timing/` | 更新 runtime profile 與送料校正確認 |
-| `POST` | `/api/auto_run/` | 開始自動運轉或要求優雅暫停 |
+| `POST` | `/api/auto_run/` | 本階段拒絕啟用正式自動運轉 |
 | `POST` | `/api/feeder/test/` | 在安全 idle 狀態測試一次 HC-SR04 回授送料 |
 | `POST` | `/api/capture_started/` | Best-effort 拍攝 telemetry |
 | `POST` | `/api/upload_images/` | 上傳指定站點照片 |
@@ -112,11 +112,15 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 
 `/api/camera/state/` 禁止快取且只讀記憶體狀態與套用 session timeout，不得掃描 Dataset 或同步 metadata／counter。手機 polling 必須 single in-flight；頁面進入背景時停止，回到前景才重啟。只有相機 stream 存在、video track 為 live、已有可擷取影格與有效尺寸時，手機才在 polling query 回報 `camera_ready=1`；Django 只在記憶體保存最後 ready 時間。每次 upload 必須帶 `fruit_id`、`capture_token` 與 `station_index`。
 
-ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、固定能力 `capability=feeder_v1`、`feeder_state=idle|awaiting_fruit`、`feeder_sensor_state=clear|blocked|unavailable` 與 `last_feed_command_id`。`clear` 只代表最近一次有效距離大於 `8.0 cm`；`0 cm`／Echo timeout 必須回報 `unavailable`。Django 未收到 `feeder_v1`、ESP32 離線、感測器不是 `clear`，或 boot／feeder state 尚未完成復原時，不得建立 `feed_one`。
+ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、固定能力 `capability=feeder_v1`、`feeder_state=idle|awaiting_fruit`、`feeder_sensor_state=clear|blocked|unavailable` 與 `last_feed_command_id`。`clear` 只代表最近一次有效距離大於 `8.0 cm`；`0 cm`／Echo timeout 必須回報 `unavailable`，其餘為 blocked。Django 未收到 `feeder_v1`、ESP32 離線、感測器不是 `clear`、最新 revision 尚未 ACK，或 boot／feeder state 尚未完成復原時，不得建立測試 `feed_one`。
 
 ## 自動運轉與單顆送料
 
 ### 開始條件
+
+本階段只開放 calibration `feed_one`。Dashboard「開始執行」固定停用，`POST /api/auto_run/` 的啟用請求回傳 `feeder_hardware_validation_required`；不得建立 production `feed_one`。
+
+以下開始條件、下一顆送料、優雅暫停與重新啟動條款是通過 HC-SR04 實機驗證後另案開放的正式運轉目標契約；本階段 API 不執行。
 
 操作員按下 Dashboard「開始執行」時，Django 必須在同一個 `STATE_LOCK` critical section 內確認：
 
