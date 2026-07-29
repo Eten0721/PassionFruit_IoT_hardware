@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-07-27
 
+> 上游送料的正常終止條件已由 [ADR-0014](0014-hcsr04-terminated-upstream-feed.md) 改為 HC-SR04 回授；本 ADR 的 Django 協調、互斥、冪等與重新啟動安全原則仍有效。
+
 ## Context
 
 上游送料需在不增加步進馬達或 Home 感測器成本的前提下，與既有三站拍攝、人工分類、單一 command slot 及不穩定 Wi-Fi 共存。連續旋轉 SG90 只能以脈波與時間估算轉量，網路 timeout 或控制器重新啟動又可能讓同一顆果實被重複送料。

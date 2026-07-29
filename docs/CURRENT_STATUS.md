@@ -1,6 +1,6 @@
 # 目前狀態
 
-更新日期：2026-07-27
+更新日期：2026-07-30
 
 本文件是可覆寫的目前快照。完成歷史由 Git、tag 與 release 保存；未完成工作的詳細規格與討論以 GitHub Issues 為準。
 
@@ -12,7 +12,7 @@
 - Capture 與 sorter 共用單一 motor command slot，command ID 可跨 Django 重啟保持遞增。
 - 人工分類先提交 Dataset 與 metadata，再驅動 MG996R；硬體失敗不回滾資料。
 - Dashboard 可管理拍攝 timing、檢查三張照片、分類與刪除；手機頁使用 single in-flight polling。
-- 上游送料支援校正、單顆自動運轉、優雅暫停、延遲警示及 Django／ESP32 重啟防重復原。
+- 目前上游送料軟體仍支援固定時間校正、單顆自動運轉、優雅暫停、延遲警示及 Django／ESP32 重啟防重復原。
 - 正式 Firmware 已按感測、閘門、分類器、HTTPS 與流程控制拆分模組。
 - 硬體與模型採獨立 Repository，照片快照存於獨立資料目錄。
 - 目前 Dataset 快照包含 `327` 顆果實與 `981` 張照片，尚待建立正式 train／valid／test 切分與第二份備份。
@@ -24,14 +24,14 @@
 - [#1 整合上游送料機構與 360° SG90](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1)
 - [#2 分類器新增 180° SG90 出料閘門](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2)
 
-Issue #1 的 Django、Dashboard 與 Firmware 已完成軟體實作；GPIO `23` 單次開迴路送料、可持久校正參數、相機 readiness、自動運轉／優雅暫停、重新啟動防重與進料未確認提示仍待實機驗收。
+Issue #1 已完成固定時間送料的軟體基線。2026-07-30 接受 [ADR-0014](adr/0014-hcsr04-terminated-upstream-feed.md)：GPIO `23` 正常改由 HC-SR04 觸發停止，固定時間改為唯一的安全上限；Dashboard、Django、Firmware、測試與舊設定遷移尚未依新契約實作。
 
 ## 已知問題
 
 - ESP32 HTTPS 偶爾出現 read timeout；目前依冪等 retry 與 client 重建復原。
 - WebRTC 預覽可能受瀏覽器、熱點或 ICE 狀態影響，但不應阻塞拍攝上傳。
 - 分類器沒有位置回授，completed 只表示控制時序完成。
-- 連續旋轉送料 SG90 沒有位置回授，實際轉量會受電壓、負載、摩擦與機構公差影響；若校正後仍有漏送、雙送或累積偏移，必須修改機構或重新評估回授方案。
+- 連續旋轉送料 SG90 受外力後會偏離原角度，固定時間不能可靠代表送料完成；新 HC-SR04 終止策略尚未實作與實機驗證。
 - 現有 metadata note 尚未正規化，不能直接作為完整模型特徵。
 - 安全稽核仍限制系統只能部署於可信任、隔離的實驗室區網；詳見 [SECURITY_AUDIT_2026-07-11.md](SECURITY_AUDIT_2026-07-11.md)。
 
@@ -42,7 +42,10 @@ Issue #1 的 Django、Dashboard 與 Firmware 已完成軟體實作；GPIO `23` �
 - 以高速錄影確認第 2、3 站 ready 前果實已停止。
 - 模擬 Wi-Fi 中斷、TLS timeout、手機未上傳、錯站與重複 trigger。
 - 驗證未分類資料、刪除復原、分類器斷線與重複 command。
-- 加入第 4 顆 SG90 後，以混合果形連續完成 `20` 顆單顆送料與完整分類，確認無漏送／雙送、馬達停止、電壓合規、無抖動／異音、ESP32 reset 或接線異常溫升。
+- 驗證送料前只有有效距離大於 `8.0 cm` 才可啟動；`0 cm`／Echo timeout 必須拒絕或立即停止並通知操作者。
+- 以滿載漏斗校正最慢可靠驅動脈波及由低往高的最大運轉時間，確認 Dashboard 顯示實際運轉時間與停止原因。
+- 加入第 4 顆 SG90 後，以混合果形連續完成 `20` 顆 HC-SR04 終止送料與完整分類，確認無漏送／雙送、下一個 `180°` 洞口未通過、電壓合規、無抖動／異音、ESP32 reset 或接線異常溫升。
+- 模擬最大運轉逾時、送料中感測器無回音與逾時後果實才抵達，確認不補轉且自動送料保持暫停。
 - 分別模擬 ESP32 與 Django 在送料 command／report 邊界重新啟動，確認不會自動重複送料。
 - 建立 Dataset 第二份備份、正式切分、標註與模型驗收。
 
@@ -50,4 +53,4 @@ Issue #1 的 Django、Dashboard 與 Firmware 已完成軟體實作；GPIO `23` �
 
 ## 下一個里程碑
 
-依 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 完成 Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 的單顆送料、重啟防重與完整分類實機驗收。Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 通過後，再處理 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 的分類後出料閘門。
+依 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 與 [ADR-0014](adr/0014-hcsr04-terminated-upstream-feed.md) 實作 HC-SR04 終止送料，再完成 Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 的重啟防重與完整分類實機驗收。Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 通過後，再處理 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 的分類後出料閘門。
