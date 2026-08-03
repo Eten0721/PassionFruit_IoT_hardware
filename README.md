@@ -1,6 +1,6 @@
 # 百香果 IoT 系統快速部署
 
-Windows 電腦執行 Django，手機透過 `/camera/` 拍照，ESP32 則控制三個 SG90 閘門與 MG996R 分類器。這份 README 只說明如何在同學的 Windows 電腦快速復現並啟動系統。
+Windows 電腦執行 Django，手機透過 `/camera/` 拍照，ESP32 則控制四顆 SG90（三個拍攝平台閘門與分類器擋臂）、360° MG996R 上游送料與位置型 MG996R 分類器。這份 README 只說明如何在同學的 Windows 電腦快速復現並啟動系統；伺服供電與共地方式見 [`hardware_notes/硬體接線與驗收摘要.md`](hardware_notes/硬體接線與驗收摘要.md)。
 
 ## 1. 下載專案
 

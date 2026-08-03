@@ -2,9 +2,9 @@
 
 ## 目標與範圍
 
-正式流程由 Django 中央狀態機、ESP32 上游單顆送料、HC-SR04、手機單站拍攝與三段 SG90 閘門組成。每顆百香果在三個固定站點各保存一張照片，人工分類完成且實體分類器回報成功後才允許送入下一顆。本文是送料、三站流程、API、command ID、GPIO、角度、timing 與分類契約的唯一來源。
+正式流程由 Django 中央狀態機、ESP32 以 360° MG996R 執行上游單顆送料、HC-SR04、手機單站拍攝、三段 SG90 閘門與位置型 MG996R 分類器組成。每顆百香果在三個固定站點各保存一張照片，人工分類完成且實體分類器回報成功後才允許送入下一顆。本文是送料、三站流程、API、command ID、GPIO、角度、timing 與分類契約的唯一來源。
 
-上游送料機構由 GitHub Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 開發；本文件記錄已接受的目標契約，實作與實機驗收進度以 [CURRENT_STATUS.md](CURRENT_STATUS.md) 為準。分類後出料閘門仍由 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 規劃。
+上游送料機構由 GitHub Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 開發；本文件記錄已接受的目標契約，實作與實機驗收進度以 [CURRENT_STATUS.md](CURRENT_STATUS.md) 為準。分類器擋臂使用第 4 顆 SG90，仍由 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 規劃。
 
 ## 名詞
 
@@ -13,7 +13,7 @@
 - Capture request：Django 通知手機拍攝指定站點。
 - Upload complete：Django 驗證並原子保存指定照片。
 - 自動運轉：操作員啟用後，Django 只在安全邊界建立下一次送料命令的運轉模式；Django 或 ESP32 重新啟動後不自動恢復。
-- 送料循環：連續旋轉 SG90 從開始驅動至停止的一次 `feed_one` 實體動作；成功契約是實體恰好送出一顆，不是旋轉固定角度。HC-SR04 只確認有果實抵達，不能計數。
+- 送料循環：連續旋轉 MG996R 從開始驅動至停止的一次 `feed_one` 實體動作；成功契約是實體恰好送出一顆，不是旋轉固定角度。HC-SR04 只確認有果實抵達，不能計數。
 - 感測區清空：HC-SR04 取得一次有效且大於 `8.0 cm` 的距離；`0 cm`／Echo timeout 不是清空。
 - 果實抵達確認：送料期間 HC-SR04 取得一次有效且小於等於 `6.0 cm` 的距離；同一筆讀值正常終止送料並啟動首站流程。
 - 送料安全逾時：`feeder_max_run_ms` 先於果實抵達確認到期；ESP32 立即停止馬達，Django 暫停自動送料且不得自動補轉。
@@ -31,14 +31,16 @@
 | Gate 1 SG90 | `18` | Home `0°`，Release `90°` |
 | Gate 2 SG90 | `19` | Home `0°`，Release `90°` |
 | Gate 3 SG90 | `21` | Home `0°`，Release `90°` |
-| Upstream feeder SG90 360° | `23` | HC-SR04 回授停止，最大運轉時間安全保護 |
+| Upstream feeder MG996R 360° | `23` | HC-SR04 回授停止，最大運轉時間安全保護 |
 | HC-SR04 Trigger | `26` | `10 us` pulse |
 | HC-SR04 Echo | `27` | `12000 us` timeout，輸入必須安全降壓 |
-| MG996R sorter | `25` | Home `85°` |
+| Position-control MG996R sorter | `25` | Home `85°` |
+
+第 4 顆 SG90 作為分類器擋臂；其 GPIO、角度與 timing 尚未接受，由 Issue #2 決定前不得寫入正式 Firmware 或本規格。
 
 送料方向由馬達安裝位置及 `feeder_drive_us` 位於校正停止值的哪一側共同決定，Firmware 不固定順時針對應的脈波側。正式流程不提供反轉清料、位置 Home 或自動補轉；更換馬達位置或修改驅動脈波後必須重新測試送料。
 
-MG996R 分類位置：
+位置型 MG996R 分類位置：
 
 | 中文分類 | Command code | 角度 |
 |---|---|---:|
@@ -47,7 +49,7 @@ MG996R 分類位置：
 | 下等 | `low` | `115°` |
 | 加工 | `processing` | `145°` |
 
-Firmware 可接受舊輸入 alias `high_medium` 與 `discard`，分別套用上等與中等的新角度；Django 與新決策層不得再產生 alias。MG996R 分類位置保持 `1000 ms`、Home 穩定 `500 ms`、Firmware 動作 timeout `5000 ms`。
+Firmware 可接受舊輸入 alias `high_medium` 與 `discard`，分別套用上等與中等的新角度；Django 與新決策層不得再產生 alias。位置型 MG996R 分類位置保持 `1000 ms`、Home 穩定 `500 ms`、Firmware 動作 timeout `5000 ms`。
 
 HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔為 `50 ms`。一次有效觸發即可立即停止送料；只有有效距離大於 `8.0 cm` 才可重新待命。`0 cm`／Echo timeout 代表感測器異常或線材問題，送料前必須拒絕命令，送料中必須立即停止。Echo 分壓、伺服供電與機械驗收見 [`hardware_notes/硬體接線與驗收摘要.md`](../hardware_notes/硬體接線與驗收摘要.md)。
 
@@ -274,5 +276,5 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 6. 以滿載漏斗由 `1300 us` 起校正能可靠起轉的最慢驅動脈波，並由 `150 ms` 起逐步增加最大運轉時間；測試送料成功後，只有人工確認恰好一顆才可完成校正。
 7. 以混合尺寸、形狀與蒂頭方向的果實連續完成 `20` 顆送料與完整分類；每個 `feed_one` 都由一次有效 HC-SR04 讀值正常停止且恰好一顆，無漏送／雙送、無須人工重對送料桿。
 8. 模擬最大運轉逾時、送料中 Echo timeout，以及逾時後果實才抵達；確認馬達先停止、不自動補轉，延遲果實仍完成三站流程且自動送料保持關閉。
-9. 同一個 `20` 顆測試確認四顆 SG90 無抖動／異音、ESP32 無 reset、麵包板與線材無異常溫升，電池組電壓保持在伺服型號額定範圍。任一項失敗時，校正或修正後重新累計連續 `20` 顆。
+9. 同一個 `20` 顆測試確認送料與分類器兩顆 MG996R、三顆拍攝平台 SG90 及分類器擋臂 SG90 均無抖動／異音，ESP32 無 reset，配電端子與線材無異常溫升；兩組 `4 × AA` 電池盒的空載與動作中電壓都須保持在所接伺服的額定範圍。任一項失敗時，校正或修正後重新累計連續 `20` 顆。
 10. 模擬 ESP32 與 Django 分別在 `feed_one` 回報前後重新啟動，確認不會自動重複送料，且 Dashboard 顯示可操作的復原提示。

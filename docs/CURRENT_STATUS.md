@@ -1,6 +1,6 @@
 # 目前狀態
 
-更新日期：2026-07-30
+更新日期：2026-08-03
 
 本文件是可覆寫的目前快照。完成歷史由 Git、tag 與 release 保存；未完成工作的詳細規格與討論以 GitHub Issues 為準。
 
@@ -10,7 +10,7 @@
 - 每顆果實保存三張站點照片，照片保存成功後才放行下一閘門。
 - 首站捷徑、timeout retry、transition trace、照片原子保存與未分類資料鎖定可運作。
 - Capture 與 sorter 共用單一 motor command slot，command ID 可跨 Django 重啟保持遞增。
-- 人工分類先提交 Dataset 與 metadata，再驅動 MG996R；硬體失敗不回滾資料。
+- 人工分類先提交 Dataset 與 metadata，再驅動位置型 MG996R 分類器；硬體失敗不回滾資料。
 - Dashboard 可管理拍攝 timing、檢查三張照片、分類與刪除；手機頁使用 single in-flight polling。
 - 上游送料測試使用 HC-SR04 回授停止，並具備本機 max timeout、sensor unavailable 安全停止與同 revision 校正確認。
 - 正式 Firmware 已按感測、閘門、分類器、HTTPS 與流程控制拆分模組。
@@ -21,18 +21,20 @@
 
 ## 正在開發
 
-- [#1 整合上游送料機構與 360° SG90](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1)
-- [#2 分類器新增 180° SG90 出料閘門](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2)
+- [#1 整合上游送料機構](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1)
+- [#2 分類器新增 SG90 擋臂](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2)
 - [#9 讓測試送料以 HC-SR04 回授停止](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/9)
 
 Issue #9 的 Django、Dashboard 與 Firmware 已完成軟體實作；GPIO `23` 測試送料會在 HC-SR04 `<= 6.0 cm` 時停止，`150 ms` max timeout 與感測器 unavailable 均在 ESP32 本機先停止。正式自動運轉仍停用，待 HC-SR04 實機驗證後另行開放。
+
+上游送料馬達已決定由 360° SG90 改為 360° MG996R。最終供電配置使用兩組獨立的 `4 × AA` 電池盒：一組供應送料與分類器兩顆 MG996R，另一組供應三顆拍攝平台 SG90 與分類器擋臂 SG90；兩組正極隔離，負極與 ESP32 共地。馬達、分類器擋臂與雙電池盒尚待安裝、校正及實機驗收。
 
 ## 已知問題
 
 - ESP32 HTTPS 偶爾出現 read timeout；目前依冪等 retry 與 client 重建復原。
 - WebRTC 預覽可能受瀏覽器、熱點或 ICE 狀態影響，但不應阻塞拍攝上傳。
 - 分類器沒有位置回授，completed 只表示控制時序完成。
-- 連續旋轉送料 SG90 受外力後會偏離原角度；HC-SR04 終止策略已完成軟體實作，尚待實機驗證。
+- 原型的連續旋轉送料 SG90 受外力後會偏離原角度；已決定改用 360° MG996R，HC-SR04 終止策略與新馬達尚待整合驗證。
 - 現有 metadata note 尚未正規化，不能直接作為完整模型特徵。
 - 安全稽核仍限制系統只能部署於可信任、隔離的實驗室區網；詳見 [SECURITY_AUDIT_2026-07-11.md](SECURITY_AUDIT_2026-07-11.md)。
 
@@ -45,7 +47,7 @@ Issue #9 的 Django、Dashboard 與 Firmware 已完成軟體實作；GPIO `23` �
 - 驗證未分類資料、刪除復原、分類器斷線與重複 command。
 - 驗證送料前只有有效距離大於 `8.0 cm` 才可啟動；`0 cm`／Echo timeout 必須拒絕或立即停止並通知操作者。
 - 以滿載漏斗校正最慢可靠驅動脈波及由低往高的最大運轉時間，確認 Dashboard 顯示實際運轉時間與停止原因。
-- 加入第 4 顆 SG90 後，以混合果形連續完成 `20` 顆 HC-SR04 終止送料與完整分類，確認無漏送／雙送、下一個 `180°` 洞口未通過、電壓合規、無抖動／異音、ESP32 reset 或接線異常溫升。
+- 安裝送料 MG996R 與分類器擋臂 SG90 後，以混合果形連續完成 `20` 顆 HC-SR04 終止送料與完整分類；確認無漏送／雙送、下一個 `180°` 洞口未通過，兩組電池盒的空載與動作中電壓合規，六顆伺服無抖動／異音，且無 ESP32 reset、配電端子或線材異常溫升。
 - 模擬最大運轉逾時、送料中感測器無回音與逾時後果實才抵達，確認不補轉且自動送料保持暫停。
 - 分別模擬 ESP32 與 Django 在送料 command／report 邊界重新啟動，確認不會自動重複送料。
 - 建立 Dataset 第二份備份、正式切分、標註與模型驗收。
