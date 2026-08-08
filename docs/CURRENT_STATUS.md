@@ -1,6 +1,6 @@
 # 目前狀態
 
-更新日期：2026-08-08
+更新日期：2026-08-09
 
 本文件是可覆寫的目前快照。完成歷史由 Git、tag 與 release 保存；未完成工作的詳細規格與討論以 GitHub Issues 為準。
 
@@ -14,6 +14,7 @@
 - Dashboard 可管理拍攝 timing、檢查三張照片、分類與刪除；手機頁使用 single in-flight polling。
 - 上游送料測試使用 HC-SR04 回授停止，並具備 `1000～20000 ms`、間距 `500 ms` 的本機 max timeout、sensor unavailable 安全停止與同 revision 校正確認；推薦上限為 `5000 ms`。
 - 正式 Firmware 已按感測、閘門、分類器、HTTPS 與流程控制拆分模組。
+- Django 與模型開發統一使用 `PF` Conda 環境，基準為 Python `3.14.4` 與 Django `5.2.16` LTS。
 - 硬體與模型採獨立 Repository，照片快照存於獨立資料目錄。
 - 目前 Dataset 快照包含 `327` 顆果實與 `981` 張照片，尚待建立正式 train／valid／test 切分與第二份備份。
 

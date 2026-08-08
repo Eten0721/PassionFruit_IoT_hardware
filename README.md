@@ -75,7 +75,7 @@ Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS clie
 
 | 類別 | 技術與裝置 |
 |---|---|
-| Backend | Python `3.10.20`、Django、REST API |
+| Backend | Python `3.14.4`、Django `5.2` LTS、REST API |
 | Frontend | HTML、CSS、JavaScript、WebRTC |
 | Firmware | ESP32、Arduino C++、ESP32Servo |
 | Hardware | HC-SR04、SG90、360° MG996R、位置型 MG996R |

@@ -275,7 +275,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 ### 自動化
 
-- Django：`C:\Users\qoqoo\anaconda3\envs\pf_iot_env\python.exe manage.py test fruit_app`
+- Django：`C:\Users\qoqoo\anaconda3\envs\PF\python.exe -s manage.py test fruit_app`
 - Firmware：以 `esp32:esp32:esp32` 與 `ESP32Servo 3.2.1` 編譯正式 sketch。
 - Repository：`git diff --check`
 
