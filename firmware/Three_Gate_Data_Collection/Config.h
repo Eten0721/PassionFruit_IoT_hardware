@@ -31,7 +31,7 @@ constexpr uint32_t kCooldownMS = 3000UL;
 constexpr uint32_t kIdleCommandPollIntervalMS = 250UL;
 constexpr uint32_t kFeederStopUS = 1500UL;
 constexpr uint32_t kFeederDriveUS = 1300UL;
-constexpr uint32_t kFeederMaxRunMS = 150UL;
+constexpr uint32_t kFeederMaxRunMS = 5000UL;
 constexpr uint32_t kStartSequenceCommandPollIntervalMS = 100UL;
 constexpr uint32_t kAwaitReleaseCommandPollIntervalMS = 50UL;
 

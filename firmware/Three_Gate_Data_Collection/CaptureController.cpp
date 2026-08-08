@@ -660,8 +660,8 @@ bool CaptureController::timingConfigIsValid(const TimingConfig& timing) const {
          timing.feederDriveUS >= 1000UL && timing.feederDriveUS <= 2000UL &&
          timing.feederDriveUS % 10UL == 0 &&
          timing.feederDriveUS != timing.feederStopUS &&
-         timing.feederMaxRunMS >= 50UL && timing.feederMaxRunMS <= 500UL &&
-         timing.feederMaxRunMS % 5UL == 0;
+         timing.feederMaxRunMS >= 1000UL && timing.feederMaxRunMS <= 20000UL &&
+         timing.feederMaxRunMS % 500UL == 0;
 }
 
 bool CaptureController::timingConfigCanApply() const {

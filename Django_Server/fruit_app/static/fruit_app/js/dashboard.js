@@ -457,7 +457,7 @@ const remoteVideo = document.getElementById('remote-video');
             idle_command_poll_interval_ms: 250,
             feeder_stop_us: 1500,
             feeder_drive_us: 1300,
-            feeder_max_run_ms: 150,
+            feeder_max_run_ms: 5000,
             feeder_calibrated: false,
         };
     }
@@ -470,7 +470,7 @@ const remoteVideo = document.getElementById('remote-video');
         timingIdleCommandPollInput.value = timing.idle_command_poll_interval_ms ?? 250;
         timingFeederStopInput.value = timing.feeder_stop_us ?? 1500;
         timingFeederDriveInput.value = timing.feeder_drive_us ?? 1300;
-        timingFeederMaxRunInput.value = timing.feeder_max_run_ms ?? 150;
+        timingFeederMaxRunInput.value = timing.feeder_max_run_ms ?? 5000;
         feederCalibratedInput.checked = Boolean(timing.feeder_calibrated);
     }
 
@@ -545,9 +545,9 @@ const remoteVideo = document.getElementById('remote-video');
             feeder_max_run_ms: readSteppedInput(
                 timingFeederMaxRunInput,
                 '送料最長運轉時間',
-                50,
+                1000,
+                20000,
                 500,
-                5,
                 'ms',
             ),
             feeder_calibrated: feederCalibratedInput.checked,

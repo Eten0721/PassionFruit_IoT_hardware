@@ -810,7 +810,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             'idle_command_poll_interval_ms': 250,
             'feeder_stop_us': 1500,
             'feeder_drive_us': 1300,
-            'feeder_max_run_ms': 150,
+            'feeder_max_run_ms': 5000,
             'feeder_calibrated': False,
         })
         self.assertEqual(views.APP_STATE['capture_timing_revision'], 11)
@@ -836,7 +836,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             'idle_command_poll_interval_ms': 250,
             'feeder_stop_us': 1500,
             'feeder_drive_us': 1300,
-            'feeder_max_run_ms': 150,
+            'feeder_max_run_ms': 5000,
             'feeder_calibrated': False,
         })
         with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
@@ -863,7 +863,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(state['capture_timing_revision'], 13)
         self.assertEqual(state['capture_timing']['feeder_stop_us'], 1520)
         self.assertEqual(state['capture_timing']['feeder_drive_us'], 1250)
-        self.assertEqual(state['capture_timing']['feeder_max_run_ms'], 150)
+        self.assertEqual(state['capture_timing']['feeder_max_run_ms'], 5000)
         self.assertFalse(state['capture_timing']['feeder_calibrated'])
         self.assertNotIn('feeder_run_ms', state['capture_timing'])
         self.assertNotIn('fruit_arrival_warning_ms', state['capture_timing'])
@@ -879,6 +879,27 @@ class DataCollectionFlowTests(SimpleTestCase):
 
         self.assertEqual(state['capture_timing'], views.CAPTURE_TIMING_RECOMMENDED)
         self.assertIn('損壞或驗證失敗', state['capture_timing_warning'])
+        self.assertFalse(state['capture_timing']['feeder_calibrated'])
+
+    def test_existing_short_feeder_timeout_is_upgraded_and_uncalibrated(self):
+        self.capture_timing_path.write_text(json.dumps({
+            'revision': 21,
+            'capture_timing': {
+                **views.CAPTURE_TIMING_RECOMMENDED,
+                'feeder_stop_us': 1520,
+                'feeder_drive_us': 1250,
+                'feeder_max_run_ms': 150,
+                'feeder_calibrated': True,
+            },
+        }), encoding='utf-8')
+        views.reset_runtime_state_for_tests()
+
+        state = self.client.get('/api/state/').json()
+
+        self.assertEqual(state['capture_timing_revision'], 22)
+        self.assertEqual(state['capture_timing']['feeder_stop_us'], 1520)
+        self.assertEqual(state['capture_timing']['feeder_drive_us'], 1250)
+        self.assertEqual(state['capture_timing']['feeder_max_run_ms'], 5000)
         self.assertFalse(state['capture_timing']['feeder_calibrated'])
 
     def test_idle_command_poll_interval_validates_range_and_step(self):
@@ -952,7 +973,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             **views.CAPTURE_TIMING_RECOMMENDED,
             'feeder_stop_us': 1510,
             'feeder_drive_us': 1310,
-            'feeder_max_run_ms': 155,
+            'feeder_max_run_ms': 20000,
             'feeder_calibrated': False,
         }
         configured = self._post_json('/api/capture_timing/', timing)
@@ -978,7 +999,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         )
         self.assertEqual(command_text['feeder_stop_us'], '1510')
         self.assertEqual(command_text['feeder_drive_us'], '1310')
-        self.assertEqual(command_text['feeder_max_run_ms'], '155')
+        self.assertEqual(command_text['feeder_max_run_ms'], '20000')
 
         acknowledged = self._report('timing_config_applied', timing_revision=2)
         self.assertEqual(acknowledged.status_code, 200)
@@ -990,13 +1011,13 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIsNone(payload['active_fruit_id'])
         self.assertEqual(payload['motor_command']['command'], 'feed_one')
         self.assertEqual(payload['motor_command']['feed_context'], 'calibration')
-        self.assertEqual(payload['motor_command']['feeder_max_run_ms'], 155)
+        self.assertEqual(payload['motor_command']['feeder_max_run_ms'], 20000)
 
         completed = self._report(
             'feed_cycle_completed',
             command_id=payload['motor_command']['command_id'],
             feeder_elapsed_ms=84,
-            feeder_max_run_ms=155,
+            feeder_max_run_ms=20000,
             feeder_stop_reason='hcsr04',
         )
         self.assertEqual(completed.status_code, 200)
@@ -1016,7 +1037,7 @@ class DataCollectionFlowTests(SimpleTestCase):
 
         changed = self._post_json('/api/capture_timing/', {
             **timing,
-            'feeder_max_run_ms': 160,
+            'feeder_max_run_ms': 19500,
             'feeder_calibrated': True,
         })
         self.assertEqual(changed.status_code, 200)
@@ -1033,7 +1054,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             **views.CAPTURE_TIMING_RECOMMENDED,
             'feeder_stop_us': 1510,
             'feeder_drive_us': 1310,
-            'feeder_max_run_ms': 155,
+            'feeder_max_run_ms': 5000,
             'feeder_calibrated': False,
         }
         mechanical_change = self._post_json('/api/capture_timing/', profile)
@@ -1063,10 +1084,31 @@ class DataCollectionFlowTests(SimpleTestCase):
 
         invalid_step = self._post_json('/api/capture_timing/', {
             **profile,
-            'feeder_max_run_ms': 157,
+            'feeder_max_run_ms': 5250,
         })
         self.assertEqual(invalid_step.status_code, 400)
         self.assertEqual(invalid_step.json()['reason'], 'capture_timing_invalid_step')
+
+        fractional = self._post_json('/api/capture_timing/', {
+            **profile,
+            'feeder_max_run_ms': 1000.9,
+        })
+        self.assertEqual(fractional.status_code, 400)
+        self.assertEqual(fractional.json()['reason'], 'capture_timing_invalid_value')
+
+        for valid_max_run_ms in (1000, 20000):
+            response = self._post_json('/api/capture_timing/', {
+                **profile,
+                'feeder_max_run_ms': valid_max_run_ms,
+            })
+            self.assertEqual(response.status_code, 200)
+
+        for invalid_max_run_ms in (500, 1250, 20500):
+            response = self._post_json('/api/capture_timing/', {
+                **profile,
+                'feeder_max_run_ms': invalid_max_run_ms,
+            })
+            self.assertEqual(response.status_code, 400)
 
     def test_feeder_test_requires_capability_latest_ack_and_safe_idle(self):
         self._mark_esp32_online()
@@ -1154,8 +1196,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         result = self._report(
             'feeder_max_run_timeout',
             command_id=started['motor_command']['command_id'],
-            feeder_elapsed_ms=150,
-            feeder_max_run_ms=150,
+            feeder_elapsed_ms=5000,
+            feeder_max_run_ms=5000,
             feeder_stop_reason='max_run_timeout',
         )
 
@@ -2028,6 +2070,14 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn("'開始執行（待實機驗證）'", dashboard_js)
         self.assertIn('data.operator_alert', dashboard_js)
         self.assertIn('自行暫停、排除狀況後重新開始', dashboard_js)
+        self.assertIn('feeder_max_run_ms: 5000', dashboard_js)
+        self.assertIn("1000,\n                20000,\n                500,", dashboard_js)
+        self.assertIn(
+            'id="timing-feeder-max-run" type="number" min="1000" max="20000" step="500"',
+            dashboard_html,
+        )
+        self.assertIn('推薦：5000 ms', dashboard_html)
+        self.assertIn('警告 : 若設定過長將導致連續送料之情形發生', dashboard_html)
 
     def test_firmware_boot_id_uses_per_boot_hardware_randomness(self):
         project_root = Path(__file__).resolve().parents[2]
@@ -2062,6 +2112,16 @@ class DataCollectionFlowTests(SimpleTestCase):
         )
         self.assertIn('if (stopReason == "hcsr04")', source)
         self.assertIn('triggerArmed_ = false;', source)
+        config = (
+            Path(__file__).resolve().parents[2]
+            / 'firmware'
+            / 'Three_Gate_Data_Collection'
+            / 'Config.h'
+        ).read_text(encoding='utf-8')
+        self.assertIn('kFeederMaxRunMS = 5000UL', config)
+        self.assertIn('timing.feederMaxRunMS >= 1000UL', source)
+        self.assertIn('timing.feederMaxRunMS <= 20000UL', source)
+        self.assertIn('timing.feederMaxRunMS % 500UL == 0', source)
 
     def _post_json(self, url, payload=None):
         return self.client.post(

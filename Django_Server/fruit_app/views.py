@@ -50,7 +50,7 @@ FINAL_GATE_RETURN_DELAY_MS = 300
 IDLE_COMMAND_POLL_INTERVAL_MS = 250
 FEEDER_STOP_US = 1500
 FEEDER_DRIVE_US = 1300
-FEEDER_MAX_RUN_MS = 150
+FEEDER_MAX_RUN_MS = 5000
 CAPTURE_TIMING_RECOMMENDED = {
     'first_station_settle_ms': FIRST_STATION_SETTLE_MS,
     'servo_settle_ms': SERVO_SETTLE_MS,
@@ -78,12 +78,12 @@ CAPTURE_TIMING_FIELD_LIMITS = {
     'idle_command_poll_interval_ms': (100, 5000),
     'feeder_stop_us': (1400, 1600),
     'feeder_drive_us': (1000, 2000),
-    'feeder_max_run_ms': (50, 500),
+    'feeder_max_run_ms': (1000, 20000),
 }
 CAPTURE_TIMING_FIELD_STEPS = {
     'feeder_stop_us': 5,
     'feeder_drive_us': 10,
-    'feeder_max_run_ms': 5,
+    'feeder_max_run_ms': 500,
 }
 CAPTURE_TIMING_FIELD_UNITS = {
     'feeder_stop_us': 'us',
@@ -1398,7 +1398,18 @@ def _read_capture_timing_config(path):
 
 
 def _migrate_feeder_profile(timing):
-    if not ({'feeder_run_ms', 'fruit_arrival_warning_ms'} & timing.keys()):
+    deprecated_fields = {'feeder_run_ms', 'fruit_arrival_warning_ms'}
+    raw_max_run_ms = timing.get('feeder_max_run_ms')
+    try:
+        legacy_max_run_ms = int(raw_max_run_ms)
+        has_legacy_max_run = (
+            50 <= legacy_max_run_ms <= 500
+            and legacy_max_run_ms % 5 == 0
+        )
+    except (TypeError, ValueError):
+        has_legacy_max_run = raw_max_run_ms is None
+
+    if not (deprecated_fields & timing.keys()) and not has_legacy_max_run:
         return timing, False
     timing.pop('feeder_run_ms', None)
     timing.pop('fruit_arrival_warning_ms', None)

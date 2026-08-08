@@ -39,8 +39,10 @@ def normalise(
                 )
             continue
         try:
+            if isinstance(raw_value, float) and not raw_value.is_integer():
+                raise ValueError
             value = int(raw_value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise TimingValidationError(
                 f'{field} 必須是整數毫秒。',
                 'capture_timing_invalid_value',
