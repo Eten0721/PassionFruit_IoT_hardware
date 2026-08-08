@@ -1,177 +1,110 @@
-# 百香果 IoT 系統快速部署
+# 百香果 IoT 三站影像採集與分類系統
 
-Windows 電腦執行 Django，手機透過 `/camera/` 拍照，ESP32 則控制四顆 SG90（三個拍攝平台閘門與分類器擋臂）、360° MG996R 上游送料與位置型 MG996R 分類器。這份 README 只說明如何在同學的 Windows 電腦快速復現並啟動系統；伺服供電與共地方式見 [`hardware_notes/硬體接線與驗收摘要.md`](hardware_notes/硬體接線與驗收摘要.md)。
+本專案整合 ESP32、Django、手機相機與伺服機構，建立百香果單顆送料、三站固定角度拍攝、Dataset 管理與實體分級流程。現階段重點是穩定取得每顆果實的三張清晰照片，並由人工完成四級分類；AI 推論會在 Dataset 與模型通過驗收後接入既有流程。
 
-## 1. 下載專案
+![三站 L 型閘門與拍攝平台](docs/images/hardware-development/improved-l-shaped-gates.png)
 
-先安裝 Git，再於 PowerShell 執行：
+## 專案目標
 
-```powershell
-git clone https://github.com/Eten0721/PassionFruit_IoT_hardware.git
-cd PassionFruit_IoT_hardware
+百香果外形、大小與蒂頭方向差異明顯，滾動拍攝容易出現模糊、角度不一致或漏拍。本系統讓果實依序停在三個固定站點，確認照片保存成功後才放行下一個閘門，建立可追蹤、可重拍且適合後續模型訓練的影像資料。
+
+預期完整流程為：
+
+1. 上游送料筒送出一顆百香果。
+2. HC-SR04 確認果實抵達並停止送料馬達。
+3. 三組閘門讓果實依序停在固定站點。
+4. 手機依 Django 指示拍攝並上傳每站照片。
+5. Django 原子保存三張照片，管理 Dataset 與分類狀態。
+6. 現階段由操作員人工分級；未來由 AI 提供結構化判斷並保留人工覆核。
+7. 位置型 MG996R 將果實導向上等、中等、下等或加工出口。
+
+## 系統架構
+
+```mermaid
+flowchart LR
+    Dashboard["Dashboard<br/>操作與狀態"] --> Django["Django<br/>中央狀態機"]
+    Camera["手機相機<br/>預覽、拍攝與上傳"] <--> Django
+    Django <--> ESP32["ESP32 Firmware<br/>命令輪詢與回報"]
+    ESP32 --> Hardware["HC-SR04、送料馬達<br/>三站閘門與分類器"]
+    Django --> Dataset["Dataset<br/>三站照片與 metadata"]
+    Dataset -. 規劃中 .-> AI["獨立 AI 模型<br/>四級辨識"]
+    AI -. 結構化結果 .-> Django
 ```
 
-## 2. 建立 Python `3.10.20` 環境
+Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS client 輪詢命令，在本機負責硬體安全停止；手機只處理相機 readiness、單站拍攝與上傳。模型訓練與推論位於獨立 Repository，不由本 Repository 追蹤權重或訓練輸出。
 
-以下兩種方式擇一使用。推薦 Anaconda，因為與目前開發環境一致。
+## 我的主要負責項目
 
-### 方法 A：Anaconda（推薦）
+- 設計 ESP32 Firmware，整合 HC-SR04、三組 SG90 閘門、送料 MG996R 與分類 MG996R。
+- 建立 Django 與 ESP32 的 API、command ID、狀態機、互斥與 retry 流程。
+- 整合手機相機頁、Dashboard、三站拍攝與 Dataset 生命週期。
+- 設計並迭代三閘門、上游送料筒、徑向撥片與分類機構。
+- 規劃區網部署、外部供電、共地、感測器降壓與實機驗收方式。
+- 維護系統規格、架構決策、硬體紀錄與安全稽核文件。
 
-安裝 Anaconda 或 Miniconda，開啟 Anaconda Prompt：
+## 目前進度
 
-```powershell
-conda create -n pf_iot_env python=3.10.20 pip -y
-conda activate pf_iot_env
-python --version
-```
+最新進度與數值以 [目前狀態](docs/CURRENT_STATUS.md) 為準；未完成工作的詳細規格與討論由 [GitHub Issues](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues) 追蹤。
 
-### 方法 B：Python 內建 `venv`
+### 已完成
 
-先在 Windows 安裝 CPython `3.10.20`，再於 repository 根目錄執行：
+- Django 中央狀態機可協調 HC-SR04、手機單站拍攝與 ESP32 三站閘門。
+- 每顆果實保存三張站點照片，照片原子保存成功後才放行下一閘門。
+- Dashboard 可管理拍攝 timing、檢查照片、人工分類、刪除與送料校正。
+- Capture、送料與 sorter 共用單一 motor command slot，command ID 與 retry 具備冪等保護。
+- 人工分類會先提交 Dataset 與 metadata，再驅動位置型 MG996R；硬體失敗不回滾資料。
+- HC-SR04 測試送料具備回授停止、最大運轉時間與感測器 unavailable 安全停止。
+- 正式 Firmware 已依感測、閘門、分類器、HTTPS 與流程控制拆分模組。
 
-```powershell
-py -3.10 -m venv .venv
-Set-ExecutionPolicy -Scope Process Bypass
-.\.venv\Scripts\Activate.ps1
-python --version
-```
+### 開發中
 
-兩種方式的 `python --version` 都應顯示：
+- [Issue #1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1)：安裝並校正一體式送料筒、360° MG996R 與四片徑向撥片。
+- [Issue #2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2)：加入分類器 SG90 擋臂與分類後出料機構。
+- 正式自動運轉維持停用，待送料硬體完成校正與實機驗收後再開放。
+
+### 待實機驗證
+
+- 使用同一批 `10` 顆果實完成送料校正、空筒逾時與不同剩餘量測試。
+- 使用混合果形連續完成 `20` 顆送料、三站拍攝與實體分類。
+- 驗證 Wi-Fi／TLS timeout、手機未上傳、重複 command 與 Django／ESP32 重新啟動。
+- 量測雙電池盒在動作中的電壓與溫升，確認六顆伺服無抖動、異音或 ESP32 reset。
+- 建立 Dataset 第二份備份、正式 train／valid／test 切分、標註與模型驗收。
+- 串接正式 AI 推論、信心門檻、人工覆核與版本管理；目前仍由人工分類。
+
+## 技術組成
+
+| 類別 | 技術與裝置 |
+|---|---|
+| Backend | Python `3.10.20`、Django、REST API |
+| Frontend | HTML、CSS、JavaScript、WebRTC |
+| Firmware | ESP32、Arduino C++、ESP32Servo |
+| Hardware | HC-SR04、SG90、360° MG996R、位置型 MG996R |
+| Data | JPEG、CSV metadata、檔案系統 Dataset |
+| Engineering | Git、GitHub Issues、ADR、模組化狀態機與實機驗收 |
+
+## Repository 結構
 
 ```text
-Python 3.10.20
+PassionFruit_IoT_hardware/
+├── Django_Server/      # Dashboard、手機相機、API、狀態機與 Dataset 管理
+├── firmware/           # 正式 ESP32 Firmware 與硬體測試程式
+├── decision_layer/     # 未來 AI 決策層的輸入與輸出契約
+├── docs/               # 架構、規格、現況、ADR、部署與硬體紀錄
+└── hardware_notes/     # 接線安全、驗收摘要與機構參考圖
 ```
 
-## 3. 安裝 Django 並建立本機設定
+模型訓練與推論由獨立的 `ps-quality-detection-system` Repository 維護；Dataset、原始照片、模型權重與訓練輸出不納入本 Repository。
 
-確認目前位於 repository 根目錄，且虛擬環境已啟用：
+## 文件導覽
 
-```powershell
-python -m pip install -r Django_Server\requirements.txt
-Copy-Item .env.example .env
-python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
-notepad .env
-```
+- [環境部署說明](docs/環境部署說明文件.md)
+- [專案脈絡與架構](docs/PROJECT_CONTEXT.md)
+- [目前狀態](docs/CURRENT_STATUS.md)
+- [送料、三站資料採集與分類規格](docs/DATA_COLLECTION_SPEC.md)
+- [送料、三閘門與分類器硬體開發紀錄](docs/HARDWARE_DEVELOPMENT_REPORT.md)
+- [硬體接線與驗收摘要](hardware_notes/硬體接線與驗收摘要.md)
+- [架構決策索引](docs/adr/README.md)
+- [Django／ESP32 安全與品質稽核](docs/SECURITY_AUDIT_2026-07-11.md)
 
-將剛才產生的字串填入 `.env`：
-
-```dotenv
-DJANGO_SECRET_KEY=貼上剛才產生的隨機字串
-```
-
-目前資料採集由檔案系統管理，不使用 Django database model，因此不需要執行 migration。
-
-## 4. A Plan：使用伊藤的 `iPhone 17 Pro` 熱點
-
-預設讓 Windows 電腦、ESP32 與拍照手機都使用伊藤的 iPhone 個人熱點，Django 電腦固定為 `172.20.10.3`。
-
-### 固定 Windows 電腦 IP
-
-1. 先讓 Windows 電腦以自動取得 IP 的方式連上 iPhone 熱點。
-2. 執行 `ipconfig /all`，記下 Wi-Fi 的 Subnet Mask；gateway 預期為 `172.20.10.1`。
-3. 按 `Win + R`，輸入 `ncpa.cpl`。
-4. 對「Wi-Fi」按右鍵 →「內容」→「網際網路通訊協定第 4 版（TCP/IPv4）」。
-5. 選擇「使用下列的 IP 位址」，填入：
-   - IP 位址：`172.20.10.3`
-   - 子網路遮罩：使用前一步 `ipconfig /all` 顯示的值
-   - 預設閘道：`172.20.10.1`
-   - 慣用 DNS：`172.20.10.1`
-6. 重新連線後執行 `ipconfig`，確認 IPv4 已變成 `172.20.10.3`。
-
-不要在沒有確認的情況下固定填入 `255.255.255.0`；子網路遮罩以 iPhone 熱點當下提供的值為準。
-
-### 開放 Windows 防火牆
-
-以系統管理員身分開啟 PowerShell：
-
-```powershell
-Set-NetConnectionProfile -InterfaceAlias "Wi-Fi" -NetworkCategory Private
-New-NetFirewallRule -DisplayName "PassionFruit Django 8000" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8000 -Profile Private -RemoteAddress LocalSubnet
-```
-
-### 確認 ESP32 Server
-
-正式 firmware 的本機設定檔位於：
-
-```text
-firmware/Three_Gate_Data_Collection/secrets.h
-```
-
-A Plan 使用 `172.20.10.3` 作為 Django 主機。複製 `secrets.example.h` 後只替換主機 IP 與 Wi-Fi credentials，不修改範例中的 endpoint path；API 定義見 [`docs/DATA_COLLECTION_SPEC.md`](docs/DATA_COLLECTION_SPEC.md)。
-
-`secrets.h` 也必須填入 iPhone 熱點的 SSID 與密碼，而且不可提交到 Git。
-
-## 5. 啟動系統
-
-在 `Django_Server` 目錄執行：
-
-```powershell
-python manage.py runsslserver 0.0.0.0:8000
-```
-
-電腦開啟 Dashboard：
-
-```text
-https://172.20.10.3:8000/dashboard/
-```
-
-手機開啟相機頁：
-
-```text
-https://172.20.10.3:8000/camera/
-```
-
-第一次開啟會顯示自簽憑證警告。確認網址是自己的 Django 電腦後，選擇繼續前往並允許相機權限。手機頁面使用期間不可鎖屏或切到背景。
-
-部署成功時應符合：
-
-- 電腦可以開啟 Dashboard。
-- 手機可以開啟相機並顯示預覽。
-- ESP32 Serial 顯示 Wi-Fi connected，且能向 Django 輪詢 command。
-
-## 6. B Plan：改用同學家的 Wi-Fi
-
-離開 iPhone 熱點後，原本固定的 `172.20.10.3` 不能直接帶到其他網路使用。
-
-1. 到 Windows 的 TCP/IPv4 設定，改回「自動取得 IP 位址」與「自動取得 DNS 伺服器位址」。
-2. 讓 Windows 電腦與手機連上同學家的同一個 Wi-Fi；不要使用訪客網路。
-3. 執行 `ipconfig`，找到實際 Wi-Fi IPv4，例如 `192.168.0.54`。
-4. 若本機還沒有 `secrets.h`，先於 repository 根目錄執行：
-
-```powershell
-Copy-Item firmware\Three_Gate_Data_Collection\secrets.example.h firmware\Three_Gate_Data_Collection\secrets.h
-```
-
-5. 修改 `firmware/Three_Gate_Data_Collection/secrets.h` 的四項設定：
-   - `ssid`：同學家的 Wi-Fi 名稱
-   - `password`：同學家的 Wi-Fi 密碼
-   - `commandUrl`：改成新的電腦 IPv4
-   - `reportUrl`：改成新的電腦 IPv4
-6. 使用既有的 ESP32 燒錄環境重新燒入正式 firmware。若尚未準備燒錄環境，請參閱 [ESP32 快速燒錄準備](Necessary_library/README.md)。
-7. Django 仍執行 `python manage.py runsslserver 0.0.0.0:8000`，不需修改 Django 或 `.env`。
-8. 手機改用新的電腦 IP 開啟 `/camera/`。
-
-若新 IP 是 `192.168.0.54`，更新 `secrets.h` 的 Wi-Fi credentials 與兩個 URL 的主機部分；保留範例中的 endpoint path。
-
-```cpp
-const char* ssid = "同學家的 Wi-Fi 名稱";
-const char* password = "同學家的 Wi-Fi 密碼";
-```
-
-手機網址則改為：
-
-```text
-https://192.168.0.54:8000/camera/
-```
-
-如果同學家的路由器啟用了 client isolation，裝置之間可能無法連線，此時改回 iPhone 熱點方案。
-
-## 7. Dataset 位置
-
-照片、分類資料與 `metadata.csv` 位於：
-
-```text
-Django_Server/dataset/
-```
-
-此目錄已被 Git 忽略，`git push` 不會備份 dataset。需要保留照片時，請另外備份整個 `Django_Server/dataset/`。
+> [!CAUTION]
+> 現行安全模型只適用可信任且隔離的實驗室區網。將系統部署至公開網路前，必須完成 TLS 憑證驗證、API authentication、production settings 與其他安全稽核項目。
