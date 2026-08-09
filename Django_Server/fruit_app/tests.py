@@ -1207,21 +1207,252 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIsNone(views.APP_STATE['active_fruit_id'])
         self.assertFalse((self.dataset_root / 'temp' / 'fruit_001').exists())
 
-    def test_formal_auto_run_remains_disabled_pending_hardware_validation(self):
+    def test_production_feeder_timeout_stops_auto_run_and_reports_metrics(self):
+        self._prepare_auto_run(camera_ready=True)
+        started = self._post_json('/api/auto_run/', {'enabled': True}).json()
+        command = started['motor_command']
+
+        response = self._report(
+            'feeder_max_run_timeout',
+            command_id=command['command_id'],
+            feeder_elapsed_ms=5000,
+            feeder_max_run_ms=command['feeder_max_run_ms'],
+            feeder_stop_reason='max_run_timeout',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        state = self.client.get('/api/state/').json()
+        self.assertFalse(state['auto_run_enabled'])
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertEqual(state['auto_run_recovery_reason'], 'feeder_max_run_timeout')
+        self.assertEqual(state['operator_alert']['reason'], 'feeder_max_run_timeout')
+        self.assertEqual(state['operator_alert']['feeder_elapsed_ms'], 5000)
+        self.assertEqual(
+            state['operator_alert']['feeder_max_run_ms'],
+            command['feeder_max_run_ms'],
+        )
+        self.assertEqual(state['operator_alert']['feeder_stop_reason'], 'max_run_timeout')
+        self.assertIsNone(state['active_fruit_id'])
+
+    def test_late_fruit_after_timeout_finishes_without_next_feed(self):
+        self._prepare_auto_run(camera_ready=True)
+        started = self._post_json('/api/auto_run/', {'enabled': True}).json()
+        feed_command = started['motor_command']
+        self._report(
+            'feeder_max_run_timeout',
+            command_id=feed_command['command_id'],
+            feeder_elapsed_ms=feed_command['feeder_max_run_ms'],
+            feeder_max_run_ms=feed_command['feeder_max_run_ms'],
+            feeder_stop_reason='max_run_timeout',
+        )
+        waiting = self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-auto',
+            'capability': 'feeder_v1',
+            'feeder_state': 'awaiting_fruit',
+            'feeder_sensor_state': 'blocked',
+            'last_feed_command_id': str(feed_command['command_id']),
+        }).json()
+        self.assertEqual(waiting['auto_trigger_enabled'], 1)
+
+        station_1 = self._report(
+            'hcsr04_station_1_ready',
+            trigger_id='late-after-timeout-001',
+            gates_home=1,
+            station_settled=1,
+            station_index=1,
+        ).json()
+        fruit_id = station_1['fruit_id']
+        self.assertFalse(views.APP_STATE['auto_run_enabled'])
+        self.assertEqual(
+            self._upload_station(fruit_id, station_1['capture_token'], 1).status_code,
+            200,
+        )
+
+        command = self._esp32_command()
+        station_2 = self._report(
+            'station_2_ready',
+            station_index=2,
+            command_id=command['command_id'],
+        ).json()
+        self.assertEqual(
+            self._upload_station(fruit_id, station_2['capture_token'], 2).status_code,
+            200,
+        )
+
+        command = self._esp32_command()
+        station_3 = self._report(
+            'station_3_ready',
+            station_index=3,
+            command_id=command['command_id'],
+        ).json()
+        self.assertEqual(
+            self._upload_station(fruit_id, station_3['capture_token'], 3).status_code,
+            200,
+        )
+
+        command = self._esp32_command()
+        self.assertEqual(
+            self._report(
+                'capture_sequence_finished',
+                command_id=command['command_id'],
+            ).status_code,
+            200,
+        )
+        classified = self._post_json('/api/classify/', {'label': '上等'})
+        self.assertTrue(classified.json()['sorter_command_queued'])
+        self._complete_sorter()
+        self.assertFalse(views.APP_STATE['auto_run_enabled'])
+        self.assertIsNone(views.APP_STATE['motor_command'])
+
+    def test_production_feeder_sensor_not_clear_stops_auto_run(self):
+        state = self._report_production_feed_failure(
+            'feeder_sensor_not_clear',
+            stop_reason='feeder_sensor_not_clear',
+        )
+
+        self.assertEqual(state['auto_run_recovery_reason'], 'feeder_sensor_not_clear')
+        self.assertIn('大於 8.0 cm', state['operator_alert']['instruction'])
+
+    def test_production_feeder_sensor_unavailable_stops_auto_run(self):
+        state = self._report_production_feed_failure(
+            'feeder_sensor_unavailable',
+            stop_reason='feeder_sensor_unavailable',
+        )
+
+        self.assertEqual(state['auto_run_recovery_reason'], 'feeder_sensor_unavailable')
+        self.assertIn('Echo 分壓', state['operator_alert']['instruction'])
+        command = self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-auto',
+            'capability': 'feeder_v1',
+            'feeder_state': 'idle',
+            'feeder_sensor_state': 'unavailable',
+            'last_feed_command_id': '0',
+        }).json()
+        self.assertEqual(command['auto_trigger_enabled'], 0)
+
+    def test_non_feeder_alert_omits_stale_feeder_metrics(self):
+        views.APP_STATE['feeder_test_result'] = {
+            'elapsed_ms': 5000,
+            'max_run_ms': 5000,
+            'stop_reason': 'max_run_timeout',
+        }
+        views.APP_STATE['last_error_reason'] = 'camera_upload_timeout'
+
+        alert = self.client.get('/api/state/').json()['operator_alert']
+
+        self.assertEqual(alert['reason'], 'camera_upload_timeout')
+        self.assertIsNone(alert['feeder_elapsed_ms'])
+        self.assertIsNone(alert['feeder_max_run_ms'])
+        self.assertIsNone(alert['feeder_stop_reason'])
+
+    def test_auto_run_stays_disabled_until_esp32_is_online(self):
         state = self.client.get('/api/state/').json()
         self.assertFalse(state['can_start_auto_run'])
         self.assertEqual(
             state['auto_run_disabled_reason'],
-            'feeder_hardware_validation_required',
+            'esp32_offline',
         )
         response = self._post_json('/api/auto_run/', {'enabled': True})
         self.assertEqual(response.status_code, 409)
         self.assertEqual(
             response.json()['reason'],
-            'feeder_hardware_validation_required',
+            'esp32_offline',
         )
 
-    def legacy_auto_run_requires_fresh_live_camera_and_queues_production_feed(self):
+    def test_auto_run_requires_feeder_capability(self):
+        self._prepare_auto_run(camera_ready=True)
+        self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-auto',
+            'capability': '',
+            'feeder_state': 'idle',
+            'feeder_sensor_state': 'clear',
+            'last_feed_command_id': '0',
+        })
+
+        response = self._post_json('/api/auto_run/', {'enabled': True})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'feeder_capability_missing')
+
+    def test_auto_run_requires_clear_feeder_sensor(self):
+        self._prepare_auto_run(camera_ready=True)
+        self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-auto',
+            'capability': 'feeder_v1',
+            'feeder_state': 'idle',
+            'feeder_sensor_state': 'blocked',
+            'last_feed_command_id': '0',
+        })
+
+        response = self._post_json('/api/auto_run/', {'enabled': True})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'feeder_sensor_not_clear')
+
+    def test_auto_run_rejects_unavailable_feeder_sensor(self):
+        self._prepare_auto_run(camera_ready=True)
+        self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-auto',
+            'capability': 'feeder_v1',
+            'feeder_state': 'idle',
+            'feeder_sensor_state': 'unavailable',
+            'last_feed_command_id': '0',
+        })
+
+        response = self._post_json('/api/auto_run/', {'enabled': True})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'feeder_sensor_unavailable')
+
+    def test_auto_run_requires_latest_timing_revision_ack(self):
+        self._prepare_auto_run(camera_ready=True)
+        updated = self._post_json('/api/capture_timing/', {
+            **views.CAPTURE_TIMING_RECOMMENDED,
+            'first_station_settle_ms': 350,
+            'feeder_calibrated': True,
+        })
+        self.assertEqual(updated.status_code, 200)
+
+        response = self._post_json('/api/auto_run/', {'enabled': True})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'feeder_timing_not_applied')
+
+    def test_auto_run_requires_current_feeder_calibration(self):
+        self._prepare_auto_run(camera_ready=True)
+        unconfirmed = self._post_json('/api/capture_timing/', {
+            **views.CAPTURE_TIMING_RECOMMENDED,
+            'feeder_calibrated': False,
+        })
+        self.assertEqual(unconfirmed.status_code, 200)
+
+        response = self._post_json('/api/auto_run/', {'enabled': True})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'feeder_calibration_required')
+
+    def test_auto_run_requires_capture_and_sorter_idle(self):
+        self._prepare_auto_run(camera_ready=True)
+        self._complete_auto_session('fruit_001')
+        classified = self._post_json('/api/classify/', {'label': '上等'})
+        self.assertTrue(classified.json()['sorter_command_queued'])
+
+        response = self._post_json('/api/auto_run/', {'enabled': True})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'classifier_busy')
+
+    def test_auto_run_rejects_active_fruit(self):
+        self._prepare_auto_run(camera_ready=True)
+        triggered = self._report('hcsr04_trigger')
+        self.assertEqual(triggered.status_code, 200)
+
+        response = self._post_json('/api/auto_run/', {'enabled': True})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'active_fruit_exists')
+
+    def test_auto_run_requires_fresh_live_camera_and_queues_production_feed(self):
         self._prepare_auto_run()
 
         with mock.patch.object(views.time, 'monotonic', return_value=100):
@@ -1246,18 +1477,19 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(started.json()['motor_command']['command'], 'feed_one')
         self.assertEqual(started.json()['motor_command']['feed_context'], 'production')
 
-    def legacy_sorter_completion_is_the_only_boundary_that_queues_next_feed(self):
+    def test_sorter_completion_is_the_only_boundary_that_queues_next_feed(self):
         self._prepare_auto_run(camera_ready=True)
         started = self._post_json('/api/auto_run/', {'enabled': True}).json()
         feed_command_id = started['motor_command']['command_id']
 
-        completed = self._report('feed_cycle_completed', command_id=feed_command_id)
+        completed = self._report_feed_success(started['motor_command'])
         self.assertEqual(completed.status_code, 200)
         self.assertIsNone(views.APP_STATE['motor_command'])
         waiting = self.client.get('/api/esp32/command/', {
             'boot_id': 'boot-auto',
             'capability': 'feeder_v1',
             'feeder_state': 'awaiting_fruit',
+            'feeder_sensor_state': 'clear',
             'last_feed_command_id': str(feed_command_id),
         })
         self.assertEqual(waiting.status_code, 200)
@@ -1282,7 +1514,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(views.APP_STATE['motor_command']['command'], 'feed_one')
         self.assertEqual(views.APP_STATE['motor_command']['feed_context'], 'production')
 
-    def legacy_esp32_restart_during_feed_stops_auto_run_without_resending(self):
+    def test_esp32_restart_during_feed_stops_auto_run_without_resending(self):
         self._prepare_auto_run(camera_ready=True)
         started = self._post_json('/api/auto_run/', {'enabled': True}).json()
         feed_command_id = started['motor_command']['command_id']
@@ -1291,6 +1523,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             'boot_id': 'boot-restarted',
             'capability': 'feeder_v1',
             'feeder_state': 'idle',
+            'feeder_sensor_state': 'clear',
             'last_feed_command_id': '0',
         })
         self.assertEqual(restarted.status_code, 200)
@@ -1307,7 +1540,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertTrue(recovered.json()['auto_run_enabled'])
         self.assertEqual(recovered.json()['motor_command']['command'], 'feed_one')
 
-    def legacy_hcsr04_event_remains_available_after_esp32_restarts_during_feed(self):
+    def test_hcsr04_event_remains_available_after_esp32_restarts_during_feed(self):
         self._prepare_auto_run(camera_ready=True)
         self._post_json('/api/auto_run/', {'enabled': True})
         self.client.get('/api/esp32/command/', {
@@ -1323,12 +1556,13 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(views.APP_STATE['motor_command']['command'], 'start_sequence')
         self.assertFalse(views.APP_STATE['auto_run_enabled'])
 
-    def legacy_awaiting_fruit_poll_rebuilds_unconfirmed_feed_without_resending(self):
+    def test_awaiting_fruit_poll_rebuilds_unconfirmed_feed_without_resending(self):
         self._prepare_auto_run(camera_ready=True)
         response = self.client.get('/api/esp32/command/', {
             'boot_id': 'boot-after-django-restart',
             'capability': 'feeder_v1',
             'feeder_state': 'awaiting_fruit',
+            'feeder_sensor_state': 'clear',
             'last_feed_command_id': '17',
         })
         self.assertEqual(response.status_code, 200)
@@ -1355,70 +1589,25 @@ class DataCollectionFlowTests(SimpleTestCase):
             'boot_id': 'boot-after-django-restart',
             'capability': 'feeder_v1',
             'feeder_state': 'awaiting_fruit',
+            'feeder_sensor_state': 'clear',
             'last_feed_command_id': '17',
         })
         self.assertEqual(dispatch.json()['command_id'], recovery_command_id)
         self.assertTrue(views.APP_STATE['auto_run_enabled'])
         self.assertIsNone(views.APP_STATE['auto_run_recovery_reason'])
 
-    def legacy_delayed_fruit_report_warns_without_replacing_hcsr04_flow(self):
-        self._prepare_auto_run(camera_ready=True)
-        started = self._post_json('/api/auto_run/', {'enabled': True}).json()
-        command_id = started['motor_command']['command_id']
-        self._report('feed_cycle_completed', command_id=command_id)
-
-        delayed = self._report('fruit_arrival_delayed', command_id=command_id)
-        self.assertEqual(delayed.status_code, 200)
-        self.assertEqual(views.APP_STATE['last_error_reason'], 'fruit_arrival_delayed')
-        self.assertEqual(views.APP_STATE['status'], 'waiting_fruit')
-        self.assertIsNone(views.APP_STATE['motor_command'])
-        self.assertEqual(
-            self.client.get('/api/state/').json()['operator_alert']['command_id'],
-            command_id,
-        )
-        alert = self.client.get('/api/state/').json()['operator_alert']
-        self.assertEqual(alert['location'], 'upstream_feeder / HC-SR04')
-        self.assertEqual(alert['command'], 'feed_one')
-
-        duplicate = self._report('fruit_arrival_delayed', command_id=command_id)
-        self.assertEqual(duplicate.status_code, 200)
-        self.assertTrue(duplicate.json()['duplicate'])
-        self.assertEqual(
-            [entry['event'] for entry in views.APP_STATE['transition_trace']].count(
-                'fruit_arrival_delayed'
-            ),
-            1,
-        )
-
-        self._complete_auto_session('fruit_001')
-        classified = self._post_json('/api/classify/', {'label': '上等'})
-        self.assertTrue(classified.json()['sorter_command_queued'])
-        self._complete_sorter()
-        self.assertIsNone(views.APP_STATE['motor_command'])
-        self.assertEqual(
-            views.APP_STATE['auto_run_recovery_reason'],
-            'fruit_arrival_delayed',
-        )
-
-        paused = self._post_json('/api/auto_run/', {'enabled': False})
-        self.assertEqual(paused.status_code, 200)
-        recovered = self._post_json('/api/auto_run/', {'enabled': True})
-        self.assertEqual(recovered.status_code, 200)
-        self.assertEqual(recovered.json()['motor_command']['command'], 'feed_one')
-
-    def legacy_zero_command_id_fruit_delay_report_is_ignored(self):
+    def test_removed_fruit_arrival_delayed_report_is_rejected(self):
         response = self._report('fruit_arrival_delayed', command_id=0)
 
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()['ignored'])
-        self.assertEqual(response.json()['reason'], 'stale_feed_command')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['reason'], 'unknown_event')
         self.assertIsNone(views.APP_STATE['last_error_reason'])
         self.assertNotIn(
             'fruit_arrival_delayed',
             [entry['event'] for entry in views.APP_STATE['transition_trace']],
         )
 
-    def legacy_pause_keeps_current_command_and_stops_after_current_fruit(self):
+    def test_graceful_pause_keeps_current_feed_and_stops_after_current_fruit(self):
         self._prepare_auto_run(camera_ready=True)
         started = self._post_json('/api/auto_run/', {'enabled': True}).json()
         feed_command = dict(started['motor_command'])
@@ -1428,7 +1617,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertFalse(paused.json()['auto_run_enabled'])
         self.assertEqual(views.APP_STATE['motor_command'], feed_command)
 
-        self._report('feed_cycle_completed', command_id=feed_command['command_id'])
+        self._report_feed_success(feed_command)
         self._complete_auto_session('fruit_001')
         classified = self._post_json('/api/classify/', {'label': '中等'})
         sorter_command = dict(views.APP_STATE['motor_command'])
@@ -1440,13 +1629,10 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertFalse(views.APP_STATE['auto_run_enabled'])
         self.assertIsNone(views.APP_STATE['motor_command'])
 
-    def legacy_pause_during_capture_does_not_replace_capture_command(self):
+    def test_graceful_pause_during_capture_does_not_replace_capture_command(self):
         self._prepare_auto_run(camera_ready=True)
         started = self._post_json('/api/auto_run/', {'enabled': True}).json()
-        self._report(
-            'feed_cycle_completed',
-            command_id=started['motor_command']['command_id'],
-        )
+        self._report_feed_success(started['motor_command'])
         triggered = self._report('hcsr04_trigger')
         self.assertEqual(triggered.status_code, 200)
         capture_command = dict(views.APP_STATE['motor_command'])
@@ -1456,13 +1642,10 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(views.APP_STATE['motor_command'], capture_command)
         self.assertEqual(capture_command['command'], 'start_sequence')
 
-    def legacy_pause_after_classification_keeps_sorter_command_and_stops_next_feed(self):
+    def test_graceful_pause_after_classification_keeps_sorter_command_and_stops_next_feed(self):
         self._prepare_auto_run(camera_ready=True)
         started = self._post_json('/api/auto_run/', {'enabled': True}).json()
-        self._report(
-            'feed_cycle_completed',
-            command_id=started['motor_command']['command_id'],
-        )
+        self._report_feed_success(started['motor_command'])
         self._complete_auto_session('fruit_001')
         classified = self._post_json('/api/classify/', {'label': '加工'})
         self.assertTrue(classified.json()['sorter_command_queued'])
@@ -1478,13 +1661,10 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertFalse(views.APP_STATE['auto_run_finishing'])
         self.assertIsNone(views.APP_STATE['motor_command'])
 
-    def legacy_pause_after_gate_three_still_allows_mg996r_sorting(self):
+    def test_graceful_pause_after_gate_three_still_allows_mg996r_sorting(self):
         self._prepare_auto_run(camera_ready=True)
         started = self._post_json('/api/auto_run/', {'enabled': True}).json()
-        self._report(
-            'feed_cycle_completed',
-            command_id=started['motor_command']['command_id'],
-        )
+        self._report_feed_success(started['motor_command'])
         self._complete_auto_session('fruit_001')
         self.assertEqual(views.APP_STATE['status'], 'uploaded')
 
@@ -2067,9 +2247,15 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn('id="sorter-status"', dashboard_html)
         self.assertIn('id="sorter-error"', dashboard_html)
         self.assertIn('role="alert"', dashboard_html)
-        self.assertIn("'開始執行（待實機驗證）'", dashboard_js)
+        self.assertIn("'優雅暫停'", dashboard_js)
+        self.assertIn("'正在完成目前果實'", dashboard_js)
+        self.assertIn("'開始執行'", dashboard_js)
+        self.assertIn('data.can_start_auto_run', dashboard_js)
         self.assertIn('data.operator_alert', dashboard_js)
         self.assertIn('自行暫停、排除狀況後重新開始', dashboard_js)
+        self.assertIn('alert.feeder_elapsed_ms', dashboard_js)
+        self.assertIn('alert.feeder_max_run_ms', dashboard_js)
+        self.assertIn('alert.feeder_stop_reason', dashboard_js)
         self.assertIn('feeder_max_run_ms: 5000', dashboard_js)
         self.assertIn("1000,\n                20000,\n                500,", dashboard_js)
         self.assertIn(
@@ -2078,6 +2264,11 @@ class DataCollectionFlowTests(SimpleTestCase):
         )
         self.assertIn('推薦：5000 ms', dashboard_html)
         self.assertIn('警告 : 若設定過長將導致連續送料之情形發生', dashboard_html)
+        self.assertIn('送料結果', dashboard_html)
+        self.assertIn('同一版設定完成空料斗測試', dashboard_html)
+        self.assertNotIn('待實機驗證', dashboard_js)
+        self.assertNotIn('待實機驗證', dashboard_html)
+        self.assertNotIn('順時針且單次約 90°', dashboard_html)
 
     def test_firmware_boot_id_uses_per_boot_hardware_randomness(self):
         project_root = Path(__file__).resolve().parents[2]
@@ -2112,6 +2303,33 @@ class DataCollectionFlowTests(SimpleTestCase):
         )
         self.assertIn('if (stopReason == "hcsr04")', source)
         self.assertIn('triggerArmed_ = false;', source)
+        self.assertIn('latchAutoTrigger(stoppedAt)', source)
+        self.assertIn(
+            'awaitingFruitAfterTimeout_ ? "awaiting_fruit" : "idle"',
+            source,
+        )
+        self.assertIn(
+            'awaitingFruitAfterTimeout_ &&\n      !autoTrigger_.active()',
+            source,
+        )
+        self.assertIn('const bool feederHandoff =', source)
+        self.assertIn('if (!autoTrigger_.active()) {\n      clearActiveTiming();', source)
+        sensor_branch = source[
+            source.index('if (motionPhase_ == MotionPhase::kFeederDriving)'):
+            source.index('String blockedReason;')
+        ]
+        self.assertLess(
+            sensor_branch.index('timeReached(sensorReadFinishedAt, phaseDeadlineAt_)'),
+            sensor_branch.index('feederSensorState_ == "unavailable"'),
+        )
+        start_feeder = source[
+            source.index('void CaptureController::startFeeder'):
+            source.index('void CaptureController::stopFeeder')
+        ]
+        self.assertLess(
+            start_feeder.index('feeder_.writeMicroseconds(activeTiming_.feederDriveUS)'),
+            start_feeder.index('feederStartedAt_ = millis()'),
+        )
         config = (
             Path(__file__).resolve().parents[2]
             / 'firmware'
@@ -2135,16 +2353,18 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
 
     def _prepare_auto_run(self, *, camera_ready=False):
-        configured = self._post_json('/api/capture_timing/', {
+        profile = {
             **views.CAPTURE_TIMING_RECOMMENDED,
-            'feeder_calibrated': True,
-        })
+            'feeder_calibrated': False,
+        }
+        configured = self._post_json('/api/capture_timing/', profile)
         self.assertEqual(configured.status_code, 200)
         revision = configured.json()['capture_timing_revision']
         response = self.client.get('/api/esp32/command/', {
             'boot_id': 'boot-auto',
             'capability': 'feeder_v1',
             'feeder_state': 'idle',
+            'feeder_sensor_state': 'clear',
             'last_feed_command_id': '0',
         })
         self.assertEqual(response.status_code, 200)
@@ -2152,6 +2372,22 @@ class DataCollectionFlowTests(SimpleTestCase):
             self._report('timing_config_applied', timing_revision=revision).status_code,
             200,
         )
+        feeder_test = self._post_json('/api/feeder/test/')
+        self.assertEqual(feeder_test.status_code, 200)
+        feed_command = feeder_test.json()['motor_command']
+        completed = self._report(
+            'feed_cycle_completed',
+            command_id=feed_command['command_id'],
+            feeder_elapsed_ms=84,
+            feeder_max_run_ms=feed_command['feeder_max_run_ms'],
+            feeder_stop_reason='hcsr04',
+        )
+        self.assertEqual(completed.status_code, 200)
+        confirmed = self._post_json('/api/capture_timing/', {
+            **profile,
+            'feeder_calibrated': True,
+        })
+        self.assertEqual(confirmed.status_code, 200)
         if camera_ready:
             self.client.get('/api/camera/state/', {'camera_ready': '1'})
 
@@ -2190,6 +2426,34 @@ class DataCollectionFlowTests(SimpleTestCase):
             payload['command_id'] = command_id
         payload.update(extra)
         return self.client.post('/api/esp32/report/', payload)
+
+    def _report_feed_success(self, command):
+        return self._report(
+            'feed_cycle_completed',
+            command_id=command['command_id'],
+            feeder_elapsed_ms=84,
+            feeder_max_run_ms=command['feeder_max_run_ms'],
+            feeder_stop_reason='hcsr04',
+        )
+
+    def _report_production_feed_failure(self, event, *, stop_reason):
+        self._prepare_auto_run(camera_ready=True)
+        started = self._post_json('/api/auto_run/', {'enabled': True}).json()
+        command = started['motor_command']
+        response = self._report(
+            event,
+            command_id=command['command_id'],
+            feeder_elapsed_ms=0,
+            feeder_max_run_ms=command['feeder_max_run_ms'],
+            feeder_stop_reason=stop_reason,
+        )
+        self.assertEqual(response.status_code, 200)
+        state = self.client.get('/api/state/').json()
+        self.assertFalse(state['auto_run_enabled'])
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertEqual(state['operator_alert']['reason'], event)
+        self.assertEqual(state['operator_alert']['feeder_stop_reason'], stop_reason)
+        return state
 
     def _fake_image(self, station_index):
         return SimpleUploadedFile(

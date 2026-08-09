@@ -88,7 +88,7 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 
 完成十顆送料後，必須在空送料筒至少執行一次完整逾時測試。操作員不得提前中止該次測試；ESP32 必須在指定的 `feeder_max_run_ms` 到期時先於本機停止，回報 `feeder_max_run_timeout`，Dashboard 顯示進料未確認，且不得建立 Capture session 或自動補轉。其他空筒情境仍等待 HC-SR04 或最大運轉時間停止；Dashboard「優雅暫停」只禁止後續送料，不中止目前 `feed_one`。
 
-修改 `feeder_stop_us`、`feeder_drive_us` 或 `feeder_max_run_ms` 都會取消確認。舊設定檔升級時保留停止與驅動脈波，移除 `feeder_run_ms` 與 `fruit_arrival_warning_ms`，將 `feeder_max_run_ms` 設為 `5000 ms`、取消確認並提高 revision。設定檔遺失、損壞或驗證失敗時載入推薦值、取消確認並在 Dashboard 明確警示，不得靜默恢復正式送料。ESP32 尚未 ACK 最新 revision 時不得測試送料；本階段正式「開始執行」固定停用。
+修改 `feeder_stop_us`、`feeder_drive_us` 或 `feeder_max_run_ms` 都會取消確認。舊設定檔升級時保留停止與驅動脈波，移除 `feeder_run_ms` 與 `fruit_arrival_warning_ms`，將 `feeder_max_run_ms` 設為 `5000 ms`、取消確認並提高 revision。設定檔遺失、損壞或驗證失敗時載入推薦值、取消確認並在 Dashboard 明確警示，不得靜默恢復正式送料。ESP32 尚未 ACK 最新 revision 時不得測試送料或開始正式運轉；ACK、校正及其餘開始條件皆成立後，Dashboard 才開放「開始執行」。
 
 其他 interval 與 request deadline：
 
@@ -113,7 +113,7 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 | `GET` | `/api/state/` | Dashboard 完整狀態 |
 | `GET` | `/api/camera/state/` | 手機精簡 capture state 與相機 ready heartbeat |
 | `POST` | `/api/capture_timing/` | 更新 runtime profile 與送料校正確認 |
-| `POST` | `/api/auto_run/` | 本階段拒絕啟用正式自動運轉 |
+| `POST` | `/api/auto_run/` | 啟用正式自動運轉或要求優雅暫停 |
 | `POST` | `/api/feeder/test/` | 在安全 idle 狀態測試一次 HC-SR04 回授送料 |
 | `POST` | `/api/capture_started/` | Best-effort 拍攝 telemetry |
 | `POST` | `/api/upload_images/` | 上傳指定站點照片 |
@@ -129,9 +129,7 @@ ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、固定能力
 
 ### 開始條件
 
-本階段只開放 calibration `feed_one`。Dashboard「開始執行」固定停用，`POST /api/auto_run/` 的啟用請求回傳 `feeder_hardware_validation_required`；不得建立 production `feed_one`。
-
-以下開始條件、下一顆送料、優雅暫停與重新啟動條款是通過 HC-SR04 實機驗證後另案開放的正式運轉目標契約；本階段 API 不執行。
+正式 production `feed_one` 已開放；Dashboard 與 `POST /api/auto_run/` 只在下列 runtime 安全條件全部成立時允許開始。
 
 操作員按下 Dashboard「開始執行」時，Django 必須在同一個 `STATE_LOCK` critical section 內確認：
 
@@ -175,7 +173,7 @@ ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、固定能力
 - `feed_one` 先建立時，視為已承諾；目前果實完成拍攝與實體分類後停止。
 - 安全逾時後仍保持感測器待命；若實際沒有果實，不建立 Capture session，也不自動補轉。
 
-暫停可發生於送料後等待、三站拍攝、等待人工分類、實體分類或分類後尚未建立下一次送料。Dashboard 主操作區只使用同一按鈕：停止時顯示「開始執行」、運轉時顯示「暫停」、正在完成目前果實時顯示 disabled「正在完成目前果實」。本軟體暫停不是實體緊急斷電。
+暫停可發生於送料後等待、三站拍攝、等待人工分類、實體分類或分類後尚未建立下一次送料。Dashboard 主操作區只使用同一按鈕：停止時顯示「開始執行」、運轉時顯示「優雅暫停」、正在完成目前果實時顯示 disabled「正在完成目前果實」。本軟體暫停不是實體緊急斷電。
 
 重拍與刪除成功時都關閉自動運轉。重拍由操作員將同一顆果實放回 Gate 1，再走既有 `start_sequence`，不驅動送料機構；完成後由操作員重新按「開始執行」。正式 Dashboard 與 API 完整移除 manual capture。
 
@@ -191,7 +189,7 @@ Django 重新啟動後，依 ESP32 polling 的 `feeder_state` 與 `last_feed_com
 
 ### Dashboard 錯誤提示
 
-Blocking error 必須以可存取的 `role="alert"` 區塊顯示發生位置、具體 reason、目前 fruit／command 與操作指引。Reason 至少區分 `feeder_max_run_timeout`、`feeder_sensor_not_clear`、`feeder_sensor_unavailable`、`camera_upload_timeout`、`classifier_timeout`、`feeder_capability_missing`、`feeder_calibration_required` 與 `esp32_restarted_during_feed`。送料結果另顯示 `feeder_elapsed_ms`、`feeder_max_run_ms` 與停止原因。標準操作文字為「暫停 → 排除／重新拍攝／刪除 → 開始執行」；存在 active fruit 時，「開始執行」保持停用。
+Blocking error 必須以可存取的 `role="alert"` 區塊顯示發生位置、具體 reason、目前 fruit／command 與操作指引。Reason 至少區分 `feeder_max_run_timeout`、`feeder_sensor_not_clear`、`feeder_sensor_unavailable`、`camera_upload_timeout`、`classifier_timeout`、`feeder_capability_missing`、`feeder_calibration_required` 與 `esp32_restarted_during_feed`。送料錯誤的 alert 與送料結果都必須顯示 `feeder_elapsed_ms`、`feeder_max_run_ms` 與停止原因。標準操作文字為「暫停 → 排除／重新拍攝／刪除 → 開始執行」；存在 active fruit 時，「開始執行」保持停用。
 
 ## 觸發與三站流程
 

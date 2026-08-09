@@ -46,7 +46,7 @@
                     <div><span>照片數量</span><strong id="image-count">0 / 3</strong></div>
                     <div><span>ESP32</span><strong id="esp32-status">離線</strong></div>
                     <div><span>HC-SR04</span><strong id="feeder-sensor-state">unavailable</strong></div>
-                    <div><span>測試送料結果</span><strong id="feeder-test-result">尚無資料</strong></div>
+                    <div><span>送料結果</span><strong id="feeder-test-result">尚無資料</strong></div>
                     <div><span>馬達命令</span><strong id="motor-command">none</strong></div>
                     <div><span>硬體分類器</span><strong id="sorter-status">閒置</strong></div>
                     <div><span>分類器資料</span><strong id="sorter-fruit">無</strong></div>
@@ -61,8 +61,8 @@
                     <input id="counter-input" type="number" min="1" inputmode="numeric" placeholder="輸入起始 ID，例如 120">
                     <button id="btn-set-counter" type="button" class="secondary">設定起始 ID</button>
                 </div>
-                <button id="btn-auto-run" type="button" disabled>開始執行（待實機驗證）</button>
-                <div>正式自動運轉待 HC-SR04 實機驗證，本版本僅開放測試送料。</div>
+                <button id="btn-auto-run" type="button" disabled>開始執行</button>
+                <div>ESP32、送料校正、HC-SR04、相機與三站流程皆就緒後，系統才會開放正式自動運轉。</div>
                 <button id="btn-recapture" type="button" class="warning">重新拍攝目前 fruit</button>
                 <button id="btn-open-folder" type="button" class="secondary">開啟資料夾</button>
                 <button id="btn-reset-dataset" type="button" class="danger">重置 dataset</button>
@@ -133,7 +133,7 @@
                 <div id="capture-timing-warning" role="alert"></div>
                 <label class="feeder-confirmation" for="feeder-calibrated">
                     <input id="feeder-calibrated" type="checkbox">
-                    <span>送料校正已確認：空料斗測試後，停止不爬行、順時針且單次約 90°。</span>
+                    <span>送料校正已確認：同一版設定完成空料斗測試，並確認 HC-SR04 可在單顆果實進站時停止送料。</span>
                 </label>
                 <div id="timing-config-status" class="timing-config-status">等待 Django 載入拍攝停穩設定。</div>
                 <div class="timing-config-actions">

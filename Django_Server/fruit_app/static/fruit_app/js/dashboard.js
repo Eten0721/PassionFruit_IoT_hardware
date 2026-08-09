@@ -308,11 +308,23 @@ const remoteVideo = document.getElementById('remote-video');
         errorReasonEl.textContent = data.last_error_reason || '無';
         const alert = data.operator_alert;
         if (alert) {
+            const feederMetrics = [
+                Number.isFinite(alert.feeder_elapsed_ms)
+                    ? `實際送料：${alert.feeder_elapsed_ms} ms`
+                    : '',
+                Number.isFinite(alert.feeder_max_run_ms)
+                    ? `上限：${alert.feeder_max_run_ms} ms`
+                    : '',
+                alert.feeder_stop_reason
+                    ? `停止原因：${alert.feeder_stop_reason}`
+                    : '',
+            ].filter(Boolean).join('｜');
             setMessage(
                 `阻擋原因：${alert.reason}｜`
                 + `位置：${alert.location}｜`
                 + `fruit：${alert.fruit_id || '無'}｜`
                 + `command：${alert.command || 'none'} #${alert.command_id || 0}｜`
+                + (feederMetrics ? `${feederMetrics}｜` : '')
                 + `操作：${alert.instruction
                     || '暫停 → 排除／重新拍攝／刪除 → 開始執行（請自行暫停、排除狀況後重新開始）'}`,
             );
@@ -328,8 +340,16 @@ const remoteVideo = document.getElementById('remote-video');
             button.disabled = classificationInFlight || data.sorter_busy || !data.can_classify;
         });
         discardButton.disabled = classificationInFlight || !data.can_discard;
-        autoRunButton.textContent = '開始執行（待實機驗證）';
-        autoRunButton.disabled = true;
+        if (data.auto_run_enabled) {
+            autoRunButton.textContent = '優雅暫停';
+            autoRunButton.disabled = false;
+        } else if (data.auto_run_finishing) {
+            autoRunButton.textContent = '正在完成目前果實';
+            autoRunButton.disabled = true;
+        } else {
+            autoRunButton.textContent = '開始執行';
+            autoRunButton.disabled = !data.can_start_auto_run;
+        }
         recaptureButton.disabled = data.sorter_busy || !data.can_recapture;
         resetDatasetButton.disabled = data.sorter_busy;
     }
@@ -496,7 +516,13 @@ const remoteVideo = document.getElementById('remote-video');
         }
         const motorCommand = data.motor_command || {};
         const hasPendingMotorCommand = motorCommand.command && motorCommand.command !== 'none';
-        const editable = data.status === 'idle' && !data.active_fruit_id && !hasPendingMotorCommand;
+        const editable = (
+            data.status === 'idle'
+            && !data.active_fruit_id
+            && !data.sorter_busy
+            && !data.auto_run_enabled
+            && !hasPendingMotorCommand
+        );
         timingInputs.forEach((input) => {
             input.disabled = !editable || timingUpdateInFlight;
         });

@@ -53,14 +53,14 @@ Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS clie
 - Dashboard 可管理拍攝 timing、檢查照片、人工分類、刪除與送料校正。
 - Capture、送料與 sorter 共用單一 motor command slot，command ID 與 retry 具備冪等保護。
 - 人工分類會先提交 Dataset 與 metadata，再驅動位置型 MG996R；硬體失敗不回滾資料。
-- HC-SR04 測試送料具備回授停止、最大運轉時間與感測器 unavailable 安全停止。
+- HC-SR04 正式送料與測試送料共用回授停止、最大運轉時間與感測器 unavailable 安全停止。
 - 正式 Firmware 已依感測、閘門、分類器、HTTPS 與流程控制拆分模組。
 
 ### 開發中
 
 - [Issue #1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1)：安裝並校正一體式送料筒、360° MG996R 與四片徑向撥片。
 - [Issue #2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2)：加入分類器 SG90 擋臂與分類後出料機構。
-- 正式自動運轉維持停用，待送料硬體完成校正與實機驗收後再開放。
+- 正式自動運轉已開放 runtime 安全檢查與優雅暫停；Issue #1 仍追蹤送料機構校正與連續運轉實機驗收。
 
 ### 待實機驗證
 

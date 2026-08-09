@@ -175,7 +175,6 @@ APP_STATE = RuntimeState({
     'last_completed_feed_command_id': 0,
     'feeder_test_passed_revision': None,
     'feeder_test_result': None,
-    'last_delayed_feed_command_id': 0,
     'discard_cleanup_last_monotonic': None,
     'dataset_operation': None,
     'sorter_status': 'idle',
@@ -628,10 +627,6 @@ def esp32_report_api(request):
                 payload = _handle_feed_result(event, data, command_id)
             except CaptureCommandError as exc:
                 return _json_error(exc.message, status=exc.status, reason=exc.reason, extra={'ok': False})
-            return JsonResponse(_compact_esp32_payload(payload))
-
-        if event == 'fruit_arrival_delayed':
-            payload = _handle_fruit_arrival_delayed(command_id)
             return JsonResponse(_compact_esp32_payload(payload))
 
         if event == 'hcsr04_station_1_ready':
@@ -1225,7 +1220,6 @@ def reset_runtime_state_for_tests():
             'last_completed_feed_command_id': 0,
             'feeder_test_passed_revision': None,
             'feeder_test_result': None,
-            'last_delayed_feed_command_id': 0,
             'discard_cleanup_last_monotonic': None,
             'dataset_operation': None,
             'sorter_status': 'idle',
@@ -2333,20 +2327,39 @@ def _handle_feed_result(event, data, command_id):
         'ok': event == 'feed_cycle_completed' and stop_reason == 'hcsr04',
     }
     APP_STATE['feeder_test_result'] = result
-    APP_STATE['status'] = (
-        'idle'
-        if command.get('feed_context') == 'calibration'
-        else ('idle' if result['ok'] else 'error')
-    )
-    APP_STATE['message'] = (
-        'HC-SR04 已偵測百香果，測試送料正常停止。'
-        if result['ok']
-        else f'測試送料已停止：{result["stop_reason"]}。'
-    )
-    if result['ok'] and command.get('feed_context') == 'calibration':
-        APP_STATE['feeder_test_passed_revision'] = command.get('timing_revision')
-    elif not result['ok']:
-        APP_STATE['feeder_test_passed_revision'] = None
+    feed_context = command.get('feed_context')
+    if feed_context == 'calibration':
+        APP_STATE['status'] = 'idle'
+        APP_STATE['message'] = (
+            'HC-SR04 已偵測百香果，測試送料正常停止。'
+            if result['ok']
+            else f'測試送料已停止：{result["stop_reason"]}。'
+        )
+        APP_STATE['feeder_test_passed_revision'] = (
+            command.get('timing_revision') if result['ok'] else None
+        )
+    elif result['ok']:
+        APP_STATE['status'] = 'waiting_fruit'
+        APP_STATE['message'] = 'HC-SR04 已在本機停止送料，等待同一筆觸發啟動第一站。'
+    else:
+        _disable_auto_run()
+        APP_STATE['auto_run_finishing'] = False
+        APP_STATE['auto_run_recovery_reason'] = event
+        APP_STATE['status'] = 'waiting_fruit' if event == 'feeder_max_run_timeout' else 'error'
+        APP_STATE['message'] = {
+            'feeder_max_run_timeout': (
+                '送料已達最大運轉時間；進料未確認。已停止自動送料，'
+                '請檢查送料筒、出口與感測區域，不會自動補轉。'
+            ),
+            'feeder_sensor_not_clear': (
+                '送料前感測區未清空；已停止自動送料，請移除感測區內果實後再開始。'
+            ),
+            'feeder_sensor_unavailable': (
+                'HC-SR04 無有效回音；已停止自動送料，請檢查線材、供電、'
+                'Echo 分壓與感測方向。'
+            ),
+        }.get(event, f'正式送料已停止：{result["stop_reason"]}。')
+    if not result['ok']:
         APP_STATE['last_error_reason'] = event
         APP_STATE['last_error_command'] = 'feed_one'
         APP_STATE['last_error_command_id'] = command_id
@@ -2357,46 +2370,6 @@ def _handle_feed_result(event, data, command_id):
         details={**result, 'feed_context': command.get('feed_context')},
     )
     return _state_payload(extra={'ok': True, 'event': event})
-
-
-def _handle_fruit_arrival_delayed(command_id):
-    if command_id and command_id == APP_STATE.get('last_delayed_feed_command_id'):
-        return _state_payload(extra={
-            'ok': True,
-            'event': 'fruit_arrival_delayed',
-            'ignored': True,
-            'duplicate': True,
-            'reason': 'duplicate_fruit_arrival_delayed',
-        })
-    if APP_STATE.get('active_fruit_id'):
-        return _state_payload(extra={
-            'ok': True,
-            'event': 'fruit_arrival_delayed',
-            'ignored': True,
-            'reason': 'fruit_already_detected',
-        })
-    if not command_id or command_id != APP_STATE.get('last_completed_feed_command_id'):
-        return _state_payload(extra={
-            'ok': True,
-            'event': 'fruit_arrival_delayed',
-            'ignored': True,
-            'reason': 'stale_feed_command',
-        })
-    APP_STATE['last_error_reason'] = 'fruit_arrival_delayed'
-    APP_STATE['last_error_command'] = 'feed_one'
-    APP_STATE['last_error_command_id'] = command_id
-    APP_STATE['last_delayed_feed_command_id'] = command_id
-    APP_STATE['auto_run_recovery_reason'] = 'fruit_arrival_delayed'
-    APP_STATE['status'] = 'waiting_fruit'
-    APP_STATE['message'] = (
-        '送料後仍未觸發 HC-SR04；進料未確認。請暫停並檢查送料區域，'
-        '不要自動補轉。'
-    )
-    _record_transition(
-        'fruit_arrival_delayed',
-        command_id=command_id,
-    )
-    return _state_payload(extra={'ok': True, 'event': 'fruit_arrival_delayed'})
 
 
 def _handle_timing_config_applied(data):
@@ -2437,6 +2410,11 @@ def _handle_timing_config_applied(data):
 
 def _auto_trigger_enabled():
     if APP_STATE.get('dataset_operation'):
+        return False
+    if APP_STATE.get('auto_run_recovery_reason') in (
+        'feeder_sensor_not_clear',
+        'feeder_sensor_unavailable',
+    ):
         return False
     if _sorter_busy():
         return False
@@ -2560,7 +2538,19 @@ def _feeder_hardware_disabled_reason(*, allow_recovery=False):
 
 
 def _auto_run_disabled_reason(*, allow_recovery=False):
-    return 'feeder_hardware_validation_required'
+    reason = _feeder_hardware_disabled_reason(allow_recovery=allow_recovery)
+    if reason:
+        return reason
+    recovery_reason = APP_STATE.get('auto_run_recovery_reason')
+    if recovery_reason and not allow_recovery:
+        return recovery_reason
+    if _has_unclassified_temp_fruit():
+        return 'temp_fruit_exists'
+    if not APP_STATE['capture_timing'].get('feeder_calibrated'):
+        return 'feeder_calibration_required'
+    if not _camera_is_ready():
+        return 'camera_not_ready'
+    return None
 
 
 def _camera_is_ready():
@@ -2693,8 +2683,17 @@ def _operator_alert_payload():
         return None
 
     command = APP_STATE.get('motor_command') or {}
+    feeder_result = APP_STATE.get('feeder_test_result') or {}
+    if (
+        reason not in (
+            'feeder_max_run_timeout',
+            'feeder_sensor_not_clear',
+            'feeder_sensor_unavailable',
+        )
+        or feeder_result.get('event') != reason
+    ):
+        feeder_result = {}
     location = {
-        'fruit_arrival_delayed': 'upstream_feeder / HC-SR04',
         'feed_arrival_unconfirmed': 'upstream_feeder / HC-SR04',
         'esp32_restarted_during_feed': 'ESP32 / upstream_feeder',
         'esp32_offline': 'ESP32',
@@ -2706,7 +2705,6 @@ def _operator_alert_payload():
         'feeder_sensor_not_clear': 'upstream_feeder / HC-SR04',
         'feeder_sensor_unavailable': 'upstream_feeder / HC-SR04',
         'feeder_max_run_timeout': 'upstream_feeder',
-        'feeder_hardware_validation_required': 'upstream_feeder / HC-SR04',
         'feeder_timing_not_applied': 'ESP32 / upstream_feeder',
         'feeder_state_not_idle': 'upstream_feeder',
         'camera_not_ready': 'camera station',
@@ -2719,16 +2717,32 @@ def _operator_alert_payload():
         'dataset_operation_in_progress': 'dataset storage',
         'system_not_idle': 'Django state machine',
     }.get(reason, APP_STATE.get('status') or 'unknown')
+    instruction = {
+        'feeder_max_run_timeout': (
+            '優雅暫停已生效；請檢查送料筒、出口、卡料與感測區域。'
+            '若果實延遲抵達，讓它完成三站流程，不要補轉。'
+        ),
+        'feeder_sensor_not_clear': (
+            '請移除 HC-SR04 感測區內的果實，確認有效距離大於 8.0 cm 後再開始執行。'
+        ),
+        'feeder_sensor_unavailable': (
+            '請檢查 HC-SR04 線材、供電、Echo 分壓與感測方向，取得有效距離後再開始執行。'
+        ),
+    }.get(
+        reason,
+        '暫停 → 排除／重新拍攝／刪除 → 開始執行'
+        '（請自行暫停、排除狀況後重新開始）',
+    )
     return {
         'reason': reason,
         'location': location,
         'fruit_id': APP_STATE.get('active_fruit_id') or APP_STATE.get('sorter_fruit_id'),
         'command': APP_STATE.get('last_error_command') or command.get('command'),
         'command_id': APP_STATE.get('last_error_command_id') or command.get('command_id'),
-        'instruction': (
-            '暫停 → 排除／重新拍攝／刪除 → 開始執行'
-            '（請自行暫停、排除狀況後重新開始）'
-        ),
+        'instruction': instruction,
+        'feeder_elapsed_ms': feeder_result.get('elapsed_ms'),
+        'feeder_max_run_ms': feeder_result.get('max_run_ms'),
+        'feeder_stop_reason': feeder_result.get('stop_reason'),
     }
 
 
