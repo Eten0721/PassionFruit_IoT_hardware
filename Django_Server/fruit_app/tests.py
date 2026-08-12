@@ -2447,6 +2447,55 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn('max-height: min(52vh, 520px);', dashboard_css)
         self.assertIn('.remote-video-wrap.is-streaming', dashboard_css)
 
+    def test_dashboard_presents_accessible_operator_workspace(self):
+        project_root = Path(__file__).resolve().parents[2]
+        static_root = project_root / 'Django_Server' / 'fruit_app' / 'static' / 'fruit_app'
+        dashboard_js = (static_root / 'js' / 'dashboard.js').read_text(encoding='utf-8')
+        dashboard_css = (static_root / 'css' / 'dashboard.css').read_text(encoding='utf-8')
+        dashboard_html = (
+            project_root / 'Django_Server' / 'fruit_app' / 'templates' / 'dashboard.html'
+        ).read_text(encoding='utf-8')
+
+        self.assertIn('百香果資料蒐集控制台', dashboard_html)
+        self.assertIn('id="camera-ready-status"', dashboard_html)
+        self.assertIn('id="operator-alert" class="operator-alert" role="alert" hidden', dashboard_html)
+        self.assertIn('id="message" class="global-message" role="status"', dashboard_html)
+        self.assertIn('<label for="note">分類備註</label>', dashboard_html)
+        self.assertIn('<label for="counter-input">下一筆資料起始 ID</label>', dashboard_html)
+        self.assertIn('<fieldset>', dashboard_html)
+        self.assertIn('<legend id="classification-title">人工分類</legend>', dashboard_html)
+        for station_index in range(1, 4):
+            self.assertIn(f'id="station-card-{station_index}"', dashboard_html)
+            self.assertIn(f'id="station-image-{station_index}"', dashboard_html)
+        for details_id in ('capture-settings', 'diagnostics', 'dataset-management'):
+            self.assertIn(f'<details id="{details_id}"', dashboard_html)
+        self.assertIn('class="danger-zone"', dashboard_html)
+
+        for variable in (
+            '--background: #f3f6f4',
+            '--surface: #ffffff',
+            '--primary: #176b4a',
+            '--warning: #8a4b08',
+            '--danger: #b42318',
+            '--focus: #0b6edc',
+        ):
+            self.assertIn(variable, dashboard_css)
+        self.assertIn('button:focus-visible', dashboard_css)
+        self.assertIn('@media (max-width: 640px)', dashboard_css)
+        self.assertIn('.station-media img {', dashboard_css)
+        self.assertIn('object-fit: contain;', dashboard_css)
+
+        self.assertIn("camera_ready ? '可拍攝' : '未就緒'", dashboard_js)
+        self.assertIn('function renderReadiness(data)', dashboard_js)
+        self.assertIn('function renderOperatorAlert(alert)', dashboard_js)
+        self.assertIn("idle: '閒置'", dashboard_js)
+        self.assertIn("unavailable: { label: '無有效回音', tone: 'error' }", dashboard_js)
+        self.assertIn('fingerprint === lastAlertFingerprint', dashboard_js)
+        self.assertIn('fingerprint === lastTraceFingerprint', dashboard_js)
+        self.assertIn("beginControlAction('auto-run', autoRunButton)", dashboard_js)
+        self.assertIn('stationImages.forEach((imageElement, index)', dashboard_js)
+        self.assertIn('await sleep(120)', dashboard_js)
+
     def test_firmware_boot_id_uses_per_boot_hardware_randomness(self):
         project_root = Path(__file__).resolve().parents[2]
         api_source = (
