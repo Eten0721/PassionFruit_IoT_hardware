@@ -887,6 +887,7 @@ void CaptureController::startFeeder(const MotorCommand& command) {
   snapshotActiveTiming();
   activeCommand_ = command;
   const float distanceCM = sensor_.readCentimeters();
+  lastSensorReadAt_ = millis();
   feederSensorState_ = distanceCM <= 0.0F
       ? "unavailable"
       : (distanceCM > FirmwareConfig::kRearmDistanceCM ? "clear" : "blocked");

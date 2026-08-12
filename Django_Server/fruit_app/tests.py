@@ -2301,6 +2301,14 @@ class DataCollectionFlowTests(SimpleTestCase):
             start_feeder.index('sensor_.readCentimeters()'),
             start_feeder.index('feeder_.writeMicroseconds(activeTiming_.feederDriveUS)'),
         )
+        self.assertLess(
+            start_feeder.index('sensor_.readCentimeters()'),
+            start_feeder.index('lastSensorReadAt_ = millis();'),
+        )
+        self.assertLess(
+            start_feeder.index('lastSensorReadAt_ = millis();'),
+            start_feeder.index('feeder_.writeMicroseconds(activeTiming_.feederDriveUS)'),
+        )
         self.assertIn('if (stopReason == "hcsr04")', source)
         self.assertIn('triggerArmed_ = false;', source)
         self.assertIn('latchAutoTrigger(stoppedAt)', source)
