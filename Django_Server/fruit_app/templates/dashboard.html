@@ -131,9 +131,28 @@
                 </div>
                 <div role="alert">警告 : 若設定過長將導致連續送料之情形發生</div>
                 <div id="capture-timing-warning" role="alert"></div>
+                <div class="feeder-calibration-heading">
+                    <strong>送料校正</strong>
+                    <span class="feeder-help" id="feeder-help">
+                        <button
+                            id="feeder-help-button"
+                            class="feeder-help-button"
+                            type="button"
+                            aria-label="送料校正操作說明"
+                            aria-controls="feeder-help-panel"
+                            aria-expanded="false"
+                        >?</button>
+                        <span id="feeder-help-panel" class="feeder-help-panel" role="tooltip">
+                            先套用設定並等待 ESP32 ACK，再測試送料一次。HC-SR04 正常停止後，目視確認恰好送出一顆並勾選；勾選會立即保存，不用再次測試或再次套用。
+                        </span>
+                    </span>
+                </div>
+                <div id="feeder-calibration-status" class="feeder-calibration-status" aria-live="polite">
+                    步驟 1／3：等待設定與 ESP32 同步。
+                </div>
                 <label class="feeder-confirmation" for="feeder-calibrated">
                     <input id="feeder-calibrated" type="checkbox">
-                    <span>送料校正已確認：同一版設定完成空料斗測試，並確認 HC-SR04 可在單顆果實進站時停止送料。</span>
+                    <span>我已目視確認本次測試恰好送出一顆，且 HC-SR04 正常停止馬達</span>
                 </label>
                 <div id="timing-config-status" class="timing-config-status">等待 Django 載入拍攝停穩設定。</div>
                 <div class="timing-config-actions">

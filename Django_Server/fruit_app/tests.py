@@ -1027,13 +1027,20 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(completed.json()['feeder_test_result']['elapsed_ms'], 84)
         self.assertTrue(completed.json()['can_confirm_feeder_calibration'])
 
-        confirmed = self._post_json('/api/capture_timing/', {
-            **timing,
-            'feeder_calibrated': True,
+        command_sequence = views.APP_STATE['motor_command_id']
+        confirmed = self._post_json('/api/feeder/calibration/confirm/', {
+            'timing_revision': 2,
         })
         self.assertEqual(confirmed.status_code, 200)
         self.assertEqual(confirmed.json()['capture_timing_revision'], 2)
         self.assertTrue(confirmed.json()['capture_timing']['feeder_calibrated'])
+        self.assertEqual(views.APP_STATE['motor_command_id'], command_sequence)
+        self.assertEqual(confirmed.json()['motor_command']['command'], 'none')
+
+        views.reset_runtime_state_for_tests()
+        reloaded_confirmation = self.client.get('/api/state/').json()
+        self.assertEqual(reloaded_confirmation['capture_timing_revision'], 2)
+        self.assertTrue(reloaded_confirmation['capture_timing']['feeder_calibrated'])
 
         changed = self._post_json('/api/capture_timing/', {
             **timing,
@@ -1061,12 +1068,12 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(mechanical_change.status_code, 200)
         self.assertFalse(mechanical_change.json()['capture_timing']['feeder_calibrated'])
 
-        rejected_confirmation = self._post_json('/api/capture_timing/', {
+        ignored_confirmation = self._post_json('/api/capture_timing/', {
             **profile,
             'feeder_calibrated': True,
         })
-        self.assertEqual(rejected_confirmation.status_code, 409)
-        self.assertEqual(rejected_confirmation.json()['reason'], 'feeder_test_required')
+        self.assertEqual(ignored_confirmation.status_code, 200)
+        self.assertFalse(ignored_confirmation.json()['capture_timing']['feeder_calibrated'])
 
         too_close = self._post_json('/api/capture_timing/', {
             **profile,
@@ -1170,6 +1177,131 @@ class DataCollectionFlowTests(SimpleTestCase):
         auto_run_active = self._post_json('/api/feeder/test/')
         self.assertEqual(auto_run_active.status_code, 409)
         self.assertEqual(auto_run_active.json()['reason'], 'auto_run_must_be_stopped')
+
+    def test_feeder_calibration_confirmation_rejects_unready_and_failed_tests(self):
+        waiting_ack = self._post_json('/api/feeder/calibration/confirm/', {
+            'timing_revision': 1,
+        })
+        self.assertEqual(waiting_ack.status_code, 409)
+        self.assertEqual(waiting_ack.json()['reason'], 'feeder_timing_not_applied')
+
+        self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-confirm',
+            'capability': 'feeder_v1',
+            'feeder_state': 'idle',
+            'feeder_sensor_state': 'clear',
+            'last_feed_command_id': '0',
+        })
+        self._report('timing_config_applied', timing_revision=1)
+
+        untested = self._post_json('/api/feeder/calibration/confirm/', {
+            'timing_revision': 1,
+        })
+        self.assertEqual(untested.status_code, 409)
+        self.assertEqual(untested.json()['reason'], 'feeder_test_required')
+
+        stale = self._post_json('/api/feeder/calibration/confirm/', {
+            'timing_revision': 2,
+        })
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.json()['reason'], 'stale_timing_revision')
+
+        timeout_started = self._post_json('/api/feeder/test/').json()['motor_command']
+        self._report(
+            'feeder_max_run_timeout',
+            command_id=timeout_started['command_id'],
+            feeder_elapsed_ms=5000,
+            feeder_max_run_ms=5000,
+            feeder_stop_reason='max_run_timeout',
+        )
+        timeout = self._post_json('/api/feeder/calibration/confirm/', {
+            'timing_revision': 1,
+        })
+        self.assertEqual(timeout.status_code, 409)
+        self.assertEqual(timeout.json()['reason'], 'feeder_test_required')
+
+        failed_started = self._post_json('/api/feeder/test/').json()['motor_command']
+        self._report(
+            'feeder_sensor_unavailable',
+            command_id=failed_started['command_id'],
+            feeder_elapsed_ms=39,
+            feeder_max_run_ms=5000,
+            feeder_stop_reason='feeder_sensor_unavailable',
+        )
+        failed = self._post_json('/api/feeder/calibration/confirm/', {
+            'timing_revision': 1,
+        })
+        self.assertEqual(failed.status_code, 409)
+        self.assertEqual(failed.json()['reason'], 'feeder_test_required')
+
+    def test_feeder_calibration_confirmation_rolls_back_on_persist_failure(self):
+        self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-confirm',
+            'capability': 'feeder_v1',
+            'feeder_state': 'idle',
+            'feeder_sensor_state': 'clear',
+            'last_feed_command_id': '0',
+        })
+        self._report('timing_config_applied', timing_revision=1)
+        started = self._post_json('/api/feeder/test/').json()['motor_command']
+        completed = self._report(
+            'feed_cycle_completed',
+            command_id=started['command_id'],
+            feeder_elapsed_ms=84,
+            feeder_max_run_ms=5000,
+            feeder_stop_reason='hcsr04',
+        )
+        self.assertTrue(completed.json()['can_confirm_feeder_calibration'])
+
+        with mock.patch.object(views.capture_timing, 'write', side_effect=OSError('disk full')):
+            response = self._post_json('/api/feeder/calibration/confirm/', {
+                'timing_revision': 1,
+            })
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()['reason'], 'capture_timing_persist_failed')
+        self.assertFalse(views.APP_STATE['capture_timing']['feeder_calibrated'])
+        self.assertTrue(response.json()['state']['can_confirm_feeder_calibration'])
+        with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
+            self.assertFalse(json.load(timing_file)['capture_timing']['feeder_calibrated'])
+
+    def test_starting_another_feeder_test_revokes_saved_confirmation(self):
+        self._prepare_auto_run()
+        self.assertTrue(views.APP_STATE['capture_timing']['feeder_calibrated'])
+
+        started = self._post_json('/api/feeder/test/')
+
+        self.assertEqual(started.status_code, 200)
+        self.assertFalse(started.json()['capture_timing']['feeder_calibrated'])
+        self.assertIsNone(started.json()['feeder_test_passed_revision'])
+        with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
+            saved = json.load(timing_file)
+        self.assertFalse(saved['capture_timing']['feeder_calibrated'])
+        self.assertEqual(saved['revision'], started.json()['capture_timing_revision'])
+
+    def test_saved_feeder_confirmation_survives_reload_and_allows_start(self):
+        self._prepare_auto_run(camera_ready=True)
+        revision = views.APP_STATE['capture_timing_revision']
+        views.reset_runtime_state_for_tests()
+
+        reloaded = self.client.get('/api/state/').json()
+        self.assertTrue(reloaded['capture_timing']['feeder_calibrated'])
+        self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-after-reload',
+            'capability': 'feeder_v1',
+            'feeder_state': 'idle',
+            'feeder_sensor_state': 'clear',
+            'last_feed_command_id': '0',
+        })
+        self._report('timing_config_applied', timing_revision=revision)
+        self.client.get('/api/camera/state/', {'camera_ready': '1'})
+
+        started = self._post_json('/api/auto_run/', {'enabled': True})
+
+        self.assertEqual(started.status_code, 200)
+        self.assertTrue(started.json()['auto_run_enabled'])
+        self.assertEqual(started.json()['motor_command']['command'], 'feed_one')
+        self.assertEqual(started.json()['motor_command']['feed_context'], 'production')
 
     def test_feeder_profile_update_requires_stopped_auto_run_and_idle_sorter(self):
         views.APP_STATE['auto_run_enabled'] = True
@@ -1409,22 +1541,33 @@ class DataCollectionFlowTests(SimpleTestCase):
         updated = self._post_json('/api/capture_timing/', {
             **views.CAPTURE_TIMING_RECOMMENDED,
             'first_station_settle_ms': 350,
-            'feeder_calibrated': True,
         })
         self.assertEqual(updated.status_code, 200)
+        self.assertTrue(updated.json()['capture_timing']['feeder_calibrated'])
 
         response = self._post_json('/api/auto_run/', {'enabled': True})
 
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()['reason'], 'feeder_timing_not_applied')
 
+        self._report(
+            'timing_config_applied',
+            timing_revision=updated.json()['capture_timing_revision'],
+        )
+        started = self._post_json('/api/auto_run/', {'enabled': True})
+        self.assertEqual(started.status_code, 200)
+        self.assertEqual(started.json()['motor_command']['feed_context'], 'production')
+
     def test_auto_run_requires_current_feeder_calibration(self):
         self._prepare_auto_run(camera_ready=True)
-        unconfirmed = self._post_json('/api/capture_timing/', {
-            **views.CAPTURE_TIMING_RECOMMENDED,
-            'feeder_calibrated': False,
-        })
-        self.assertEqual(unconfirmed.status_code, 200)
+        retest = self._post_json('/api/feeder/test/').json()['motor_command']
+        self._report(
+            'feed_cycle_completed',
+            command_id=retest['command_id'],
+            feeder_elapsed_ms=84,
+            feeder_max_run_ms=retest['feeder_max_run_ms'],
+            feeder_stop_reason='hcsr04',
+        )
 
         response = self._post_json('/api/auto_run/', {'enabled': True})
 
@@ -2265,10 +2408,44 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn('推薦：5000 ms', dashboard_html)
         self.assertIn('警告 : 若設定過長將導致連續送料之情形發生', dashboard_html)
         self.assertIn('送料結果', dashboard_html)
-        self.assertIn('同一版設定完成空料斗測試', dashboard_html)
+        self.assertIn('我已目視確認本次測試恰好送出一顆', dashboard_html)
         self.assertNotIn('待實機驗證', dashboard_js)
         self.assertNotIn('待實機驗證', dashboard_html)
         self.assertNotIn('順時針且單次約 90°', dashboard_html)
+
+    def test_dashboard_saves_feeder_confirmation_once_and_preserves_video_ratio(self):
+        project_root = Path(__file__).resolve().parents[2]
+        static_root = project_root / 'Django_Server' / 'fruit_app' / 'static' / 'fruit_app'
+        dashboard_js = (static_root / 'js' / 'dashboard.js').read_text(encoding='utf-8')
+        dashboard_css = (static_root / 'css' / 'dashboard.css').read_text(encoding='utf-8')
+        dashboard_html = (
+            project_root / 'Django_Server' / 'fruit_app' / 'templates' / 'dashboard.html'
+        ).read_text(encoding='utf-8')
+
+        confirmation_handler = dashboard_js[
+            dashboard_js.index('async function confirmFeederCalibration()'):
+            dashboard_js.index('function transitionTraceFromState')
+        ]
+        timing_payload = dashboard_js[
+            dashboard_js.index('function captureTimingPayloadFromInputs()'):
+            dashboard_js.index('function restoreRecommendedTiming()')
+        ]
+        self.assertIn("postJson('/api/feeder/calibration/confirm/'", confirmation_handler)
+        self.assertNotIn("postJson('/api/feeder/test/'", confirmation_handler)
+        self.assertNotIn('feeder_calibrated:', timing_payload)
+        self.assertIn("feederCalibratedInput.addEventListener('change'", dashboard_js)
+        self.assertIn('id="feeder-help-button"', dashboard_html)
+        self.assertIn('id="feeder-calibration-status"', dashboard_html)
+        self.assertIn('勾選會立即保存，不用再次測試或再次套用', dashboard_html)
+        self.assertIn('我已目視確認本次測試恰好送出一顆', dashboard_html)
+        self.assertNotIn('aspect-ratio: 16 / 9', dashboard_css)
+        self.assertIn('align-items: start;', dashboard_css)
+        self.assertIn('align-content: start;', dashboard_css)
+        self.assertIn('video {', dashboard_css)
+        self.assertIn('max-width: 100%;', dashboard_css)
+        self.assertIn('height: auto;', dashboard_css)
+        self.assertIn('max-height: min(52vh, 520px);', dashboard_css)
+        self.assertIn('.remote-video-wrap.is-streaming', dashboard_css)
 
     def test_firmware_boot_id_uses_per_boot_hardware_randomness(self):
         project_root = Path(__file__).resolve().parents[2]
@@ -2391,9 +2568,8 @@ class DataCollectionFlowTests(SimpleTestCase):
             feeder_stop_reason='hcsr04',
         )
         self.assertEqual(completed.status_code, 200)
-        confirmed = self._post_json('/api/capture_timing/', {
-            **profile,
-            'feeder_calibrated': True,
+        confirmed = self._post_json('/api/feeder/calibration/confirm/', {
+            'timing_revision': revision,
         })
         self.assertEqual(confirmed.status_code, 200)
         if camera_ready:

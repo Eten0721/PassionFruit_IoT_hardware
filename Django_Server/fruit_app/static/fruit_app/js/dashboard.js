@@ -42,6 +42,9 @@ const remoteVideo = document.getElementById('remote-video');
     const timingFeederDriveInput = document.getElementById('timing-feeder-drive');
     const timingFeederMaxRunInput = document.getElementById('timing-feeder-max-run');
     const feederCalibratedInput = document.getElementById('feeder-calibrated');
+    const feederCalibrationStatus = document.getElementById('feeder-calibration-status');
+    const feederHelp = document.getElementById('feeder-help');
+    const feederHelpButton = document.getElementById('feeder-help-button');
     const captureTimingWarning = document.getElementById('capture-timing-warning');
     const timingInputs = [
         timingFirstStationInput,
@@ -52,7 +55,6 @@ const remoteVideo = document.getElementById('remote-video');
         timingFeederStopInput,
         timingFeederDriveInput,
         timingFeederMaxRunInput,
-        feederCalibratedInput,
     ];
     const timingConfigStatus = document.getElementById('timing-config-status');
     const applyTimingButton = document.getElementById('btn-apply-timing');
@@ -73,7 +75,9 @@ const remoteVideo = document.getElementById('remote-video');
     let lastState = null;
     let lastThumbnailManifest = '';
     let timingInputsDirty = false;
+    let feederSettingsDirty = false;
     let timingUpdateInFlight = false;
+    let feederConfirmationInFlight = false;
     let classificationInFlight = false;
     const stateIdlePollMs = 1000;
     const stateActivePollMs = 500;
@@ -348,7 +352,7 @@ const remoteVideo = document.getElementById('remote-video');
             autoRunButton.disabled = true;
         } else {
             autoRunButton.textContent = '開始執行';
-            autoRunButton.disabled = !data.can_start_auto_run;
+            autoRunButton.disabled = !data.can_start_auto_run || timingInputsDirty;
         }
         recaptureButton.disabled = data.sorter_busy || !data.can_recapture;
         resetDatasetButton.disabled = data.sorter_busy;
@@ -491,7 +495,6 @@ const remoteVideo = document.getElementById('remote-video');
         timingFeederStopInput.value = timing.feeder_stop_us ?? 1500;
         timingFeederDriveInput.value = timing.feeder_drive_us ?? 1300;
         timingFeederMaxRunInput.value = timing.feeder_max_run_ms ?? 5000;
-        feederCalibratedInput.checked = Boolean(timing.feeder_calibrated);
     }
 
     function timingStatusText(data) {
@@ -514,6 +517,11 @@ const remoteVideo = document.getElementById('remote-video');
         if (!timingInputsDirty && !timingUpdateInFlight) {
             setTimingInputs(timing);
         }
+        if (!feederConfirmationInFlight) {
+            feederCalibratedInput.checked = Boolean(
+                timing.feeder_calibrated && !feederSettingsDirty,
+            );
+        }
         const motorCommand = data.motor_command || {};
         const hasPendingMotorCommand = motorCommand.command && motorCommand.command !== 'none';
         const editable = (
@@ -528,14 +536,53 @@ const remoteVideo = document.getElementById('remote-video');
         });
         applyTimingButton.disabled = !editable || timingUpdateInFlight;
         resetTimingButton.disabled = !editable || timingUpdateInFlight;
-        testFeederButton.disabled = !data.can_test_feeder || timingUpdateInFlight;
+        testFeederButton.disabled = (
+            !data.can_test_feeder
+            || timingInputsDirty
+            || timingUpdateInFlight
+            || feederConfirmationInFlight
+        );
         feederCalibratedInput.disabled = (
             !editable
             || timingUpdateInFlight
-            || (!timing.feeder_calibrated && !data.can_confirm_feeder_calibration)
+            || feederConfirmationInFlight
+            || timingInputsDirty
+            || timing.feeder_calibrated
+            || !data.can_confirm_feeder_calibration
         );
         captureTimingWarning.textContent = data.capture_timing_warning || '';
         timingConfigStatus.textContent = timingStatusText(data);
+        feederCalibrationStatus.textContent = feederCalibrationStatusText(data, timing);
+    }
+
+    function feederCalibrationStatusText(data, timing) {
+        const revision = data.capture_timing_revision ?? 0;
+        if (timingInputsDirty) {
+            if (timing.feeder_calibrated && !feederSettingsDirty) {
+                return '送料校正仍有效；目前修改尚未套用，請先保存數值。';
+            }
+            return '步驟 1／3：設定尚未套用；請先保存數值。';
+        }
+        if (timing.feeder_calibrated) {
+            return `已完成：revision ${revision} 的送料確認已保存，可以直接開始執行。`;
+        }
+        if (data.capture_timing_status !== 'applied') {
+            return `步驟 1／3：等待 ESP32 套用 revision ${revision}。`;
+        }
+        if (data.status === 'waiting_feeder') {
+            return '步驟 2／3：送料測試進行中，等待 HC-SR04 停止馬達。';
+        }
+        if (data.can_confirm_feeder_calibration) {
+            return '步驟 3／3：測試已通過；目視確認恰好送出一顆後勾選。';
+        }
+        const result = data.feeder_test_result || {};
+        if (result.event && !result.ok) {
+            return `測試未通過（${result.stop_reason || result.event}）；排除原因後請重新測試。`;
+        }
+        if (data.can_test_feeder) {
+            return '步驟 2／3：設定已套用，請執行一次送料測試。';
+        }
+        return `暫時無法測試送料（${data.feeder_test_disabled_reason || '系統尚未就緒'}）。`;
     }
 
     function readTimingInput(input, key, minimum, maximum = 3000) {
@@ -576,7 +623,6 @@ const remoteVideo = document.getElementById('remote-video');
                 500,
                 'ms',
             ),
-            feeder_calibrated: feederCalibratedInput.checked,
         };
         if (payload.feeder_drive_us === payload.feeder_stop_us) {
             throw new Error('送料驅動脈波不得與停止脈波相同。');
@@ -587,6 +633,8 @@ const remoteVideo = document.getElementById('remote-video');
     function restoreRecommendedTiming() {
         setTimingInputs(recommendedCaptureTiming());
         timingInputsDirty = true;
+        feederSettingsDirty = true;
+        feederCalibratedInput.checked = false;
         setMessage('已填入校正預設 300／200／350／300／250 ms，按下「套用停穩設定」後才會儲存。');
     }
 
@@ -606,6 +654,7 @@ const remoteVideo = document.getElementById('remote-video');
         try {
             const payload = await postJson('/api/capture_timing/', timing);
             timingInputsDirty = false;
+            feederSettingsDirty = false;
             lastState = payload;
             renderState(payload);
             setMessage(payload.capture_timing_unchanged
@@ -640,6 +689,37 @@ const remoteVideo = document.getElementById('remote-video');
                 renderState(error.payload);
             }
             setMessage(`送料測試失敗：${error.message}`);
+        }
+    }
+
+    async function confirmFeederCalibration() {
+        if (!feederCalibratedInput.checked || !lastState || feederConfirmationInFlight) {
+            return;
+        }
+        feederConfirmationInFlight = true;
+        renderCaptureTiming(lastState);
+        try {
+            const payload = await postJson('/api/feeder/calibration/confirm/', {
+                timing_revision: Number(lastState.capture_timing_revision),
+            });
+            lastState = payload;
+            renderState(payload);
+            setMessage('送料校正確認已保存，不用再次測試或套用設定。');
+        } catch (error) {
+            feederCalibratedInput.checked = false;
+            if (error.payload && error.payload.state) {
+                lastState = error.payload.state;
+                renderState(error.payload.state);
+            }
+            const reason = error.payload && error.payload.reason
+                ? `（${error.payload.reason}）`
+                : '';
+            setMessage(`保存送料校正確認失敗：${error.message}${reason}`);
+        } finally {
+            feederConfirmationInFlight = false;
+            if (lastState) {
+                renderCaptureTiming(lastState);
+            }
         }
     }
 
@@ -894,11 +974,13 @@ const remoteVideo = document.getElementById('remote-video');
     timingInputs.forEach((input) => {
         input.addEventListener('input', () => {
             timingInputsDirty = true;
+            autoRunButton.disabled = true;
             if ([
                 timingFeederStopInput,
                 timingFeederDriveInput,
                 timingFeederMaxRunInput,
             ].includes(input)) {
+                feederSettingsDirty = true;
                 feederCalibratedInput.checked = false;
             }
         });
@@ -906,6 +988,23 @@ const remoteVideo = document.getElementById('remote-video');
     resetTimingButton.addEventListener('click', restoreRecommendedTiming);
     applyTimingButton.addEventListener('click', applyCaptureTiming);
     testFeederButton.addEventListener('click', testFeederOnce);
+    feederCalibratedInput.addEventListener('change', confirmFeederCalibration);
+    feederHelpButton.addEventListener('click', () => {
+        const isOpen = feederHelp.classList.toggle('is-open');
+        feederHelpButton.setAttribute('aria-expanded', String(isOpen));
+    });
+    document.addEventListener('click', (event) => {
+        if (!feederHelp.contains(event.target)) {
+            feederHelp.classList.remove('is-open');
+            feederHelpButton.setAttribute('aria-expanded', 'false');
+        }
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            feederHelp.classList.remove('is-open');
+            feederHelpButton.setAttribute('aria-expanded', 'false');
+        }
+    });
     autoRunButton.addEventListener('click', toggleAutoRun);
     recaptureButton.addEventListener('click', recaptureCurrent);
     document.getElementById('btn-open-folder').addEventListener('click', openDatasetFolder);

@@ -14,6 +14,7 @@ ESP32 GPIO 23 ── MG996R 訊號線
 - MG996R 不得由 ESP32 的 `3.3 V`、`5 V` 或 `VIN` 供電。
 - 測試前卸除撥片或讓輸出軸保持無負載，確認旋轉範圍內沒有人手、線材或障礙物。
 - 若馬達異音、抖動、線材發熱或 ESP32 重新啟動，立即關閉電池盒。
+- 2026-08-12 發生過不明放電／電擊感與電腦短暫黑屏。接上新 ESP32 前，先完全斷電檢查極性、裸線、平台金屬件、USB 回灌路徑與共地；獨立測試只接送料專用電池盒 C，其他伺服電池盒保持關閉。
 
 ## 使用方式
 
@@ -43,4 +44,4 @@ help
 stop 1495
 ```
 
-找到的停止值只存在本次開機記憶體中，不會寫入 Flash。完成獨立測試後，必須重新燒錄 `firmware/Three_Gate_Data_Collection/Three_Gate_Data_Collection.ino`，等待 Dashboard 顯示最新 revision 已由 ESP32 套用，再執行正式的「測試送料一次」。
+找到的停止值只存在本次開機記憶體中，不會寫入 Flash。完成獨立測試後，必須重新燒錄 `firmware/Three_Gate_Data_Collection/Three_Gate_Data_Collection.ino`。在 Dashboard 套用數值並等待相同 revision 的 ESP32 ACK，再執行一次「測試送料一次」；HC-SR04 正常停止後，目視確認恰好送出一顆並勾選 checkbox。勾選會立即保存，可直接使用「開始執行」，不用再次測試或再次套用。

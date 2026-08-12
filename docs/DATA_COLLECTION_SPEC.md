@@ -80,15 +80,17 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 
 `feeder_drive_us` 不得等於 `feeder_stop_us`，但不限制兩者差值或驅動脈波位於停止值的哪一側。`feeder_max_run_ms` 是唯一運轉上限；Dashboard 與 Firmware 不得另設隱藏上限或靜默截斷。Dashboard 必須在欄位旁固定顯示「警告 : 若設定過長將導致連續送料之情形發生」。
 
-`POST /api/capture_timing/` 只能在自動運轉停止、Django idle、沒有 active fruit、sorter 動作與 motor command 時更新完整 profile。Django 原子保存至 `Django_Server/runtime_config/capture_timing.json` 並提高 revision；ESP32 只在 idle、沒有 sequence／pending report、三閘門 Home 且送料馬達停止時套用，再回報 `timing_config_applied`。
+`POST /api/capture_timing/` 只能在自動運轉停止、Django idle、沒有 active fruit、sorter 動作與 motor command 時更新完整 profile。此 endpoint 只更新數值，不接受 client 直接設定 `feeder_calibrated`。Django 原子保存至 `Django_Server/runtime_config/capture_timing.json` 並提高 revision；ESP32 只在 idle、沒有 sequence／pending report、三閘門 Home 且送料馬達停止時套用，再回報 `timing_config_applied`。
 
 每顆 fruit 開始時 snapshot 前四項拍攝機構 timing；每次建立 `feed_one` 時 snapshot 三項送料設定，流程中不得覆寫。
 
-`feeder_calibrated` 預設為 false，並與 profile 一起原子保存。操作員先在空送料筒確認停止脈波沒有爬行，再放入 `10` 顆，連續執行 `10` 次「測試送料一次」且不補回已送出的果實，覆蓋剩餘量由 `10` 顆降至 `1` 顆的情境。驅動脈波由 `1300 us` 起測，校正為能可靠撥動果實且不造成雙送的最慢值；最大運轉時間由操作員依實測結果自行指定，系統只驗證它位於 `1000～20000 ms` 且為 `500 ms` 的倍數，不套用自動計算公式。每次都必須由 HC-SR04 正常停止並目視確認恰好送出一顆；任一次漏送、雙送、卡料、撥片停滯或安全逾時都要在調整後將同一批果實放回，從 `10` 顆重新累計。測試模式不得建立 Capture session。超過 `10` 顆的裝載量必須重新校正與驗收。
+`feeder_calibrated` 預設為 false，由 Django 管理並與 profile 一起原子保存。單次確認流程固定為：套用設定、等待 ESP32 ACK 相同 revision、執行一次「測試送料一次」、由 HC-SR04 正常停止，最後由操作員目視確認恰好送出一顆並勾選 checkbox。Checkbox 立即呼叫 `POST /api/feeder/calibration/confirm/` 保存目前 revision，不得要求第二次測試或再次套用設定；保存失敗時介面必須恢復未勾選並顯示具體錯誤。重新整理後仍以伺服器保存值為準。
+
+完整機構驗收仍先在空送料筒確認停止脈波沒有爬行，再放入 `10` 顆，連續執行 `10` 次測試且不補回已送出的果實，覆蓋剩餘量由 `10` 顆降至 `1` 顆的情境。驅動脈波由 `1300 us` 起測，校正為能可靠撥動果實且不造成雙送的最慢值；最大運轉時間由操作員依實測結果自行指定，系統只驗證它位於 `1000～20000 ms` 且為 `500 ms` 的倍數，不套用自動計算公式。每次都必須由 HC-SR04 正常停止並目視確認恰好送出一顆；任一次漏送、雙送、卡料、撥片停滯或安全逾時都要在調整後將同一批果實放回，從 `10` 顆重新累計。測試模式不得建立 Capture session。超過 `10` 顆的裝載量必須重新校正與驗收。
 
 完成十顆送料後，必須在空送料筒至少執行一次完整逾時測試。操作員不得提前中止該次測試；ESP32 必須在指定的 `feeder_max_run_ms` 到期時先於本機停止，回報 `feeder_max_run_timeout`，Dashboard 顯示進料未確認，且不得建立 Capture session 或自動補轉。其他空筒情境仍等待 HC-SR04 或最大運轉時間停止；Dashboard「優雅暫停」只禁止後續送料，不中止目前 `feed_one`。
 
-修改 `feeder_stop_us`、`feeder_drive_us` 或 `feeder_max_run_ms` 都會取消確認。舊設定檔升級時保留停止與驅動脈波，移除 `feeder_run_ms` 與 `fruit_arrival_warning_ms`，將 `feeder_max_run_ms` 設為 `5000 ms`、取消確認並提高 revision。設定檔遺失、損壞或驗證失敗時載入推薦值、取消確認並在 Dashboard 明確警示，不得靜默恢復正式送料。ESP32 尚未 ACK 最新 revision 時不得測試送料或開始正式運轉；ACK、校正及其餘開始條件皆成立後，Dashboard 才開放「開始執行」。
+修改 `feeder_stop_us`、`feeder_drive_us` 或 `feeder_max_run_ms`，以及主動開始另一輪測試，都會取消既有確認；只修改拍攝 timing 時保留確認，但仍須等待新 revision ACK。測試失敗或逾時不得確認。確認 endpoint 只接受相同 revision 的成功測試、最新 ACK 且系統 idle；確認本身不得提高 revision 或建立第二個 motor command。舊設定檔升級時保留停止與驅動脈波，移除 `feeder_run_ms` 與 `fruit_arrival_warning_ms`，將 `feeder_max_run_ms` 設為 `5000 ms`、取消確認並提高 revision。設定檔遺失、損壞或驗證失敗時載入推薦值、取消確認並在 Dashboard 明確警示，不得靜默恢復正式送料。ESP32 尚未 ACK 最新 revision 時不得測試送料或開始正式運轉；ACK、校正及其餘開始條件皆成立後，Dashboard 才開放「開始執行」。
 
 其他 interval 與 request deadline：
 
@@ -112,9 +114,10 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 |---|---|---|
 | `GET` | `/api/state/` | Dashboard 完整狀態 |
 | `GET` | `/api/camera/state/` | 手機精簡 capture state 與相機 ready heartbeat |
-| `POST` | `/api/capture_timing/` | 更新 runtime profile 與送料校正確認 |
+| `POST` | `/api/capture_timing/` | 更新 runtime profile 數值 |
 | `POST` | `/api/auto_run/` | 啟用正式自動運轉或要求優雅暫停 |
 | `POST` | `/api/feeder/test/` | 在安全 idle 狀態測試一次 HC-SR04 回授送料 |
+| `POST` | `/api/feeder/calibration/confirm/` | 保存目前 revision 的人工送料確認 |
 | `POST` | `/api/capture_started/` | Best-effort 拍攝 telemetry |
 | `POST` | `/api/upload_images/` | 上傳指定站點照片 |
 | `GET` | `/api/esp32/command/?format=text` | ESP32 取得 motor command |
@@ -122,6 +125,8 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 | `POST` | `/api/discard/` | 跳過／刪除目前暫存果實 |
 
 `/api/camera/state/` 禁止快取且只讀記憶體狀態與套用 session timeout，不得掃描 Dataset 或同步 metadata／counter。手機 polling 必須 single in-flight；頁面進入背景時停止，回到前景才重啟。只有相機 stream 存在、video track 為 live、已有可擷取影格與有效尺寸時，手機才在 polling query 回報 `camera_ready=1`；Django 只在記憶體保存最後 ready 時間。每次 upload 必須帶 `fruit_id`、`capture_token` 與 `station_index`。
+
+Dashboard 的即時預覽外框在未連線時保持隱藏，左欄不得被右欄內容高度拉伸；連線後 video 使用 `width: auto`、`max-width: 100%`、`height: auto` 依來源原始比例縮放，並以 `min(52vh, 520px)` 限制預覽高度，不得固定預留 `16:9` 高度或放大到超過單頁可預覽範圍。
 
 ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、固定能力 `capability=feeder_v1`、`feeder_state=idle|awaiting_fruit`、`feeder_sensor_state=clear|blocked|unavailable` 與 `last_feed_command_id`。`clear` 只代表最近一次有效距離大於 `8.0 cm`；`0 cm`／Echo timeout 必須回報 `unavailable`，其餘為 blocked。Django 未收到 `feeder_v1`、ESP32 離線、感測器不是 `clear`、最新 revision 尚未 ACK，或 boot／feeder state 尚未完成復原時，不得建立測試 `feed_one`。
 
@@ -151,7 +156,7 @@ ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、固定能力
 5. `feeder_max_run_ms` 先到時，ESP32 立即停止並回報 `feeder_max_run_timeout`；`0 cm`／Echo timeout 在運轉中出現時立即停止並回報 `feeder_sensor_unavailable`。兩者都附實際運轉時間與設定上限。
 6. Report timeout 只重送同一個 terminal report 與鎖存 trigger，不得再次執行送料動作。
 
-「測試送料一次」重用完整停止邏輯，command context 為 calibration。HC-SR04 成功觸發後 ESP32 回到 `idle`，Django 保持自動運轉關閉，只開放人工確認 checkbox，不建立 Capture session。測試逾時只顯示停止原因與實際時間，不建立正式流程的 blocking error；感測器異常仍必須顯示可操作的錯誤。
+「測試送料一次」重用完整停止邏輯，command context 為 calibration。開始測試會先撤銷舊確認。HC-SR04 成功觸發後 ESP32 回到 `idle`，Django 保持自動運轉關閉，只開放人工確認 checkbox，不建立 Capture session；勾選成功保存後即可直接使用「開始執行」，不再建立另一個測試 command。測試逾時只顯示停止原因與實際時間，不建立正式流程的 blocking error；感測器異常仍必須顯示可操作的錯誤。
 
 ### 下一顆果實
 
@@ -183,9 +188,9 @@ ESP32 每次開機產生新的 `boot_id`。Django 若在未完成 `feed_one` 期
 
 Django 重新啟動後，依 ESP32 polling 的 `feeder_state` 與 `last_feed_command_id` 重建「進料未確認」。看到 `awaiting_fruit` 時保持自動運轉關閉、允許 HC-SR04 接手，但不建立新 `feed_one`。重複或舊的 feeder terminal report 回 `200 ignored`，不得推進流程或造成 ESP32 永久 retry。
 
-關閉電池盒 A 只用於送料機構緊急停止。若 Dashboard 仍可連線，操作員先要求優雅暫停，讓電池盒 A 保持關閉直到目前 `feed_one` 到達 `feeder_max_run_ms`，並確認 Dashboard 收到 `feeder_max_run_timeout`；清料且手離開送料筒後才可重新開啟電池盒 A，接著必須執行一次測試送料再恢復正式運轉。
+關閉送料專用電池盒 C 只用於送料機構緊急停止。若 Dashboard 仍可連線，操作員先要求優雅暫停，讓電池盒 C 保持關閉直到目前 `feed_one` 到達 `feeder_max_run_ms`，並確認 Dashboard 收到 `feeder_max_run_timeout`；清料且手離開送料筒後才可重新開啟電池盒 C，接著必須執行一次測試送料再恢復正式運轉。
 
-若緊急斷電後無法連線或看不到 terminal report，電池盒 A 必須保持關閉。操作員清料後重新啟動 ESP32，等待 Firmware 完成初始化、先寫入 `feeder_stop_us`，並確認 Dashboard 顯示 ESP32 已重新連線且正式運轉保持停用；手離開送料筒後才可重新開啟電池盒 A，之後同樣必須執行一次測試送料。
+若緊急斷電後無法連線或看不到 terminal report，電池盒 C 必須保持關閉。操作員清料後重新啟動 ESP32，等待 Firmware 完成初始化、先寫入 `feeder_stop_us`，並確認 Dashboard 顯示 ESP32 已重新連線且正式運轉保持停用；手離開送料筒後才可重新開啟電池盒 C，之後同樣必須執行一次測試送料。
 
 ### Dashboard 錯誤提示
 
@@ -290,5 +295,5 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 9. 驗收記錄必須包含撥片材料、數量、固定方式、長度、厚度、垂直高度、底板間隙、筒壁最小間隙、舵盤與螺絲規格，以及連續運轉後是否鬆動、變形或刮傷果實。
 10. 以混合尺寸、形狀與蒂頭方向的果實連續完成 `20` 顆送料與完整分類；每個 `feed_one` 都由一次有效 HC-SR04 讀值正常停止且恰好一顆，無漏送／雙送、無須人工重對送料桿。
 11. 模擬最大運轉逾時、送料中 Echo timeout，以及逾時後果實才抵達；確認馬達先停止、不自動補轉，延遲果實仍完成三站流程且自動送料保持關閉。
-12. 同一個 `20` 顆測試確認送料與分類器兩顆 MG996R、三顆拍攝平台 SG90 及分類器擋臂 SG90 均無抖動／異音，ESP32 無 reset，配電端子與線材無異常溫升；兩組 `4 × AA` 電池盒的空載與動作中電壓都須保持在所接伺服的額定範圍。任一項失敗時，校正或修正後重新累計連續 `20` 顆。
+12. 同一個 `20` 顆測試確認送料與分類器兩顆 MG996R、三顆拍攝平台 SG90 及分類器擋臂 SG90 均無抖動／異音，ESP32 無 reset，配電端子與線材無異常溫升；三組 `4 × AA` 電池盒的空載與動作中最低電壓都須保持在所接伺服的額定範圍，並記錄送料馬達未起轉次數。任一項失敗時，校正或修正後重新累計連續 `20` 顆。
 13. 模擬 ESP32 與 Django 分別在 `feed_one` 回報前後重新啟動，確認不會自動重複送料，且 Dashboard 顯示可操作的復原提示。

@@ -334,9 +334,11 @@ def capture_timing_api(request):
                 'feeder_stop_us',
                 'feeder_drive_us',
                 'feeder_max_run_ms',
-                'feeder_calibrated',
             ):
                 timing_data.setdefault(field, APP_STATE['capture_timing'][field])
+            # Calibration is server-managed through feeder_calibration_confirm_api.
+            # A timing form submission must never confirm or revoke it directly.
+            timing_data['feeder_calibrated'] = APP_STATE['capture_timing']['feeder_calibrated']
             timing = _normalise_capture_timing(timing_data, require_all=True)
         except CaptureCommandError as exc:
             return _json_error(exc.message, status=exc.status, reason=exc.reason)
@@ -347,17 +349,6 @@ def capture_timing_api(request):
         )
         if feeder_changed:
             timing['feeder_calibrated'] = False
-        elif (
-            timing['feeder_calibrated']
-            and not APP_STATE['capture_timing']['feeder_calibrated']
-            and APP_STATE.get('feeder_test_passed_revision')
-            != APP_STATE['capture_timing_revision']
-        ):
-            return _json_error(
-                '必須先以相同 revision 完成 HC-SR04 測試送料，才能確認校正。',
-                status=409,
-                reason='feeder_test_required',
-            )
 
         if timing == APP_STATE['capture_timing']:
             return JsonResponse(_state_payload(extra={
@@ -422,17 +413,96 @@ def feeder_test_api(request):
                 status=409,
                 reason=reason,
             )
+        if APP_STATE['capture_timing'].get('feeder_calibrated'):
+            timing = {**APP_STATE['capture_timing'], 'feeder_calibrated': False}
+            try:
+                capture_timing.write(
+                    _capture_timing_path(),
+                    timing,
+                    APP_STATE['capture_timing_revision'],
+                )
+            except OSError as exc:
+                return _json_error(
+                    f'無法撤銷舊送料確認，未開始測試：{exc}',
+                    status=500,
+                    reason='capture_timing_persist_failed',
+                )
+            APP_STATE['capture_timing'] = timing
+            _record_transition(
+                'feeder_calibration_revoked',
+                details={
+                    'revision': APP_STATE['capture_timing_revision'],
+                    'reason': 'feeder_retest_started',
+                },
+            )
+        APP_STATE['feeder_test_passed_revision'] = None
         try:
             command = _set_motor_command('feed_one', feed_context='calibration')
         except CaptureCommandError as exc:
             return _json_error(exc.message, status=exc.status, reason=exc.reason)
-        APP_STATE['feeder_test_passed_revision'] = None
         APP_STATE['last_error_reason'] = None
         APP_STATE['last_error_command'] = None
         APP_STATE['last_error_command_id'] = None
         APP_STATE['status'] = 'waiting_feeder'
         APP_STATE['message'] = 'ESP32 正在執行一次送料校正測試。'
         payload = _state_payload(extra={'ok': True, 'feeder_test_started': True})
+    return JsonResponse(payload)
+
+
+@csrf_exempt
+@require_POST
+def feeder_calibration_confirm_api(request):
+    """Persist operator confirmation for one successful test at the current revision."""
+    _ensure_dataset_structure()
+    data = _request_data(request)
+    revision = data.get('timing_revision')
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        return _json_error(
+            'timing_revision 必須是正整數。',
+            status=400,
+            reason='invalid_timing_revision',
+        )
+
+    with STATE_LOCK:
+        _sync_active_state_with_filesystem()
+        current_revision = APP_STATE['capture_timing_revision']
+        if revision != current_revision:
+            return _json_error(
+                f'送料測試 revision {revision} 已過期；目前設定為 revision {current_revision}。',
+                status=409,
+                reason='stale_timing_revision',
+            )
+
+        reason = _feeder_calibration_confirm_disabled_reason()
+        if reason:
+            return _json_error(
+                '目前無法保存送料確認；請等待相同 revision 套用並成功完成一次送料測試。',
+                status=409,
+                reason=reason,
+            )
+
+        previous_timing = APP_STATE['capture_timing']
+        timing = {**previous_timing, 'feeder_calibrated': True}
+        try:
+            capture_timing.write(_capture_timing_path(), timing, current_revision)
+        except OSError as exc:
+            return _json_error(
+                f'無法保存送料校正確認：{exc}',
+                status=500,
+                reason='capture_timing_persist_failed',
+                extra={'state': _state_payload()},
+            )
+
+        APP_STATE['capture_timing'] = timing
+        APP_STATE['message'] = '送料校正確認已保存；其他安全條件就緒後可直接開始執行。'
+        _record_transition(
+            'feeder_calibration_confirmed',
+            details={'revision': current_revision},
+        )
+        payload = _state_payload(extra={
+            'ok': True,
+            'feeder_calibration_confirmed': True,
+        })
     return JsonResponse(payload)
 
 
@@ -2506,6 +2576,33 @@ def _feeder_test_disabled_reason():
     return _feeder_hardware_disabled_reason()
 
 
+def _feeder_calibration_confirm_disabled_reason():
+    if APP_STATE['capture_timing'].get('feeder_calibrated'):
+        return 'feeder_calibration_already_confirmed'
+    if APP_STATE.get('auto_run_enabled'):
+        return 'auto_run_must_be_stopped'
+    if _sorter_busy():
+        return 'classifier_busy'
+    if APP_STATE.get('active_fruit_id'):
+        return 'active_fruit_exists'
+    if APP_STATE.get('motor_command'):
+        return 'pending_motor_command'
+    if APP_STATE.get('status') != 'idle':
+        return 'system_not_idle'
+    current_revision = APP_STATE['capture_timing_revision']
+    if APP_STATE['capture_timing_applied_revision'] != current_revision:
+        return 'feeder_timing_not_applied'
+    result = APP_STATE.get('feeder_test_result') or {}
+    if (
+        APP_STATE.get('feeder_test_passed_revision') != current_revision
+        or result.get('timing_revision') != current_revision
+        or not result.get('ok')
+        or result.get('stop_reason') != 'hcsr04'
+    ):
+        return 'feeder_test_required'
+    return None
+
+
 def _feeder_hardware_disabled_reason(*, allow_recovery=False):
     recovery = bool(APP_STATE.get('auto_run_recovery_reason'))
     if APP_STATE.get('dataset_operation'):
@@ -2802,8 +2899,7 @@ def _state_payload(extra=None):
         'feeder_test_result': APP_STATE.get('feeder_test_result'),
         'feeder_test_passed_revision': APP_STATE.get('feeder_test_passed_revision'),
         'can_confirm_feeder_calibration': (
-            APP_STATE.get('feeder_test_passed_revision')
-            == APP_STATE['capture_timing_revision']
+            _feeder_calibration_confirm_disabled_reason() is None
         ),
         'capture_timing_warning': APP_STATE.get('capture_timing_warning'),
         'can_test_feeder': _feeder_test_disabled_reason() is None,
