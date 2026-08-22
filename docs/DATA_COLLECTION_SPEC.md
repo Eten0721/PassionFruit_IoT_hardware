@@ -23,7 +23,7 @@
 - 進料未確認：送料因安全逾時、重新啟動或不確定結果停止，但 HC-SR04 尚未確認果實抵達；不得推測為料斗已空。
 - 優雅暫停：立即禁止建立後續送料命令，已承諾送出的目前果實仍完成拍攝與實體分類。
 - Gate 3 等待分類：第 3 張照片已保存，但 Gate 3 保持 Home、果實仍留在第 3 站，等待 `classify_fruit`。
-- Motor command：`feed_one`、`start_sequence`、`release_gate_1`、`release_gate_2` 或 `classify_fruit`。
+- Motor command：`feed_one`、`start_sequence`、`release_gate` 或 `classify_fruit`；`release_gate` 以 `station_index` 區分第 1、2 站。
 - Command slot：送料、Capture 與 sorter 共用的單一命令槽。
 
 ## 硬體設定
@@ -32,15 +32,15 @@
 
 | 裝置 | GPIO | 目標設定 |
 |---|---:|---|
-| Gate 1 position-control MG996R | `18` | Home `0°`，Release `90°`；非阻塞小角度遞增 |
-| Gate 2 position-control MG996R | `19` | Home `0°`，Release `90°`；非阻塞小角度遞增 |
-| Gate 3 position-control MG996R | `21` | Home `0°`，分類器就位後才 Release `90°`；非阻塞小角度遞增 |
+| Gate 1 position-control MG996R | `18` | Home `0°`，Release `90°` |
+| Gate 2 position-control MG996R | `19` | Home `0°`，Release `90°` |
+| Gate 3 position-control MG996R | `21` | Home `0°`，分類器就位後才 Release `90°` |
 | Upstream feeder XINHUI `60KG` continuous rotation | `23` | HC-SR04 回授停止，最大運轉時間安全保護 |
 | HC-SR04 Trigger | `26` | `10 us` pulse |
 | HC-SR04 Echo | `27` | `12000 us` timeout，輸入必須安全降壓 |
 | Position-control MG996R sorter | `25` | Home `85°` |
 
-三站閘門的 `0°／90°` 是初始目標角度，實際值、每次角度步距與更新間隔須以無干涉且能穩定推動果實的實機結果為準。慢速控制必須使用 deadline 推進，不能用長時間同步迴圈阻塞 HTTPS、感測與安全停止。
+三站閘門先沿用直接寫入 `0°／90°` 的控制方式，實際角度須以無干涉且能穩定推動果實的實機結果為準。新平台若仍發生夾果或過度推擠，再依 Issue [#16](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/16) 評估非阻塞小角度遞增；該觀察不阻擋 Gate 3／分類器複合流程。若後續實作慢速控制，必須使用 deadline 推進，不能以長時間同步迴圈阻塞 HTTPS、感測與安全停止。
 
 送料方向由馬達安裝位置及 `feeder_drive_us` 位於校正停止值的哪一側共同決定，Firmware 不固定順時針對應的脈波側。正式流程不提供反轉清料、位置 Home 或自動補轉；更換馬達位置或修改驅動脈波後必須重新測試送料。
 
@@ -52,12 +52,12 @@ XINHUI `60KG` 送料馬達直立於筒底中央並帶動分槽送料盤。送料
 
 | 中文分類 | Command code | 角度 |
 |---|---|---:|
-| 上等 | `high` | `25°` |
-| 中等 | `medium` | `55°` |
-| 下等 | `low` | `115°` |
-| 加工 | `processing` | `145°` |
+| 上等 | `high` | `55°` |
+| 中等 | `medium` | `70°` |
+| 下等 | `low` | `100°` |
+| 加工 | `processing` | `115°` |
 
-Firmware 可接受舊輸入 alias `high_medium` 與 `discard`，分別套用上等與中等的新角度；Django 與新決策層不得再產生 alias。分類器就位後才可放行 Gate 3；Gate 3 開啟後，分類器在目標角度保持 `1000 ms`，等待果實通過落料管，再讓 Gate 3 與分類器歸位。Home 穩定時間初始為 `500 ms`；複合動作 timeout 必須涵蓋分類器轉向、Gate 3 慢速放行、落果保持與兩者歸位，最終值由實作與實機量測決定。
+Firmware 可接受舊輸入 alias `high_medium` 與 `discard`，分別套用上等與中等的新角度；Django 與新決策層不得再產生 alias。分類器收到目標角度後先以開迴路方式等待 `500 ms`，再將 Gate 3 直接放行至 `90°`；從 Gate 3 到達 Release 後計時，分類器在目標角度保持 `1000 ms`。落果等待完成後，三顆 Gate 同時回 Home `0°`，分類器同時回 Home `85°`，共同歸位等待 `500 ms` 後才可回報完成。MG996R 沒有位置回授，這些等待只代表控制時序完成，不證明實際位置。複合動作 timeout 必須涵蓋分類器轉向、Gate 3 放行、落果保持與四顆馬達歸位，最終值由實作與實機量測決定。
 
 伺服供電使用兩組獨立 `AC 110 V → DC 12 V／20 A` 電源。電源 A 經 LM25116 初始降至 `6.0 V`，供三站與分類器四顆 MG996R，且不得超過 `6.6 V`；電源 B 經另一顆 LM25116 降至 `8.4 V`，只供 XINHUI 送料馬達。兩路正極不得互接，兩路 DC 負極與 ESP32 GND 必須共地。完整配線、安全與負載估算見 [`hardware_notes/硬體接線與驗收摘要.md`](../hardware_notes/硬體接線與驗收摘要.md)。
 
@@ -131,7 +131,7 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 
 Dashboard 的即時預覽外框在未連線時保持隱藏，左欄不得被右欄內容高度拉伸；連線後 video 使用 `width: auto`、`max-width: 100%`、`height: auto` 依來源原始比例縮放，並以 `min(52vh, 520px)` 限制預覽高度，不得固定預留 `16:9` 高度或放大到超過單頁可預覽範圍。
 
-ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、固定能力 `capability=feeder_v1`、`feeder_state=idle|awaiting_fruit`、`feeder_sensor_state=clear|blocked|unavailable` 與 `last_feed_command_id`。`clear` 只代表最近一次有效距離大於 `8.0 cm`；`0 cm`／Echo timeout 必須回報 `unavailable`，其餘為 blocked。Django 未收到 `feeder_v1`、ESP32 離線、感測器不是 `clear`、最新 revision 尚未 ACK，或 boot／feeder state 尚未完成復原時，不得建立測試 `feed_one`。
+ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、送料能力 `capability=feeder_v1`、複合分類能力 `sorter_capability=gate3_sorter_v1`、`feeder_state=idle|awaiting_fruit`、`feeder_sensor_state=clear|blocked|unavailable` 與 `last_feed_command_id`。`clear` 只代表最近一次有效距離大於 `8.0 cm`；`0 cm`／Echo timeout 必須回報 `unavailable`，其餘為 blocked。Django 未收到 `feeder_v1`、ESP32 離線、感測器不是 `clear`、最新 revision 尚未 ACK，或 boot／feeder state 尚未完成復原時，不得建立測試 `feed_one`。Django 未收到 `gate3_sorter_v1` 時，禁止正式自動運轉，並在 Dataset 提交前拒絕人工或未來 AI 的分類請求。
 
 ## 自動運轉與單顆送料
 
@@ -141,7 +141,7 @@ ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、固定能力
 
 操作員按下 Dashboard「開始執行」時，Django 必須在同一個 `STATE_LOCK` critical section 內確認：
 
-- ESP32 在線且回報 `feeder_v1`。
+- ESP32 在線且回報 `feeder_v1` 與 `gate3_sorter_v1`。
 - ESP32 已 ACK 最新 runtime profile，且送料校正已確認。
 - 相機最後一次 ready heartbeat 未超過 `5000 ms`。
 - 沒有 active fruit、未分類 temp fruit、Capture、sorter 或 motor command。
@@ -163,7 +163,7 @@ ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、固定能力
 
 ### 下一顆果實
 
-人工分類仍先提交 Dataset，再建立 `classify_fruit`。只有相符的 `classification_sorter_completed` 已清除 command slot，且自動運轉、相機 readiness 與全部開始條件仍成立時，Django 才建立下一個 `feed_one`。Sorter failed／timeout、Capture timeout、相機 stale 或任何 blocking error 都不得建立下一次送料；相機恢復時可自動繼續，其他錯誤由操作員優雅暫停並排除。
+目前由人工分類按鈕提供四級分類結果，未來 AI 只可取代結果來源並進入相同分類邊界。Django 確認 `gate3_sorter_v1` 後，仍先提交 Dataset，再建立 `classify_fruit`。只有相符的 `classification_sorter_completed` 已清除 command slot，且自動運轉、相機 readiness 與全部開始條件仍成立時，Django 才建立下一個 `feed_one`。Sorter failed／timeout、Capture timeout、相機 stale 或任何 blocking error 都不得建立下一次送料；相機恢復時可自動繼續，其他錯誤由操作員優雅暫停並排除。
 
 ### 安全逾時、感測異常與延遲抵達
 
@@ -219,12 +219,13 @@ Gate 1 已實際攔住果實是部署前提，並非額外位置感測。捷徑�
 
 1. Django 開放目前站點 capture request。
 2. 手機拍攝並上傳該站單張照片。
-3. 第 1、2 站原子保存成功後，Django 分別建立 `release_gate_1`、`release_gate_2`。
-4. ESP32 以非阻塞小角度遞增方式放行目前 Gate，等待伺服與果實停穩後回報下一站 ready。
-5. 第 3 站保存後，Django 將三張照片標記為可檢查與分類，不建立 `release_gate_3`；Gate 3 保持 Home，果實留在第 3 站。
-6. 使用者分類時，Django 先提交 Dataset 與 metadata，再建立 `classify_fruit`。
-7. ESP32 將分類器轉至目標角度、慢速放行 Gate 3、保持分類角度 `1000 ms`，再讓 Gate 3 與分類器歸位。
-8. 完整動作成功後回報 `classification_sorter_completed`；失敗或結果不確定時保持自動運轉關閉，且不得自動重放實體動作。
+3. 第 1、2 站原子保存成功後，Django 分別建立 `station_index=1`、`station_index=2` 的 `release_gate`。
+4. ESP32 直接放行目前 Gate，等待伺服與果實停穩後回報下一站 ready；Gate 1 與 Gate 2 放行後維持 Release。
+5. 第 3 站保存後，Django 將三張照片標記為可檢查與分類，不建立 `station_index=3` 的 `release_gate`；Gate 3 保持 Home，果實留在第 3 站。
+6. 使用者分類時，Django 先確認 ESP32 已回報 `gate3_sorter_v1`；能力缺失時保留暫存照片與果實並拒絕分類，能力存在時才提交 Dataset 與 metadata，再建立 `classify_fruit`。
+7. ESP32 將分類器轉至目標角度並等待 `500 ms`，再放行 Gate 3；Gate 3 到達 Release 後保持分類角度 `1000 ms`。
+8. 落果等待完成後，三顆 Gate 同時回 Home `0°`，分類器同時回 Home `85°`；共同歸位等待 `500 ms` 後回報 `classification_sorter_completed`。
+9. 失敗或結果不確定時保持自動運轉關閉，且不得自動重放實體動作。
 
 任何固定延遲都不能取代 Django 確認照片保存成功。
 
@@ -233,12 +234,12 @@ Gate 1 已實際攔住果實是部署前提，並非額外位置感測。捷徑�
 ```text
 feed_one -> feed_cycle_completed | feeder_max_run_timeout | feeder_sensor_not_clear | feeder_sensor_unavailable 使用 feed_one command_id
 start_sequence -> station_1_ready 使用 start_sequence command_id
-release_gate_1 -> station_2_ready 使用 release_gate_1 command_id
-release_gate_2 -> station_3_ready 使用 release_gate_2 command_id
+release_gate + station_index=1 -> station_2_ready 使用該 release_gate command_id
+release_gate + station_index=2 -> station_3_ready 使用該 release_gate command_id
 classify_fruit -> Gate 3 與 sorter 複合 terminal report 使用 classify_fruit command_id
 ```
 
-目標流程不再建立 `release_gate_3`，也不再以獨立 `capture_sequence_finished` 作為第 3 站實體放行完成事件；第 3 張照片保存本身建立可分類狀態，完整實體交握由相同 `classify_fruit` terminal report 結束。
+目標流程不再建立 `station_index=3` 的 `release_gate`，也不再以獨立 `capture_sequence_finished` 作為第 3 站實體放行完成事件；第 3 張照片保存本身建立可分類狀態，完整實體交握由相同 `classify_fruit` terminal report 結束。
 
 Django 建立 command 前，取記憶體與 `Django_Server/runtime_config/motor_command_sequence.json` 的較大值加一並原子保存，成功後才公開。檔案不存在時從 `1` 開始；損壞或寫入失敗時回傳 `motor_command_id_persist_failed` 並拒絕建立。Dataset reset 不重設序列。每個 command 只能有一個 terminal report；相同 ID 的 retry 必須冪等。
 
@@ -248,13 +249,13 @@ Django 建立 command 前，取記憶體與 `Django_Server/runtime_config/motor_
 - Capture 不在 idle。
 - Sorter 為 pending／running。
 - 單一 motor command slot 尚有命令。
-- 相機 readiness stale、送料設定未 ACK／未確認，或 ESP32 未回報 `feeder_v1`。
+- 相機 readiness stale、送料設定未 ACK／未確認，或 ESP32 未回報 `feeder_v1`／`gate3_sorter_v1`。
 
 首站捷徑以 `trigger_id` 做 server-side 冪等；legacy trigger 依 active fruit 與既有 command 防重。Firmware 以 command ID 去重實體動作，report retry 不得再次轉動伺服。Terminal sorter 收到 late duplicate report 時回 `200 ignored`，不得改寫既有結果。
 
 ## 分類與 Dataset
 
-第 3 張照片保存後，果實仍由 Gate 3 攔住。Django 在人工分類時先搬移照片、寫入 `metadata.csv`、推進 counter 並清除 active Dataset 狀態，再嘗試建立 `classify_fruit`。資料操作失敗時不得建立分類 command；資料已提交但 command 建立失敗時，不得反向搬移或回滾 metadata，Gate 3 也不得自動開啟。
+第 3 張照片保存後，果實仍由 Gate 3 攔住。Django 必須先確認 ESP32 在線且回報 `gate3_sorter_v1`；已知能力不相容時，在 Dataset 提交前拒絕分類並保留暫存照片。能力確認後，Django 在人工分類時先搬移照片、寫入 `metadata.csv`、推進 counter 並清除 active Dataset 狀態，再嘗試建立 `classify_fruit`。資料操作失敗時不得建立分類 command；資料已提交後才發生的 command 建立或硬體失敗，不得反向搬移或回滾 metadata，Gate 3 也不得自動開啟。
 
 Sorter 使用 `idle／pending／running／completed／failed／timeout`，不覆蓋 capture status。Pending／running 期間拒絕下一次送料、capture、recapture、reset 與第二筆分類。MG996R 無位置回授，completed 只代表控制時序完成並成功回報。
 
@@ -294,12 +295,13 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 2. 健康網路連續 `20` 次自動採集；實體偵測至首張保存的 median ≤ `1.0 s`、p95 ≤ `1.5 s`。
 3. 高速錄影確認第 2、3 站 ready 前果實已停止，且三張照片清晰。
 4. 模擬 Wi-Fi 中斷、TLS timeout、手機未上傳、錯站、重複 trigger 與 duplicate command。
-5. 驗證第 3 張保存後 Gate 3 仍保持關閉、未分類鎖定、四個分類出口、複合動作歸位，以及 report retry 不重複轉動分類器或 Gate 3；刪除未分類果實不得自動放行。
-6. 以 `10` 顆作為現階段一體式送料筒裝載量，由 `1300 us` 起校正能可靠起轉且不造成雙送的最慢驅動脈波，並由 `5000 ms` 起調整最大運轉時間；最終時間由操作員依實測自行指定。測試送料成功後，只有人工確認恰好一顆才可完成校正。
-7. 十顆測試果實應盡量涵蓋不同大小、形狀與蒂頭方向，並記錄各顆最大橫向直徑；樣本外形過於相近時只完成基本功能驗證，混合果形仍由後續正式實機驗收補足。
-8. 每次果實都必須落在拍攝平台起點範圍內，不得彈出軌道、越過 Gate 1、勾住出口或產生可見破皮與凹傷。
-9. 驗收記錄必須包含分槽盤材料、槽數、槽寬、固定方式、直徑、厚度、垂直間隙、筒壁最小間隙、舵盤與螺絲規格，以及連續運轉後是否鬆動、變形或刮傷果實。
-10. 以混合尺寸、形狀與蒂頭方向的果實連續完成 `20` 顆送料與完整分類；每個 `feed_one` 都由一次有效 HC-SR04 讀值正常停止且恰好一顆，無漏送／雙送、無須人工重對送料桿。
-11. 模擬最大運轉逾時、送料中 Echo timeout，以及逾時後果實才抵達；確認馬達先停止、不自動補轉，延遲果實仍完成三站流程且自動送料保持關閉。
-12. 同一個 `20` 顆測試確認送料 XINHUI `60KG`、三站與分類器共四顆 MG996R 均無抖動／異音，ESP32 無 reset，兩組電源、LM25116、配電端子與線材無異常溫升；記錄兩條伺服電源軌的空載電壓、動作中最低電壓、峰值電流與送料馬達未起轉次數。任一項失敗時，校正或修正後重新累計連續 `20` 顆。
-13. 模擬 ESP32 與 Django 分別在 `feed_one` 回報前後重新啟動，確認不會自動重複送料，且 Dashboard 顯示可操作的復原提示。
+5. 驗證第 3 張保存後 Gate 3 仍保持關閉、Gate 1／2 維持 Release、未分類鎖定，以及缺少 `gate3_sorter_v1` 時在 Dataset 提交前拒絕分類。
+6. 驗證四個分類角度 `55°／70°／100°／115°`、分類器就位等待 `500 ms`、Gate 3 放行後落果保持 `1000 ms`、四顆馬達同時歸位與共同等待 `500 ms`，以及 report retry 不重複轉動分類器或 Gate 3；刪除未分類果實不得自動放行。
+7. 以 `10` 顆作為現階段一體式送料筒裝載量，由 `1300 us` 起校正能可靠起轉且不造成雙送的最慢驅動脈波，並由 `5000 ms` 起調整最大運轉時間；最終時間由操作員依實測自行指定。測試送料成功後，只有人工確認恰好一顆才可完成校正。
+8. 十顆測試果實應盡量涵蓋不同大小、形狀與蒂頭方向，並記錄各顆最大橫向直徑；樣本外形過於相近時只完成基本功能驗證，混合果形仍由後續正式實機驗收補足。
+9. 每次果實都必須落在拍攝平台起點範圍內，不得彈出軌道、越過 Gate 1、勾住出口或產生可見破皮與凹傷。
+10. 驗收記錄必須包含分槽盤材料、槽數、槽寬、固定方式、直徑、厚度、垂直間隙、筒壁最小間隙、舵盤與螺絲規格，以及連續運轉後是否鬆動、變形或刮傷果實。
+11. 以混合尺寸、形狀與蒂頭方向的果實連續完成 `20` 顆送料與完整分類；每個 `feed_one` 都由一次有效 HC-SR04 讀值正常停止且恰好一顆，無漏送／雙送、無須人工重對送料桿。
+12. 模擬最大運轉逾時、送料中 Echo timeout，以及逾時後果實才抵達；確認馬達先停止、不自動補轉，延遲果實仍完成三站流程且自動送料保持關閉。
+13. 同一個 `20` 顆測試確認送料 XINHUI `60KG`、三站與分類器共四顆 MG996R 均無抖動／異音，ESP32 無 reset，兩組電源、LM25116、配電端子與線材無異常溫升；記錄兩條伺服電源軌的空載電壓、動作中最低電壓、峰值電流與送料馬達未起轉次數。任一項失敗時，校正或修正後重新累計連續 `20` 顆。
+14. 模擬 ESP32 與 Django 分別在 `feed_one` 回報前後重新啟動，確認不會自動重複送料，且 Dashboard 顯示可操作的復原提示。

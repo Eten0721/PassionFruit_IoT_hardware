@@ -29,7 +29,7 @@ Issue #9、#11 與 #12 的 Django、Dashboard 與 Firmware 軟體實作已完成
 
 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md) 已接受新硬體目標：三站閘門全部改為位置型 MG996R；上游使用 XINHUI `60KG` 連續旋轉伺服帶動分槽盤；分類器移到平台出口正下方且只保留一顆位置型 MG996R；全部馬達改用兩組獨立 `12 V／20 A` 電源與兩顆 LM25116。平台目標為低點 `7 cm`、高點 `18 cm`、水平長度 `55 cm`、寬度 `21 cm`、軌道內寬 `10 cm` 與站距 `16 cm`。上述機構尚未完成製作與實機驗收。
 
-現行 Django 與 Firmware 仍在第 3 張照片保存後建立 `release_gate_3`，並在 Gate 3 放行與歸位後才開放人工分類；三站閘門也尚未實作 MG996R 的非阻塞慢速角度遞增。目標流程需改為第 3 張保存後讓果實留在 Gate 3，`classify_fruit` 再依序完成分類器就位、Gate 3 慢速放行、`1000 ms` 落果保持及兩者歸位。此軟體差異尚未實作，不得把新硬體契約視為目前已穩定運作。
+現行 Django 與 Firmware 仍在第 3 張照片保存後建立 `station_index=3` 的 `release_gate`，並在三顆 Gate 歸位後才開放人工分類。目標流程需改為第 3 張保存後讓 Gate 1／2 維持 Release、Gate 3 維持 Home；收到分類結果後，分類器依現行規格的四個目標角度轉向並等待 `500 ms`，Gate 3 再放行，落果保持 `1000 ms` 後四顆馬達同時歸位並等待 `500 ms`。Django 另須以 `gate3_sorter_v1` 阻擋舊 Firmware。此軟體差異尚未實作，不得把新硬體契約視為目前已穩定運作。
 
 ## 已知問題
 
@@ -52,7 +52,7 @@ Issue #9、#11 與 #12 的 Django、Dashboard 與 Firmware 軟體實作已完成
 - 驗證送料前只有有效距離大於 `8.0 cm` 才可啟動；`0 cm`／Echo timeout 必須拒絕或立即停止並通知操作者。
 - 以 `10` 顆作為現階段一體式送料筒裝載量，校正 XINHUI 最慢可靠驅動脈波及由低往高的最大運轉時間，確認分槽盤不碰壁、停滯、漏送或雙送；超過 `10` 顆與正式安全填料線維持未驗證。
 - 分別驗證兩組 `12 V／20 A` 電源與 LM25116：記錄空載電壓、正常動作中最低電壓、峰值電流、線材／端子／模組溫升、馬達未起轉次數及 ESP32 reset；再以混合果形連續完成 `20` 顆 HC-SR04 終止送料、三站拍攝、Gate 3 等待分類與完整實體分流。
-- 驗證三顆 MG996R 閘門以非阻塞小角度遞增放行及歸位，並以高速錄影確認分類器就位後才開 Gate 3、分類器在 Gate 3 開啟後保持目標角度至少 `1000 ms`。
+- 依 Issue [#16](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/16) 驗證新平台使用直接 Home／Release 控制時是否仍會夾果；只有實測仍失敗才開發非阻塞小角度遞增。另以高速錄影確認分類器等待 `500 ms` 後才開 Gate 3、Gate 3 開啟後保持目標角度至少 `1000 ms`，以及四顆馬達同時歸位。
 - 模擬最大運轉逾時、送料中感測器無回音與逾時後果實才抵達，確認不補轉且自動送料保持暫停。
 - 分別模擬 ESP32 與 Django 在送料 command／report 邊界重新啟動，確認不會自動重複送料。
 - 建立 Dataset 第二份備份、正式切分、標註與模型驗收。
@@ -61,4 +61,4 @@ Issue #9、#11 與 #12 的 Django、Dashboard 與 Firmware 軟體實作已完成
 
 ## 下一個里程碑
 
-依 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 與 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md) 完成新平台、分槽盤送料、雙電源、Gate 3 等待分類與複合 `classify_fruit` 的軟體實作及完整實機驗收；後續未完成工作只使用符合新架構的 GitHub Issues 追蹤。
+依 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 與 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md) 完成 Issue [#14](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/14) 的 Gate 3／分類器複合流程、Issue [#15](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/15) 的完整實機驗收，以及 Issue [#16](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/16) 的三站直接控制觀察。

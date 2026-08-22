@@ -13,21 +13,21 @@
 
 拍攝平台重建為低點高 `7 cm`、高點高 `18 cm`、水平投影長度 `55 cm`、平台寬度 `21 cm`、軌道內寬 `10 cm`，三站中心間距採 `16 cm`。依高低差 `11 cm` 與水平投影推算，斜面長度約為 `56.1 cm`、坡度約為 `11.3°`；這兩個值是幾何推算，完工後仍須實測。
 
-三站閘門全部改用位置型 MG996R，沿用 GPIO `18`、`19`、`21` 與 Home／Release 邏輯。Firmware 目標改為非阻塞的小角度遞增控制，以軟體模擬較慢的放行與歸位；角度步距、更新間隔與最終角度由空載及帶果實測試校正。
+三站閘門全部改用位置型 MG996R，沿用 GPIO `18`、`19`、`21` 與 Home／Release 邏輯。新平台先使用直接寫入 Home／Release 角度的現行控制方式；是否需要非阻塞小角度遞增，須依新平台實機觀察決定，並由 GitHub Issue [#16](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/16) 獨立追蹤，不阻擋 Gate 3／分類器複合流程。
 
 ### 下置式分類器與 Gate 3 交握
 
 分類器只保留 GPIO `25` 的位置型 MG996R，不增加 SG90 擋臂。分類器移到拍攝平台出口正下方；平台出口接名目直徑 `10 cm` 的落料管，MG996R 圓形舵盤固定帶輕微坡度的ㄇ型鐵，依四級分類角度把果實導向對應籃子。落料管實際內徑必須能通過最大樣本果實。
 
-第 3 張照片保存後，果實停留在 Gate 3，Django 不再建立獨立 `release_gate_3`。人工分類先提交 Dataset，再建立既有 `classify_fruit`；wire payload 繼續使用 `command_id` 與 `classification_code`，實體語意改為：
+第 3 張照片保存後，果實停留在 Gate 3，Django 不再建立 `station_index=3` 的獨立 `release_gate`。此時 Gate 1 與 Gate 2 維持 Release，Gate 3 維持 Home。人工按鈕繼續作為目前的四級分類入口，未來 AI 只能取代分類結果來源並進入相同邊界；wire payload 繼續使用 `command_id` 與 `classification_code`，不傳送 GPIO、角度或 timing。
 
 1. 分類器移至目標角度。
-2. Gate 3 以模擬慢速方式放行。
-3. 分類器維持目標角度 `1000 ms`，等待果實通過落料管並滾向籃子。
-4. Gate 3 與分類器安全歸位。
-5. 完整動作成功後才回報 `classification_sorter_completed`。
+2. 以開迴路方式等待分類器就位 `500 ms`，再將 Gate 3 直接放行至 Release。
+3. 從 Gate 3 到達 Release 後計時，分類器維持目標角度 `1000 ms`，等待果實通過落料管並滾向籃子。
+4. 三顆 Gate 同時回到 Home `0°`，分類器同時回到 Home `85°`。
+5. 等待共同歸位 `500 ms` 後，才回報 `classification_sorter_completed`。
 
-分類器未就位或動作失敗時，Gate 3 必須保持關閉。斷電、重新啟動或結果不確定時不得自動重放實體動作，必須停止自動運轉並要求操作員檢查。刪除未分類果實時也不自動開啟 Gate 3，由操作員斷電確認安全後移除果實。
+位置型 MG996R 沒有位置回授，`500 ms` 只表示分類器就位等待完成，不證明實際到達目標角度。Firmware 必須回報 `gate3_sorter_v1` capability；Django 未收到此能力時，在 Dataset 提交前拒絕分類並保留暫存照片與 Gate 3 上的果實。分類器動作無法開始或結果不確定時，Gate 3 必須保持關閉。斷電、重新啟動或結果不確定時不得自動重放實體動作，必須停止自動運轉並要求操作員檢查。刪除未分類果實時也不自動開啟 Gate 3，由操作員斷電確認安全後移除果實。
 
 ![分類器位於拍攝平台出口正下方](../images/hardware-redesign-2026-08-22/classifier-below-platform.png)
 
@@ -60,4 +60,4 @@ Tower Pro 對 [MG996R](https://towerpro.com.tw/product/mg996R/) 標示 `4.8～6.
 
 本 ADR 取代 [ADR-0015](0015-integrated-radial-paddle-feeder.md) 的四片徑向撥片、MG996R 送料馬達及電池盒假設；一體式送料筒與側面出口繼續保留，但尺寸及分槽盤細節須重新驗收。[ADR-0014](0014-hcsr04-terminated-upstream-feed.md) 的 HC-SR04 本機停止、安全逾時、command 冪等與不自動補轉決策維持有效。
 
-本決策先建立目標硬體與流程契約。Django 與 Firmware 尚未實作 Gate 3 等待分類、複合 `classify_fruit`、MG996R 慢速步進控制及 XINHUI 送料校正；正式自動運轉必須等文件中的電氣、機構與完整流程驗收通過後才可恢復。
+本決策先建立目標硬體與流程契約。Django 與 Firmware 尚未實作 Gate 3 等待分類、複合 `classify_fruit`、`gate3_sorter_v1` capability 及 XINHUI 送料校正；三站慢速角度遞增只在 Issue #16 的實機觀察證明仍會夾果後才進入開發。正式自動運轉必須等文件中的電氣、機構與完整流程驗收通過後才可恢復。
