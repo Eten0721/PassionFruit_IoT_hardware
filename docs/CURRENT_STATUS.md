@@ -21,10 +21,9 @@
 
 現行協定與數值見 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md)。
 
-## 正在開發
+## 已接受但尚未完成
 
-- [#1 整合上游送料機構](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1)
-- [#2 分類器新增 SG90 擋臂](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 已被 ADR-0016 的下置式單一 MG996R 分類器取代；Issue 尚未同步，本文件不再把它視為目標方案。
+原 Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 所涵蓋的單顆送料、HC-SR04 本機停止與 Django 自動運轉基礎整合已完成；分槽送料盤、XINHUI 馬達及雙電源屬 ADR-0016 的新實機驗收範圍。原 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 的 SG90 分類器擋臂已取消，不再是開發目標。
 
 Issue #9、#11 與 #12 的 Django、Dashboard 與 Firmware 軟體實作已完成；GPIO `23` 的 production／calibration 送料會在 HC-SR04 `<= 6.0 cm` 時停止，或依 `1000～20000 ms`、間距 `500 ms` 的安全上限在 ESP32 本機先停止，感測器 unavailable 也會立即本機停止。Dashboard 已開放具 runtime 安全門檻的正式自動運轉與優雅暫停；機構校正及連續運轉仍依待實機驗證項目執行。
 
@@ -62,4 +61,4 @@ Issue #9、#11 與 #12 的 Django、Dashboard 與 Firmware 軟體實作已完成
 
 ## 下一個里程碑
 
-依 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 與 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md) 完成新平台、分槽盤送料、雙電源、Gate 3 等待分類與複合 `classify_fruit` 的軟體實作及完整實機驗收。現有 Issue #1、#2 的標題與內容需要在另一項 GitHub 維護工作中對齊新決策。
+依 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 與 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md) 完成新平台、分槽盤送料、雙電源、Gate 3 等待分類與複合 `classify_fruit` 的軟體實作及完整實機驗收；後續未完成工作只使用符合新架構的 GitHub Issues 追蹤。

@@ -141,4 +141,4 @@ MG996R 未起轉與重新切換電池盒開關後暫時恢復，可能與動作�
 6. 外部電源、共地與線材是否發熱或接觸不良。
 7. 送料馬達停止時是否爬行，HC-SR04 觸發並停止前是否始終只送出一顆。
 
-送料機構由 GitHub Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 開發。Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 的 SG90 擋臂方案已被 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md) 取代，Issue 內容尚待另外同步。
+原 Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 保存一體式送料筒與 HC-SR04 終止送料的基礎開發紀錄；分槽送料盤與 XINHUI 馬達的後續驗收以 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md) 為準。原 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 的 SG90 擋臂方案已取消，不再作為現行工作來源。
