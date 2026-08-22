@@ -17,7 +17,8 @@ ADR 記錄長期有效、跨模組或涉及安全與資料一致性的決策。�
 | [0011](0011-anthracnose-veto-ai-contract.md) | Superseded | 炭疽病一票否決 AI 契約 |
 | [0012](0012-defect-ratio-ai-contract.md) | Accepted | 局部瑕疵比例與人工覆核 AI 契約 |
 | [0013](0013-django-orchestrated-single-feed-auto-run.md) | Accepted | Django 協調單顆送料自動運轉 |
-| [0014](0014-hcsr04-terminated-upstream-feed.md) | Accepted | HC-SR04 終止上游送料；機構背景由 ADR-0015 取代 |
-| [0015](0015-integrated-radial-paddle-feeder.md) | Accepted | 一體式徑向撥料送料筒 |
+| [0014](0014-hcsr04-terminated-upstream-feed.md) | Accepted | HC-SR04 終止上游送料；現行機構背景見 ADR-0016 |
+| [0015](0015-integrated-radial-paddle-feeder.md) | Superseded | 一體式徑向撥料送料筒；徑向撥片、送料馬達與供電由 ADR-0016 取代 |
+| [0016](0016-hardware-platform-feeder-sorter-redesign.md) | Accepted | 拍攝平台、分槽盤送料、下置式分類器與雙電源重構 |
 
 完成項目的實作過程、版本進度與 commit 歷史不另建 ADR，由 Git、tag 與 release 保存。

@@ -33,7 +33,7 @@ Firmware 或 Django 狀態機變更後至少執行：
 
 ```powershell
 cd Django_Server
-C:\Users\qoqoo\anaconda3\envs\pf_iot_env\python.exe manage.py test fruit_app
+C:\Users\qoqoo\anaconda3\envs\PF\python.exe -s manage.py test fruit_app
 ```
 
 另需編譯目前 ESP32 板型並執行 `git diff --check`。不要用系統預設 Python 執行 Django 測試。

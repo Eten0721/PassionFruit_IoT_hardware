@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-27
 
-> 上游送料的正常終止條件已由 [ADR-0014](0014-hcsr04-terminated-upstream-feed.md) 改為 HC-SR04 回授；本 ADR 的 Django 協調、互斥、冪等與重新啟動安全原則仍有效。
+> 後續狀態：上游送料的正常終止條件已由 [ADR-0014](0014-hcsr04-terminated-upstream-feed.md) 改為 HC-SR04 回授；[ADR-0016](0016-hardware-platform-feeder-sorter-redesign.md) 另以 XINHUI `60KG` 與分槽送料盤取代本 ADR 制定時的 SG90、固定方向與開迴路角度背景。本 ADR 的 Django 協調、互斥、command 冪等與重新啟動安全原則仍有效，下文保留為歷史決策背景。
 
 ## Context
 

@@ -1,13 +1,20 @@
 const remoteVideo = document.getElementById('remote-video');
     const remoteVideoWrap = document.getElementById('remote-video-wrap');
+    const videoPlaceholder = document.getElementById('video-placeholder');
     const streamStatus = document.getElementById('stream-status');
+    const previewStatus = document.getElementById('preview-status');
+    const previewIndicator = document.getElementById('preview-indicator');
     const messageEl = document.getElementById('message');
     const activeFruitEl = document.getElementById('active-fruit');
     const nextFruitEl = document.getElementById('next-fruit');
     const stateLabelEl = document.getElementById('state-label');
     const imageCountEl = document.getElementById('image-count');
     const esp32StatusEl = document.getElementById('esp32-status');
+    const esp32Indicator = document.getElementById('esp32-indicator');
+    const cameraReadyStatusEl = document.getElementById('camera-ready-status');
+    const cameraReadyIndicator = document.getElementById('camera-ready-indicator');
     const feederSensorStateEl = document.getElementById('feeder-sensor-state');
+    const feederSensorIndicator = document.getElementById('feeder-sensor-indicator');
     const feederTestResultEl = document.getElementById('feeder-test-result');
     const motorCommandEl = document.getElementById('motor-command');
     const sorterStatusEl = document.getElementById('sorter-status');
@@ -19,16 +26,38 @@ const remoteVideo = document.getElementById('remote-video');
         document.getElementById('station-2-status'),
         document.getElementById('station-3-status'),
     ];
+    const stationCards = [1, 2, 3].map((index) => document.getElementById(`station-card-${index}`));
+    const stationImages = [1, 2, 3].map((index) => document.getElementById(`station-image-${index}`));
+    const stationFilenames = [1, 2, 3].map((index) => document.getElementById(`station-filename-${index}`));
+    const stationProgressLabel = document.getElementById('station-progress-label');
     const errorReasonEl = document.getElementById('error-reason');
-    const thumbnailGrid = document.getElementById('thumbnail-grid');
+    const rawStateLabelEl = document.getElementById('raw-state-label');
+    const stateBadge = document.getElementById('state-badge');
     const thumbnailEmpty = document.getElementById('thumbnail-empty');
     const counterInput = document.getElementById('counter-input');
     const noteInput = document.getElementById('note');
     const classifyButtons = Array.from(document.querySelectorAll('.classify-button'));
     const autoRunButton = document.getElementById('btn-auto-run');
+    const autoRunGuidance = document.getElementById('auto-run-guidance');
     const recaptureButton = document.getElementById('btn-recapture');
     const discardButton = document.getElementById('btn-discard');
     const resetDatasetButton = document.getElementById('btn-reset-dataset');
+    const setCounterButton = document.getElementById('btn-set-counter');
+    const readinessItems = {
+        esp32: document.getElementById('readiness-esp32'),
+        camera: document.getElementById('readiness-camera'),
+        sensor: document.getElementById('readiness-sensor'),
+        timing: document.getElementById('readiness-timing'),
+        calibration: document.getElementById('readiness-calibration'),
+    };
+    const operatorAlert = document.getElementById('operator-alert');
+    const operatorAlertReason = document.getElementById('operator-alert-reason');
+    const operatorAlertLocation = document.getElementById('operator-alert-location');
+    const operatorAlertFruit = document.getElementById('operator-alert-fruit');
+    const operatorAlertCommand = document.getElementById('operator-alert-command');
+    const operatorAlertFeederWrap = document.getElementById('operator-alert-feeder-wrap');
+    const operatorAlertFeeder = document.getElementById('operator-alert-feeder');
+    const operatorAlertInstruction = document.getElementById('operator-alert-instruction');
     const timingCommandDelay = document.getElementById('timing-command-delay');
     const timingWaitStarted = document.getElementById('timing-wait-started');
     const timingUploadReceived = document.getElementById('timing-upload-received');
@@ -42,7 +71,12 @@ const remoteVideo = document.getElementById('remote-video');
     const timingFeederDriveInput = document.getElementById('timing-feeder-drive');
     const timingFeederMaxRunInput = document.getElementById('timing-feeder-max-run');
     const feederCalibratedInput = document.getElementById('feeder-calibrated');
+    const feederCalibrationStatus = document.getElementById('feeder-calibration-status');
+    const feederHelp = document.getElementById('feeder-help');
+    const feederHelpButton = document.getElementById('feeder-help-button');
     const captureTimingWarning = document.getElementById('capture-timing-warning');
+    const timingSummaryStatus = document.getElementById('timing-summary-status');
+    const calibrationSummaryStatus = document.getElementById('calibration-summary-status');
     const timingInputs = [
         timingFirstStationInput,
         timingServoInput,
@@ -52,7 +86,6 @@ const remoteVideo = document.getElementById('remote-video');
         timingFeederStopInput,
         timingFeederDriveInput,
         timingFeederMaxRunInput,
-        feederCalibratedInput,
     ];
     const timingConfigStatus = document.getElementById('timing-config-status');
     const applyTimingButton = document.getElementById('btn-apply-timing');
@@ -73,8 +106,13 @@ const remoteVideo = document.getElementById('remote-video');
     let lastState = null;
     let lastThumbnailManifest = '';
     let timingInputsDirty = false;
+    let feederSettingsDirty = false;
     let timingUpdateInFlight = false;
+    let feederConfirmationInFlight = false;
     let classificationInFlight = false;
+    let controlActionInFlight = null;
+    let lastAlertFingerprint = '';
+    let lastTraceFingerprint = '';
     const stateIdlePollMs = 1000;
     const stateActivePollMs = 500;
     const webrtcPollMs = 1000;
@@ -84,17 +122,53 @@ const remoteVideo = document.getElementById('remote-video');
 
     document.getElementById('camera-url').textContent = `${window.location.origin}/camera/`;
 
+    function setTextIfChanged(element, value) {
+        const nextValue = value == null ? '' : String(value);
+        if (element.textContent !== nextValue) {
+            element.textContent = nextValue;
+        }
+    }
+
     function setMessage(message) {
-        messageEl.textContent = message || '';
+        setTextIfChanged(messageEl, message || '');
     }
 
     function setStreamStatus(message) {
-        streamStatus.textContent = message;
+        setTextIfChanged(streamStatus, message);
+    }
+
+    function setPreviewState(state, label) {
+        previewIndicator.dataset.state = state;
+        setTextIfChanged(previewStatus, label);
     }
 
     function setRemoteVideoVisible(visible) {
         remoteVideoWrap.hidden = !visible;
         remoteVideoWrap.classList.toggle('is-streaming', visible);
+        videoPlaceholder.hidden = visible;
+        setPreviewState(visible ? 'ready' : 'pending', visible ? '預覽已連線' : '等待連線');
+    }
+
+    function setElementBusy(element, busy) {
+        element.setAttribute('aria-busy', String(busy));
+        element.disabled = busy;
+    }
+
+    function beginControlAction(name, element) {
+        if (controlActionInFlight) {
+            return false;
+        }
+        controlActionInFlight = name;
+        setElementBusy(element, true);
+        return true;
+    }
+
+    function endControlAction(element) {
+        controlActionInFlight = null;
+        setElementBusy(element, false);
+        if (lastState) {
+            renderState(lastState);
+        }
     }
 
     async function postJson(url, data = {}) {
@@ -161,6 +235,7 @@ const remoteVideo = document.getElementById('remote-video');
         const offerPayload = await postJson('/api/webrtc/offer', { offer: peerConnection.localDescription });
         currentOfferId = Number(offerPayload.offer_id || 0);
         setStreamStatus('已送出 WebRTC offer，請確認手機頁正在開啟。');
+        setPreviewState('pending', '等待手機回覆');
         restartWebRTCPolling(0);
     }
 
@@ -207,10 +282,20 @@ const remoteVideo = document.getElementById('remote-video');
         if (!peerConnection) {
             return;
         }
+        const connected = peerConnection.connectionState === 'connected';
+        const failed = ['failed', 'closed', 'disconnected'].includes(peerConnection.connectionState)
+            || peerConnection.iceConnectionState === 'failed';
+        if (connected) {
+            setPreviewState('ready', '預覽已連線');
+        } else if (failed) {
+            setPreviewState('error', '預覽已中斷');
+        } else {
+            setPreviewState('pending', '正在連線');
+        }
         const debug = data
             ? `，offer:${data.offer_present ? '有' : '無'} #${data.offer_id || 0} answer:${data.answer_present ? '有' : '無'} #${data.answer_id || 0} ICE:${data.dashboard_ice_total || 0}/${data.camera_ice_total || 0}`
             : '';
-        const failedHint = peerConnection.connectionState === 'failed' || peerConnection.iceConnectionState === 'failed'
+        const failedHint = failed
             ? '，請按重新連線串流'
             : '';
         setStreamStatus(`WebRTC 狀態：${peerConnection.connectionState} / ICE：${peerConnection.iceConnectionState}${debug}${failedHint}`);
@@ -286,52 +371,211 @@ const remoteVideo = document.getElementById('remote-video');
 
     function renderState(data) {
         const images = data.latest_images || [];
-        activeFruitEl.textContent = data.active_fruit_id || '無暫存資料';
-        nextFruitEl.textContent = data.next_fruit_id || 'fruit_001';
-        stateLabelEl.textContent = data.status || 'idle';
-        imageCountEl.textContent = `${data.image_total ?? images.length} / ${data.image_count || 3}`;
-        esp32StatusEl.textContent = data.esp32_online ? '在線' : '離線';
-        feederSensorStateEl.textContent = data.feeder_sensor_state || 'unavailable';
+        const status = data.status || 'idle';
+        setTextIfChanged(activeFruitEl, data.active_fruit_id || '無暫存資料');
+        setTextIfChanged(nextFruitEl, data.next_fruit_id || 'fruit_001');
+        setTextIfChanged(stateLabelEl, captureStatusText(status));
+        setTextIfChanged(rawStateLabelEl, status);
+        stateBadge.dataset.state = captureStatusTone(status);
+        setTextIfChanged(imageCountEl, `${data.image_total ?? images.length} / ${data.image_count || 3}`);
+
+        setTextIfChanged(esp32StatusEl, data.esp32_online ? '在線' : '離線');
+        esp32Indicator.dataset.state = data.esp32_online ? 'online' : 'offline';
+        setTextIfChanged(cameraReadyStatusEl, data.camera_ready ? '可拍攝' : '未就緒');
+        cameraReadyIndicator.dataset.state = data.camera_ready ? 'ready' : 'offline';
+        const sensor = sensorStatus(data.feeder_sensor_state);
+        setTextIfChanged(feederSensorStateEl, sensor.label);
+        feederSensorIndicator.dataset.state = sensor.tone;
+
         const feederResult = data.feeder_test_result;
-        feederTestResultEl.textContent = feederResult
+        setTextIfChanged(feederTestResultEl, feederResult
             ? `${feederResult.elapsed_ms} / ${feederResult.max_run_ms} ms｜${feederResult.stop_reason}`
-            : '尚無資料';
+            : '尚無資料');
         const motorCommand = data.motor_command || {};
-        motorCommandEl.textContent = motorCommand.command && motorCommand.command !== 'none'
+        setTextIfChanged(motorCommandEl, motorCommand.command && motorCommand.command !== 'none'
             ? `${motorCommand.command} #${motorCommand.command_id || 0}`
-            : 'none';
-        sorterStatusEl.textContent = sorterStatusText(data.sorter_status);
-        sorterFruitEl.textContent = data.sorter_fruit_id || '無';
-        sorterLabelEl.textContent = data.sorter_label || '無';
-        sorterErrorEl.textContent = data.sorter_error || '無';
-        renderStationStatuses(data.station_statuses || {});
-        errorReasonEl.textContent = data.last_error_reason || '無';
-        const alert = data.operator_alert;
-        if (alert) {
-            setMessage(
-                `阻擋原因：${alert.reason}｜`
-                + `位置：${alert.location}｜`
-                + `fruit：${alert.fruit_id || '無'}｜`
-                + `command：${alert.command || 'none'} #${alert.command_id || 0}｜`
-                + `操作：${alert.instruction
-                    || '暫停 → 排除／重新拍攝／刪除 → 開始執行（請自行暫停、排除狀況後重新開始）'}`,
-            );
-        } else {
-            setMessage(data.message || '');
-        }
+            : 'none');
+        setTextIfChanged(sorterStatusEl, sorterStatusText(data.sorter_status));
+        setTextIfChanged(sorterFruitEl, data.sorter_fruit_id || '無');
+        setTextIfChanged(sorterLabelEl, data.sorter_label || '無');
+        setTextIfChanged(sorterErrorEl, data.sorter_error || '無');
+        setTextIfChanged(errorReasonEl, data.last_error_reason || '無');
+
+        renderReadiness(data);
+        renderOperatorAlert(data.operator_alert);
+        setMessage(data.message || '');
+        renderStationStatuses(data.station_statuses || {}, data.active_station_index, status);
         renderThumbnails(images);
         renderTiming(data.timing || {});
         renderCaptureTiming(data);
         renderTransitionTrace(data);
 
         classifyButtons.forEach((button) => {
-            button.disabled = classificationInFlight || data.sorter_busy || !data.can_classify;
+            button.disabled = Boolean(controlActionInFlight)
+                || classificationInFlight
+                || data.sorter_busy
+                || !data.can_classify;
         });
-        discardButton.disabled = classificationInFlight || !data.can_discard;
-        autoRunButton.textContent = '開始執行（待實機驗證）';
-        autoRunButton.disabled = true;
-        recaptureButton.disabled = data.sorter_busy || !data.can_recapture;
-        resetDatasetButton.disabled = data.sorter_busy;
+        discardButton.disabled = Boolean(controlActionInFlight)
+            || classificationInFlight
+            || !data.can_discard;
+        if (data.auto_run_enabled) {
+            setTextIfChanged(autoRunButton, '優雅暫停');
+            autoRunButton.dataset.mode = 'pause';
+            autoRunButton.disabled = Boolean(controlActionInFlight);
+        } else if (data.auto_run_finishing) {
+            setTextIfChanged(autoRunButton, '正在完成目前果實');
+            autoRunButton.dataset.mode = 'finishing';
+            autoRunButton.disabled = true;
+        } else {
+            setTextIfChanged(autoRunButton, '開始執行');
+            autoRunButton.dataset.mode = 'start';
+            autoRunButton.disabled = Boolean(controlActionInFlight)
+                || !data.can_start_auto_run
+                || timingInputsDirty;
+        }
+        setTextIfChanged(autoRunGuidance, autoRunGuidanceText(data));
+        recaptureButton.disabled = Boolean(controlActionInFlight)
+            || data.sorter_busy
+            || !data.can_recapture;
+        resetDatasetButton.disabled = Boolean(controlActionInFlight) || data.sorter_busy;
+        setCounterButton.disabled = Boolean(controlActionInFlight);
+    }
+
+    function captureStatusText(status) {
+        const labels = {
+            idle: '閒置',
+            waiting_feeder: '等待送料',
+            waiting_fruit: '等待果實',
+            waiting_esp32_start: '等待 ESP32',
+            waiting_station_ready: '等待站點',
+            waiting_camera: '等待手機拍攝',
+            uploading: '上傳中',
+            waiting_motor: '等待閘門',
+            uploaded: '拍攝完成',
+            classified: '分類完成',
+            incomplete: '照片不完整',
+            multiple_temp: '暫存衝突',
+            error: '需要處理',
+        };
+        return labels[status] || '未知狀態';
+    }
+
+    function captureStatusTone(status) {
+        if (['uploaded', 'classified'].includes(status)) {
+            return 'completed';
+        }
+        if (['error', 'incomplete', 'multiple_temp'].includes(status)) {
+            return 'error';
+        }
+        if (status === 'idle') {
+            return 'ready';
+        }
+        return 'running';
+    }
+
+    function sensorStatus(status) {
+        const labels = {
+            clear: { label: '淨空', tone: 'ready' },
+            blocked: { label: '感測區有果實', tone: 'blocked' },
+            unavailable: { label: '無有效回音', tone: 'error' },
+        };
+        return labels[status] || labels.unavailable;
+    }
+
+    function setReadinessState(item, ready, readyText, blockedText) {
+        item.dataset.state = ready ? 'ready' : 'blocked';
+        setTextIfChanged(item.querySelector('strong'), ready ? readyText : blockedText);
+    }
+
+    function renderReadiness(data) {
+        const timing = data.capture_timing || {};
+        setReadinessState(
+            readinessItems.esp32,
+            Boolean(data.esp32_online && data.esp32_feeder_capable),
+            '在線且支援 feeder_v1',
+            data.esp32_online ? '缺少 feeder_v1' : 'ESP32 離線',
+        );
+        setReadinessState(
+            readinessItems.camera,
+            Boolean(data.camera_ready),
+            '可拍攝',
+            '手機拍攝端未就緒',
+        );
+        setReadinessState(
+            readinessItems.sensor,
+            data.feeder_sensor_state === 'clear',
+            '感測區淨空',
+            sensorStatus(data.feeder_sensor_state).label,
+        );
+        setReadinessState(
+            readinessItems.timing,
+            data.capture_timing_status === 'applied',
+            '已同步',
+            timingStatusLabel(data.capture_timing_status),
+        );
+        setReadinessState(
+            readinessItems.calibration,
+            Boolean(timing.feeder_calibrated),
+            '已確認單顆送料',
+            '尚未完成校正',
+        );
+    }
+
+    function timingStatusLabel(status) {
+        const labels = {
+            applied: '已同步',
+            waiting_esp32: '等待 ESP32',
+            pending_esp32_apply: '等待套用',
+        };
+        return labels[status] || '待同步';
+    }
+
+    function autoRunGuidanceText(data) {
+        if (data.auto_run_enabled) {
+            return '目前為連續自動運轉；優雅暫停會讓目前果實完成後停止送入下一顆。';
+        }
+        if (data.auto_run_finishing) {
+            return '正在完成目前果實，完成後不會送入下一顆。';
+        }
+        if (timingInputsDirty) {
+            return '停穩設定尚未套用，請先在進階設定保存數值。';
+        }
+        const reason = data.auto_run_disabled_reason;
+        return reason
+            ? `目前無法開始：${reason}`
+            : '所有啟動條件已就緒，可以開始正式自動運轉。';
+    }
+
+    function renderOperatorAlert(alert) {
+        const fingerprint = JSON.stringify(alert || null);
+        if (fingerprint === lastAlertFingerprint) {
+            return;
+        }
+        lastAlertFingerprint = fingerprint;
+        operatorAlert.hidden = !alert;
+        if (!alert) {
+            return;
+        }
+        const feederMetrics = [
+            Number.isFinite(alert.feeder_elapsed_ms) ? `實際 ${alert.feeder_elapsed_ms} ms` : '',
+            Number.isFinite(alert.feeder_max_run_ms) ? `上限 ${alert.feeder_max_run_ms} ms` : '',
+            alert.feeder_stop_reason ? `停止原因 ${alert.feeder_stop_reason}` : '',
+        ].filter(Boolean).join('｜');
+        setTextIfChanged(operatorAlertReason, alert.reason || 'unknown');
+        setTextIfChanged(operatorAlertLocation, alert.location || 'unknown');
+        setTextIfChanged(operatorAlertFruit, alert.fruit_id || '無');
+        setTextIfChanged(
+            operatorAlertCommand,
+            `${alert.command || 'none'} #${alert.command_id || 0}`,
+        );
+        operatorAlertFeederWrap.hidden = !feederMetrics;
+        setTextIfChanged(operatorAlertFeeder, feederMetrics || '無');
+        setTextIfChanged(
+            operatorAlertInstruction,
+            alert.instruction
+                || '暫停 → 排除／重新拍攝／刪除 → 開始執行（請自行暫停、排除狀況後重新開始）',
+        );
     }
 
     function sorterStatusText(status) {
@@ -346,10 +590,21 @@ const remoteVideo = document.getElementById('remote-video');
         return labels[status] || status || '閒置';
     }
 
-    function renderStationStatuses(stationStatuses) {
+    function renderStationStatuses(stationStatuses, activeStationIndex, status) {
+        let completed = 0;
         stationStatusEls.forEach((element, index) => {
-            element.textContent = stationStatuses[String(index + 1)] || 'pending';
+            const stationIndex = index + 1;
+            const captured = stationStatuses[String(stationIndex)] === 'captured';
+            const active = !captured
+                && Number(activeStationIndex) === stationIndex
+                && !['idle', 'uploaded', 'classified'].includes(status);
+            const label = captured ? '已完成' : active ? '進行中' : '等待';
+            const tone = captured ? 'completed' : active ? 'active' : 'pending';
+            completed += captured ? 1 : 0;
+            setTextIfChanged(element, label);
+            stationCards[index].dataset.state = tone;
         });
+        setTextIfChanged(stationProgressLabel, `${completed}／3 完成`);
     }
 
     function renderThumbnails(images) {
@@ -358,31 +613,38 @@ const remoteVideo = document.getElementById('remote-video');
             return;
         }
         lastThumbnailManifest = manifest;
-        thumbnailGrid.innerHTML = '';
-        thumbnailEmpty.style.display = images.length ? 'none' : 'grid';
+        stationCards.forEach((card, index) => {
+            const imageElement = stationImages[index];
+            imageElement.removeAttribute('src');
+            imageElement.src = '';
+            imageElement.alt = '';
+            imageElement.hidden = true;
+            card.querySelector('.station-placeholder').hidden = false;
+            card.disabled = true;
+            card.onclick = null;
+            card.setAttribute('aria-label', `第 ${index + 1} 站尚未拍攝`);
+            setTextIfChanged(stationFilenames[index], '等待照片');
+        });
+        thumbnailEmpty.hidden = Boolean(images.length);
         if (!images.length) {
             closeImagePreview();
         }
-        images.forEach((image) => {
-            const item = document.createElement('button');
-            item.className = 'thumb';
-            item.type = 'button';
-            item.setAttribute('aria-label', `預覽 ${image.filename}`);
-
-            const media = document.createElement('div');
-            media.className = 'thumb-media';
-            const img = document.createElement('img');
-            img.src = image.url;
-            img.alt = image.filename;
-
-            const label = document.createElement('span');
-            label.textContent = image.filename;
-
-            media.appendChild(img);
-            item.appendChild(media);
-            item.appendChild(label);
-            item.addEventListener('click', () => openImagePreview(image));
-            thumbnailGrid.appendChild(item);
+        images.forEach((image, imageIndex) => {
+            const filenameMatch = String(image.filename || '').match(/img_0?([1-3])/i);
+            const stationIndex = filenameMatch ? Number(filenameMatch[1]) - 1 : imageIndex;
+            if (stationIndex < 0 || stationIndex >= stationCards.length) {
+                return;
+            }
+            const card = stationCards[stationIndex];
+            const imageElement = stationImages[stationIndex];
+            imageElement.src = image.url;
+            imageElement.alt = `第 ${stationIndex + 1} 站照片：${image.filename}`;
+            imageElement.hidden = false;
+            card.querySelector('.station-placeholder').hidden = true;
+            card.disabled = false;
+            card.setAttribute('aria-label', `預覽第 ${stationIndex + 1} 站照片 ${image.filename}`);
+            card.onclick = () => openImagePreview(image);
+            setTextIfChanged(stationFilenames[stationIndex], image.filename);
         });
     }
 
@@ -407,12 +669,18 @@ const remoteVideo = document.getElementById('remote-video');
     function releaseThumbnailFileHandles() {
         lastThumbnailManifest = '';
         closeImagePreview();
-        thumbnailGrid.querySelectorAll('img').forEach((img) => {
-            img.removeAttribute('src');
-            img.src = '';
+        stationImages.forEach((imageElement, index) => {
+            imageElement.removeAttribute('src');
+            imageElement.src = '';
+            imageElement.alt = '';
+            imageElement.hidden = true;
+            stationCards[index].querySelector('.station-placeholder').hidden = false;
+            stationCards[index].disabled = true;
+            stationCards[index].onclick = null;
+            stationCards[index].setAttribute('aria-label', `第 ${index + 1} 站尚未拍攝`);
+            setTextIfChanged(stationFilenames[index], '等待照片');
         });
-        thumbnailGrid.innerHTML = '';
-        thumbnailEmpty.style.display = 'grid';
+        thumbnailEmpty.hidden = false;
     }
 
     function sleep(ms) {
@@ -443,9 +711,9 @@ const remoteVideo = document.getElementById('remote-video');
 
     function renderTiming(timing) {
         const delay = timing.command_to_phone_start_ms;
-        timingCommandDelay.textContent = typeof delay === 'number' ? `${delay} ms` : '尚無資料';
-        timingWaitStarted.textContent = timing.wait_started_at || '尚無資料';
-        timingUploadReceived.textContent = timing.upload_received_at || '尚無資料';
+        setTextIfChanged(timingCommandDelay, typeof delay === 'number' ? `${delay} ms` : '尚無資料');
+        setTextIfChanged(timingWaitStarted, timing.wait_started_at || '尚無資料');
+        setTextIfChanged(timingUploadReceived, timing.upload_received_at || '尚無資料');
     }
 
     function recommendedCaptureTiming(data = lastState || {}) {
@@ -471,7 +739,6 @@ const remoteVideo = document.getElementById('remote-video');
         timingFeederStopInput.value = timing.feeder_stop_us ?? 1500;
         timingFeederDriveInput.value = timing.feeder_drive_us ?? 1300;
         timingFeederMaxRunInput.value = timing.feeder_max_run_ms ?? 5000;
-        feederCalibratedInput.checked = Boolean(timing.feeder_calibrated);
     }
 
     function timingStatusText(data) {
@@ -494,22 +761,78 @@ const remoteVideo = document.getElementById('remote-video');
         if (!timingInputsDirty && !timingUpdateInFlight) {
             setTimingInputs(timing);
         }
+        if (!feederConfirmationInFlight) {
+            feederCalibratedInput.checked = Boolean(
+                timing.feeder_calibrated && !feederSettingsDirty,
+            );
+        }
         const motorCommand = data.motor_command || {};
         const hasPendingMotorCommand = motorCommand.command && motorCommand.command !== 'none';
-        const editable = data.status === 'idle' && !data.active_fruit_id && !hasPendingMotorCommand;
+        const editable = (
+            data.status === 'idle'
+            && !data.active_fruit_id
+            && !data.sorter_busy
+            && !data.auto_run_enabled
+            && !hasPendingMotorCommand
+        );
         timingInputs.forEach((input) => {
             input.disabled = !editable || timingUpdateInFlight;
         });
         applyTimingButton.disabled = !editable || timingUpdateInFlight;
         resetTimingButton.disabled = !editable || timingUpdateInFlight;
-        testFeederButton.disabled = !data.can_test_feeder || timingUpdateInFlight;
+        testFeederButton.disabled = (
+            !data.can_test_feeder
+            || timingInputsDirty
+            || timingUpdateInFlight
+            || feederConfirmationInFlight
+        );
         feederCalibratedInput.disabled = (
             !editable
             || timingUpdateInFlight
-            || (!timing.feeder_calibrated && !data.can_confirm_feeder_calibration)
+            || feederConfirmationInFlight
+            || timingInputsDirty
+            || timing.feeder_calibrated
+            || !data.can_confirm_feeder_calibration
         );
-        captureTimingWarning.textContent = data.capture_timing_warning || '';
-        timingConfigStatus.textContent = timingStatusText(data);
+        setTextIfChanged(captureTimingWarning, data.capture_timing_warning || '');
+        setTextIfChanged(timingConfigStatus, timingStatusText(data));
+        setTextIfChanged(feederCalibrationStatus, feederCalibrationStatusText(data, timing));
+        const timingApplied = data.capture_timing_status === 'applied' && !timingInputsDirty;
+        timingSummaryStatus.dataset.state = timingApplied ? 'ready' : 'pending';
+        setTextIfChanged(timingSummaryStatus, timingApplied ? '已同步' : '待同步');
+        const calibrated = Boolean(timing.feeder_calibrated && !feederSettingsDirty);
+        calibrationSummaryStatus.dataset.state = calibrated ? 'ready' : 'pending';
+        setTextIfChanged(calibrationSummaryStatus, calibrated ? '已校正' : '未校正');
+    }
+
+    function feederCalibrationStatusText(data, timing) {
+        const revision = data.capture_timing_revision ?? 0;
+        if (timingInputsDirty) {
+            if (timing.feeder_calibrated && !feederSettingsDirty) {
+                return '送料校正仍有效；目前修改尚未套用，請先保存數值。';
+            }
+            return '步驟 1／3：設定尚未套用；請先保存數值。';
+        }
+        if (timing.feeder_calibrated) {
+            return `已完成：revision ${revision} 的送料確認已保存，可以直接開始執行。`;
+        }
+        if (data.capture_timing_status !== 'applied') {
+            return `步驟 1／3：等待 ESP32 套用 revision ${revision}。`;
+        }
+        if (data.status === 'waiting_feeder') {
+            return '步驟 2／3：送料測試進行中，等待 HC-SR04 停止馬達。';
+        }
+        if (data.can_confirm_feeder_calibration) {
+            return '步驟 3／3：測試已通過；目視確認恰好送出一顆後勾選。';
+        }
+        const result = data.feeder_test_result || {};
+        if (result.event && !result.ok) {
+            return `測試未通過（${result.stop_reason || result.event}）；排除原因後請重新測試。`;
+        }
+        if (data.can_test_feeder) {
+            return '步驟 2／3：設定已套用，請執行一次送料測試。';
+        }
+        return `暫時無法測試送料（${data.feeder_test_disabled_reason || '系統尚未就緒'}）。`;
     }
 
     function readTimingInput(input, key, minimum, maximum = 3000) {
@@ -550,7 +873,6 @@ const remoteVideo = document.getElementById('remote-video');
                 500,
                 'ms',
             ),
-            feeder_calibrated: feederCalibratedInput.checked,
         };
         if (payload.feeder_drive_us === payload.feeder_stop_us) {
             throw new Error('送料驅動脈波不得與停止脈波相同。');
@@ -561,7 +883,12 @@ const remoteVideo = document.getElementById('remote-video');
     function restoreRecommendedTiming() {
         setTimingInputs(recommendedCaptureTiming());
         timingInputsDirty = true;
+        feederSettingsDirty = true;
+        feederCalibratedInput.checked = false;
         setMessage('已填入校正預設 300／200／350／300／250 ms，按下「套用停穩設定」後才會儲存。');
+        if (lastState) {
+            renderCaptureTiming(lastState);
+        }
     }
 
     async function applyCaptureTiming() {
@@ -572,6 +899,9 @@ const remoteVideo = document.getElementById('remote-video');
             setMessage(`停穩設定無效：${error.message}`);
             return;
         }
+        if (!beginControlAction('capture-timing', applyTimingButton)) {
+            return;
+        }
 
         timingUpdateInFlight = true;
         if (lastState) {
@@ -580,6 +910,7 @@ const remoteVideo = document.getElementById('remote-video');
         try {
             const payload = await postJson('/api/capture_timing/', timing);
             timingInputsDirty = false;
+            feederSettingsDirty = false;
             lastState = payload;
             renderState(payload);
             setMessage(payload.capture_timing_unchanged
@@ -593,14 +924,15 @@ const remoteVideo = document.getElementById('remote-video');
             setMessage(`套用停穩設定失敗：${error.message}`);
         } finally {
             timingUpdateInFlight = false;
-            if (lastState) {
-                renderCaptureTiming(lastState);
-            }
+            endControlAction(applyTimingButton);
         }
     }
 
     async function testFeederOnce() {
         if (!confirm('請確認 HC-SR04 區域淨空，並在送料入口放置一顆百香果，再執行測試送料。')) {
+            return;
+        }
+        if (!beginControlAction('feeder-test', testFeederButton)) {
             return;
         }
         try {
@@ -614,6 +946,40 @@ const remoteVideo = document.getElementById('remote-video');
                 renderState(error.payload);
             }
             setMessage(`送料測試失敗：${error.message}`);
+        } finally {
+            endControlAction(testFeederButton);
+        }
+    }
+
+    async function confirmFeederCalibration() {
+        if (!feederCalibratedInput.checked || !lastState || feederConfirmationInFlight) {
+            return;
+        }
+        if (!beginControlAction('feeder-confirmation', feederCalibratedInput)) {
+            return;
+        }
+        feederConfirmationInFlight = true;
+        renderCaptureTiming(lastState);
+        try {
+            const payload = await postJson('/api/feeder/calibration/confirm/', {
+                timing_revision: Number(lastState.capture_timing_revision),
+            });
+            lastState = payload;
+            renderState(payload);
+            setMessage('送料校正確認已保存，不用再次測試或套用設定。');
+        } catch (error) {
+            feederCalibratedInput.checked = false;
+            if (error.payload && error.payload.state) {
+                lastState = error.payload.state;
+                renderState(error.payload.state);
+            }
+            const reason = error.payload && error.payload.reason
+                ? `（${error.payload.reason}）`
+                : '';
+            setMessage(`保存送料校正確認失敗：${error.message}${reason}`);
+        } finally {
+            feederConfirmationInFlight = false;
+            endControlAction(feederCalibratedInput);
         }
     }
 
@@ -694,6 +1060,11 @@ const remoteVideo = document.getElementById('remote-video');
 
     function renderTransitionTrace(data) {
         const trace = transitionTraceFromState(data);
+        const fingerprint = JSON.stringify(trace);
+        if (fingerprint === lastTraceFingerprint) {
+            return;
+        }
+        lastTraceFingerprint = fingerprint;
         transitionTraceEl.replaceChildren();
         if (!trace.length) {
             const empty = document.createElement('li');
@@ -729,6 +1100,9 @@ const remoteVideo = document.getElementById('remote-video');
             setMessage('請先輸入起始 ID。');
             return;
         }
+        if (!beginControlAction('set-counter', setCounterButton)) {
+            return;
+        }
         try {
             const payload = await postJson('/api/set_counter/', { start_id: value });
             counterInput.value = '';
@@ -736,10 +1110,15 @@ const remoteVideo = document.getElementById('remote-video');
             await refreshState();
         } catch (error) {
             setMessage(`設定失敗：${error.message}`);
+        } finally {
+            endControlAction(setCounterButton);
         }
     }
 
     async function toggleAutoRun() {
+        if (!beginControlAction('auto-run', autoRunButton)) {
+            return;
+        }
         try {
             const enabled = !Boolean(lastState && lastState.auto_run_enabled);
             const payload = await postJson('/api/auto_run/', { enabled });
@@ -751,11 +1130,16 @@ const remoteVideo = document.getElementById('remote-video');
             await refreshState();
         } catch (error) {
             setMessage(`自動運轉切換失敗：${error.message}`);
+        } finally {
+            endControlAction(autoRunButton);
         }
     }
 
     async function recaptureCurrent() {
         if (!lastState || !lastState.active_fruit_id) {
+            return;
+        }
+        if (!beginControlAction('recapture', recaptureButton)) {
             return;
         }
         try {
@@ -766,11 +1150,17 @@ const remoteVideo = document.getElementById('remote-video');
             await refreshState();
         } catch (error) {
             setMessage(`重新拍攝失敗：${error.message}`);
+        } finally {
+            endControlAction(recaptureButton);
         }
     }
 
     async function classify(label) {
+        const actionButton = classifyButtons.find((button) => button.dataset.label === label);
         if (classificationInFlight) {
+            return;
+        }
+        if (!beginControlAction('classify', actionButton)) {
             return;
         }
         classificationInFlight = true;
@@ -799,6 +1189,7 @@ const remoteVideo = document.getElementById('remote-video');
         } finally {
             classificationInFlight = false;
             await refreshState();
+            endControlAction(actionButton);
         }
     }
 
@@ -807,6 +1198,9 @@ const remoteVideo = document.getElementById('remote-video');
             return;
         }
         if (!confirm(`確定刪除 ${lastState.active_fruit_id} 的暫存照片嗎？`)) {
+            return;
+        }
+        if (!beginControlAction('discard', discardButton)) {
             return;
         }
         try {
@@ -824,6 +1218,8 @@ const remoteVideo = document.getElementById('remote-video');
                 await refreshState();
             }
             setMessage(`刪除失敗：${error.message}`);
+        } finally {
+            endControlAction(discardButton);
         }
     }
 
@@ -832,6 +1228,9 @@ const remoteVideo = document.getElementById('remote-video');
             return;
         }
         if (!confirm('再次確認：此動作無法復原，下一筆 ID 會回到 fruit_001。')) {
+            return;
+        }
+        if (!beginControlAction('reset-dataset', resetDatasetButton)) {
             return;
         }
         try {
@@ -847,6 +1246,8 @@ const remoteVideo = document.getElementById('remote-video');
                 renderState(error.payload);
             }
             setMessage(`重置 dataset 失敗：${error.message}`);
+        } finally {
+            endControlAction(resetDatasetButton);
         }
     }
 
@@ -868,25 +1269,50 @@ const remoteVideo = document.getElementById('remote-video');
     timingInputs.forEach((input) => {
         input.addEventListener('input', () => {
             timingInputsDirty = true;
+            autoRunButton.disabled = true;
             if ([
                 timingFeederStopInput,
                 timingFeederDriveInput,
                 timingFeederMaxRunInput,
             ].includes(input)) {
+                feederSettingsDirty = true;
                 feederCalibratedInput.checked = false;
+            }
+            if (lastState) {
+                renderCaptureTiming(lastState);
             }
         });
     });
     resetTimingButton.addEventListener('click', restoreRecommendedTiming);
     applyTimingButton.addEventListener('click', applyCaptureTiming);
     testFeederButton.addEventListener('click', testFeederOnce);
+    feederCalibratedInput.addEventListener('change', confirmFeederCalibration);
+    feederHelpButton.addEventListener('click', () => {
+        const isOpen = feederHelp.classList.toggle('is-open');
+        feederHelpButton.setAttribute('aria-expanded', String(isOpen));
+    });
+    document.addEventListener('click', (event) => {
+        if (!feederHelp.contains(event.target)) {
+            feederHelp.classList.remove('is-open');
+            feederHelpButton.setAttribute('aria-expanded', 'false');
+        }
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            feederHelp.classList.remove('is-open');
+            feederHelpButton.setAttribute('aria-expanded', 'false');
+        }
+    });
     autoRunButton.addEventListener('click', toggleAutoRun);
     recaptureButton.addEventListener('click', recaptureCurrent);
     document.getElementById('btn-open-folder').addEventListener('click', openDatasetFolder);
     discardButton.addEventListener('click', discardCurrent);
     resetDatasetButton.addEventListener('click', resetDataset);
     document.getElementById('btn-reconnect').addEventListener('click', () => {
-        startWebRTC().catch((error) => setStreamStatus(`串流重連失敗：${error.message}`));
+        startWebRTC().catch((error) => {
+            setStreamStatus(`串流重連失敗：${error.message}`);
+            setPreviewState('error', '預覽連線失敗');
+        });
     });
     closeImageDialogButton.addEventListener('click', closeImagePreview);
     imageDialog.addEventListener('click', (event) => {
@@ -902,6 +1328,9 @@ const remoteVideo = document.getElementById('remote-video');
         button.addEventListener('click', () => classify(button.dataset.label));
     });
 
-    startWebRTC().catch((error) => setStreamStatus(`WebRTC 初始化失敗：${error.message}`));
+    startWebRTC().catch((error) => {
+        setStreamStatus(`WebRTC 初始化失敗：${error.message}`);
+        setPreviewState('error', '預覽連線失敗');
+    });
     restartStatePolling(0);
     restartWebRTCPolling(0);

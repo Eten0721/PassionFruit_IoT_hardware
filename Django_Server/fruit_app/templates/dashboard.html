@@ -4,89 +4,192 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>資料蒐集 Dashboard｜百香果</title>
+    <title>資料蒐集控制台｜百香果</title>
     <link rel="stylesheet" href="{% static 'fruit_app/css/dashboard.css' %}">
 </head>
 <body>
-<header>
-    <h1>百香果手機相機資料蒐集</h1>
-    <div class="camera-link">手機請開啟：<span id="camera-url"></span>，不要開啟 /dashboard/。</div>
+<header class="app-header">
+    <div class="brand-block">
+        <span class="eyebrow">PASSION FRUIT COLLECTION</span>
+        <h1>百香果資料蒐集控制台</h1>
+        <p class="camera-link">手機相機頁：<strong id="camera-url"></strong>，手機不要開啟 /dashboard/。</p>
+    </div>
+    <div class="system-status" aria-label="系統連線狀態">
+        <div id="esp32-indicator" class="status-indicator" data-state="offline">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span>ESP32</span>
+            <strong id="esp32-status">離線</strong>
+        </div>
+        <div id="camera-ready-indicator" class="status-indicator" data-state="offline">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span>手機拍攝端</span>
+            <strong id="camera-ready-status">未就緒</strong>
+        </div>
+        <div id="feeder-sensor-indicator" class="status-indicator" data-state="unknown">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span>HC-SR04</span>
+            <strong id="feeder-sensor-state">無有效回音</strong>
+        </div>
+    </div>
 </header>
 
-<main>
-    <div class="grid">
-        <section>
-            <h2>手機即時畫面</h2>
-            <div id="remote-video-wrap" class="remote-video-wrap" hidden>
-                <video id="remote-video" autoplay playsinline muted></video>
-            </div>
-            <div class="section-body grid">
-                <div id="stream-status" class="message">正在建立 WebRTC offer，等待手機端連線。</div>
-                <button id="btn-reconnect" type="button" class="secondary">重新連線串流</button>
-            </div>
-        </section>
+<main class="dashboard-shell">
+    <div id="operator-alert" class="operator-alert" role="alert" hidden>
+        <div class="operator-alert-heading">
+            <span class="alert-kicker">需要操作員處理</span>
+            <strong id="operator-alert-title">系統已停止自動運轉</strong>
+        </div>
+        <dl class="alert-facts">
+            <div><dt>原因</dt><dd id="operator-alert-reason">無</dd></div>
+            <div><dt>位置</dt><dd id="operator-alert-location">無</dd></div>
+            <div><dt>資料</dt><dd id="operator-alert-fruit">無</dd></div>
+            <div><dt>命令</dt><dd id="operator-alert-command">none</dd></div>
+            <div id="operator-alert-feeder-wrap" hidden><dt>送料紀錄</dt><dd id="operator-alert-feeder">無</dd></div>
+        </dl>
+        <p id="operator-alert-instruction" class="alert-instruction"></p>
+    </div>
+    <div id="message" class="global-message" role="status" aria-live="polite"></div>
 
-        <section>
-            <h2>三站照片預覽</h2>
-            <div class="section-body">
-                <div id="thumbnail-grid" class="thumb-grid"></div>
-                <div id="thumbnail-empty" class="empty">尚未拍攝。開始自動運轉後，HC-SR04 會啟動三閘門流程，手機每站上傳 1 張照片。</div>
-            </div>
-        </section>
+    <div class="workspace-grid">
+        <div class="visual-workspace">
+            <section class="panel camera-panel" aria-labelledby="camera-panel-title">
+                <div class="panel-heading">
+                    <div>
+                        <span class="section-kicker">LIVE MONITOR</span>
+                        <h2 id="camera-panel-title">手機即時畫面</h2>
+                    </div>
+                    <div id="preview-indicator" class="status-indicator compact" data-state="pending">
+                        <span class="status-dot" aria-hidden="true"></span>
+                        <strong id="preview-status">等待連線</strong>
+                    </div>
+                </div>
+                <div class="camera-stage">
+                    <div id="remote-video-wrap" class="remote-video-wrap" hidden>
+                        <video id="remote-video" autoplay playsinline muted></video>
+                    </div>
+                    <div id="video-placeholder" class="video-placeholder">
+                        <span class="video-placeholder-mark" aria-hidden="true"></span>
+                        <strong>等待手機串流</strong>
+                        <span>拍攝上傳與即時預覽分開運作；預覽中斷不會阻擋照片上傳。</span>
+                    </div>
+                </div>
+                <div class="camera-actions">
+                    <span>即時預覽僅供監看，不代表手機拍攝端是否就緒。</span>
+                    <button id="btn-reconnect" type="button" class="button secondary">重新連線串流</button>
+                </div>
+            </section>
+
+            <section class="panel station-panel" aria-labelledby="station-panel-title">
+                <div class="panel-heading">
+                    <div>
+                        <span class="section-kicker">THREE-STATION CAPTURE</span>
+                        <h2 id="station-panel-title">三站照片預覽</h2>
+                    </div>
+                    <strong id="station-progress-label" class="panel-meta">0／3 完成</strong>
+                </div>
+                <div id="thumbnail-grid" class="station-grid">
+                    <button id="station-card-1" class="station-card" type="button" disabled aria-label="第 1 站尚未拍攝">
+                        <span class="station-card-heading"><span>第 1 站</span><strong id="station-1-status">等待</strong></span>
+                        <span class="station-media">
+                            <span class="station-placeholder" aria-hidden="true">01</span>
+                            <img id="station-image-1" alt="" hidden>
+                        </span>
+                        <span id="station-filename-1" class="station-filename">等待照片</span>
+                    </button>
+                    <button id="station-card-2" class="station-card" type="button" disabled aria-label="第 2 站尚未拍攝">
+                        <span class="station-card-heading"><span>第 2 站</span><strong id="station-2-status">等待</strong></span>
+                        <span class="station-media">
+                            <span class="station-placeholder" aria-hidden="true">02</span>
+                            <img id="station-image-2" alt="" hidden>
+                        </span>
+                        <span id="station-filename-2" class="station-filename">等待照片</span>
+                    </button>
+                    <button id="station-card-3" class="station-card" type="button" disabled aria-label="第 3 站尚未拍攝">
+                        <span class="station-card-heading"><span>第 3 站</span><strong id="station-3-status">等待</strong></span>
+                        <span class="station-media">
+                            <span class="station-placeholder" aria-hidden="true">03</span>
+                            <img id="station-image-3" alt="" hidden>
+                        </span>
+                        <span id="station-filename-3" class="station-filename">等待照片</span>
+                    </button>
+                </div>
+                <p id="thumbnail-empty" class="station-help">開始自動運轉後，HC-SR04 會啟動三閘門流程，手機每站上傳 1 張照片。</p>
+            </section>
+        </div>
+
+        <aside class="operation-workspace" aria-label="流程操作">
+            <section class="panel control-panel" aria-labelledby="control-panel-title">
+                <div class="panel-heading">
+                    <div>
+                        <span class="section-kicker">CURRENT RUN</span>
+                        <h2 id="control-panel-title">目前流程</h2>
+                    </div>
+                    <span id="state-badge" class="state-badge" data-state="idle"><span class="status-dot" aria-hidden="true"></span><strong id="state-label">閒置</strong></span>
+                </div>
+                <div class="current-fruit">
+                    <div>
+                        <span>目前資料</span>
+                        <strong id="active-fruit">無暫存資料</strong>
+                    </div>
+                    <dl>
+                        <div><dt>下一筆 ID</dt><dd id="next-fruit">fruit_001</dd></div>
+                        <div><dt>照片</dt><dd id="image-count">0 / 3</dd></div>
+                    </dl>
+                </div>
+
+                <div class="readiness-block">
+                    <div class="subheading-row">
+                        <h3>啟動條件</h3>
+                        <span>狀態由 Django 判定</span>
+                    </div>
+                    <ul class="readiness-list">
+                        <li id="readiness-esp32" data-state="pending"><span class="readiness-mark" aria-hidden="true"></span><span>ESP32 與送料能力</span><strong>檢查中</strong></li>
+                        <li id="readiness-camera" data-state="pending"><span class="readiness-mark" aria-hidden="true"></span><span>手機拍攝端</span><strong>檢查中</strong></li>
+                        <li id="readiness-sensor" data-state="pending"><span class="readiness-mark" aria-hidden="true"></span><span>HC-SR04 感測區</span><strong>檢查中</strong></li>
+                        <li id="readiness-timing" data-state="pending"><span class="readiness-mark" aria-hidden="true"></span><span>設定同步</span><strong>檢查中</strong></li>
+                        <li id="readiness-calibration" data-state="pending"><span class="readiness-mark" aria-hidden="true"></span><span>送料校正</span><strong>檢查中</strong></li>
+                    </ul>
+                </div>
+
+                <button id="btn-auto-run" type="button" class="button primary-action" disabled>開始執行</button>
+                <p id="auto-run-guidance" class="control-guidance">ESP32、送料校正、HC-SR04、相機與三站流程皆就緒後，系統才會開放正式自動運轉。</p>
+                <button id="btn-recapture" type="button" class="button warning">重新拍攝目前 fruit</button>
+            </section>
+
+            <section class="panel classify-panel" aria-labelledby="classification-title">
+                <fieldset>
+                    <legend id="classification-title">人工分類</legend>
+                    <p>確認三站照片後，將目前資料提交到對應等級。</p>
+                    <label for="note">分類備註</label>
+                    <textarea id="note" placeholder="可留空"></textarea>
+                    <div class="button-row" aria-label="百香果等級">
+                        <button type="button" class="button label classify-button" data-label="上等">上等</button>
+                        <button type="button" class="button label classify-button" data-label="中等">中等</button>
+                        <button type="button" class="button label classify-button" data-label="下等">下等</button>
+                        <button type="button" class="button label classify-button" data-label="加工">加工</button>
+                    </div>
+                    <button id="btn-discard" type="button" class="button danger ghost-danger">跳過／刪除目前資料</button>
+                </fieldset>
+                <dl class="sorter-summary">
+                    <div><dt>硬體分類器</dt><dd id="sorter-status">閒置</dd></div>
+                    <div><dt>分類器資料</dt><dd id="sorter-fruit">無</dd></div>
+                    <div><dt>分類器級別</dt><dd id="sorter-label">無</dd></div>
+                    <div><dt>分類器錯誤</dt><dd id="sorter-error">無</dd></div>
+                </dl>
+            </section>
+        </aside>
     </div>
 
-    <div class="grid">
-        <section>
-            <h2>拍攝控制</h2>
-            <div class="section-body grid">
-                <div class="status-list">
-                    <div><span>目前資料</span><strong id="active-fruit">等待中</strong></div>
-                    <div><span>下一筆 ID</span><strong id="next-fruit">fruit_001</strong></div>
-                    <div><span>流程狀態</span><strong id="state-label">idle</strong></div>
-                    <div><span>照片數量</span><strong id="image-count">0 / 3</strong></div>
-                    <div><span>ESP32</span><strong id="esp32-status">離線</strong></div>
-                    <div><span>HC-SR04</span><strong id="feeder-sensor-state">unavailable</strong></div>
-                    <div><span>測試送料結果</span><strong id="feeder-test-result">尚無資料</strong></div>
-                    <div><span>馬達命令</span><strong id="motor-command">none</strong></div>
-                    <div><span>硬體分類器</span><strong id="sorter-status">閒置</strong></div>
-                    <div><span>分類器資料</span><strong id="sorter-fruit">無</strong></div>
-                    <div><span>分類器級別</span><strong id="sorter-label">無</strong></div>
-                    <div><span>分類器錯誤</span><strong id="sorter-error">無</strong></div>
-                    <div><span>第 1 站</span><strong id="station-1-status">pending</strong></div>
-                    <div><span>第 2 站</span><strong id="station-2-status">pending</strong></div>
-                    <div><span>第 3 站</span><strong id="station-3-status">pending</strong></div>
-                    <div><span>錯誤原因</span><strong id="error-reason">無</strong></div>
-                </div>
-                <div class="controls">
-                    <input id="counter-input" type="number" min="1" inputmode="numeric" placeholder="輸入起始 ID，例如 120">
-                    <button id="btn-set-counter" type="button" class="secondary">設定起始 ID</button>
-                </div>
-                <button id="btn-auto-run" type="button" disabled>開始執行（待實機驗證）</button>
-                <div>正式自動運轉待 HC-SR04 實機驗證，本版本僅開放測試送料。</div>
-                <button id="btn-recapture" type="button" class="warning">重新拍攝目前 fruit</button>
-                <button id="btn-open-folder" type="button" class="secondary">開啟資料夾</button>
-                <button id="btn-reset-dataset" type="button" class="danger">重置 dataset</button>
-                <div id="message" class="message" role="alert"></div>
-            </div>
-        </section>
-
-        <section>
-            <h2>人工分類</h2>
-            <div class="section-body grid">
-                <textarea id="note" placeholder="note，可留空"></textarea>
-                <div class="button-row">
-                    <button type="button" class="label classify-button" data-label="上等">上等</button>
-                    <button type="button" class="label classify-button" data-label="中等">中等</button>
-                    <button type="button" class="label classify-button" data-label="下等">下等</button>
-                    <button type="button" class="label classify-button" data-label="加工">加工</button>
-                </div>
-                <button id="btn-discard" type="button" class="danger">跳過 / 刪除</button>
-            </div>
-        </section>
-
-        <section>
-            <h2>拍攝停穩設定</h2>
-            <div class="section-body grid">
+    <div class="advanced-stack">
+        <details id="capture-settings" class="disclosure-panel">
+            <summary>
+                <span><strong>停穩設定與送料校正</strong><small>調整三站 timing、同步 ESP32 並完成單顆送料確認。</small></span>
+                <span class="summary-statuses">
+                    <span id="timing-summary-status" class="summary-badge" data-state="pending">待同步</span>
+                    <span id="calibration-summary-status" class="summary-badge" data-state="pending">未校正</span>
+                </span>
+            </summary>
+            <div class="disclosure-content settings-content">
                 <div class="timing-config-grid">
                     <label class="timing-config-field" for="timing-first-station">
                         <span>第 1 站停穩時間（ms）</span>
@@ -129,40 +232,87 @@
                         <small>推薦：5000 ms</small>
                     </label>
                 </div>
-                <div role="alert">警告 : 若設定過長將導致連續送料之情形發生</div>
-                <div id="capture-timing-warning" role="alert"></div>
-                <label class="feeder-confirmation" for="feeder-calibrated">
-                    <input id="feeder-calibrated" type="checkbox">
-                    <span>送料校正已確認：空料斗測試後，停止不爬行、順時針且單次約 90°。</span>
-                </label>
-                <div id="timing-config-status" class="timing-config-status">等待 Django 載入拍攝停穩設定。</div>
-                <div class="timing-config-actions">
-                    <button id="btn-reset-timing" type="button" class="secondary">恢復校正預設</button>
-                    <button id="btn-apply-timing" type="button">套用停穩設定</button>
-                    <button id="btn-test-feeder" type="button" class="warning">測試送料一次</button>
+                <div class="static-warning" role="alert">警告 : 若設定過長將導致連續送料之情形發生</div>
+                <div id="capture-timing-warning" class="inline-warning" role="alert"></div>
+
+                <div class="calibration-panel">
+                    <div class="feeder-calibration-heading">
+                        <div><span class="section-kicker">CALIBRATION</span><strong>送料校正</strong></div>
+                        <span class="feeder-help" id="feeder-help">
+                            <button id="feeder-help-button" class="feeder-help-button" type="button" aria-label="送料校正操作說明" aria-controls="feeder-help-panel" aria-describedby="feeder-help-panel" aria-expanded="false">?</button>
+                            <span id="feeder-help-panel" class="feeder-help-panel" role="tooltip">先套用設定並等待 ESP32 ACK，再測試送料一次。HC-SR04 正常停止後，目視確認恰好送出一顆並勾選；勾選會立即保存，不用再次測試或再次套用。</span>
+                        </span>
+                    </div>
+                    <div id="feeder-calibration-status" class="feeder-calibration-status" aria-live="polite">步驟 1／3：等待設定與 ESP32 同步。</div>
+                    <label class="feeder-confirmation" for="feeder-calibrated">
+                        <input id="feeder-calibrated" type="checkbox">
+                        <span>我已目視確認本次測試恰好送出一顆，且 HC-SR04 正常停止馬達</span>
+                    </label>
+                    <div id="timing-config-status" class="timing-config-status">等待 Django 載入拍攝停穩設定。</div>
+                    <div class="timing-config-actions">
+                        <button id="btn-reset-timing" type="button" class="button secondary">恢復校正預設</button>
+                        <button id="btn-apply-timing" type="button" class="button">套用停穩設定</button>
+                        <button id="btn-test-feeder" type="button" class="button warning">測試送料一次</button>
+                    </div>
                 </div>
             </div>
-        </section>
+        </details>
 
-        <section>
-            <h2>最近流程事件</h2>
-            <div class="section-body">
-                <ol id="transition-trace" class="trace-list" aria-live="polite">
-                    <li class="trace-empty">伺服器尚未提供 transition trace。</li>
-                </ol>
+        <details id="diagnostics" class="disclosure-panel">
+            <summary>
+                <span><strong>診斷與流程紀錄</strong><small>檢查 WebRTC、硬體命令、最近事件與流程時間。</small></span>
+                <span class="summary-badge neutral">維修資訊</span>
+            </summary>
+            <div class="disclosure-content diagnostics-grid">
+                <section aria-labelledby="diagnostics-system-title">
+                    <h3 id="diagnostics-system-title">系統診斷</h3>
+                    <dl class="diagnostic-list">
+                        <div><dt>WebRTC</dt><dd id="stream-status">正在建立 WebRTC offer，等待手機端連線。</dd></div>
+                        <div><dt>Capture raw state</dt><dd id="raw-state-label">idle</dd></div>
+                        <div><dt>送料結果</dt><dd id="feeder-test-result">尚無資料</dd></div>
+                        <div><dt>馬達命令</dt><dd id="motor-command">none</dd></div>
+                        <div><dt>錯誤原因</dt><dd id="error-reason">無</dd></div>
+                    </dl>
+                    <h3>流程時間</h3>
+                    <ul class="timing-list">
+                        <li>命令到手機開始：<strong id="timing-command-delay">尚無資料</strong></li>
+                        <li>目前等待開始：<strong id="timing-wait-started">尚無資料</strong></li>
+                        <li>上次照片上傳：<strong id="timing-upload-received">尚無資料</strong></li>
+                    </ul>
+                </section>
+                <section aria-labelledby="transition-title">
+                    <h3 id="transition-title">最近流程事件</h3>
+                    <ol id="transition-trace" class="trace-list">
+                        <li class="trace-empty">伺服器尚未提供 transition trace。</li>
+                    </ol>
+                </section>
             </div>
-        </section>
+        </details>
 
-        <section>
-            <h2>流程時間</h2>
-            <div class="section-body">
-                <ul class="timing-list">
-                    <li>命令到手機開始：<strong id="timing-command-delay">尚無資料</strong></li>
-                    <li>目前等待開始：<strong id="timing-wait-started">尚無資料</strong></li>
-                    <li>上次照片上傳：<strong id="timing-upload-received">尚無資料</strong></li>
-                </ul>
+        <details id="dataset-management" class="disclosure-panel">
+            <summary>
+                <span><strong>資料管理</strong><small>設定下一筆 ID、開啟 Dataset 資料夾或重置資料。</small></span>
+                <span class="summary-badge neutral">低頻操作</span>
+            </summary>
+            <div class="disclosure-content data-management-grid">
+                <div class="counter-control">
+                    <label for="counter-input">下一筆資料起始 ID</label>
+                    <div class="controls">
+                        <input id="counter-input" type="number" min="1" inputmode="numeric" placeholder="例如 120">
+                        <button id="btn-set-counter" type="button" class="button secondary">設定起始 ID</button>
+                    </div>
+                </div>
+                <button id="btn-open-folder" type="button" class="button secondary">開啟 Dataset 資料夾</button>
+                <section class="danger-zone" aria-labelledby="danger-zone-title">
+                    <div>
+                        <span class="section-kicker">DANGER ZONE</span>
+                        <h3 id="danger-zone-title">重置 Dataset</h3>
+                        <p>刪除 temp 與所有分類照片、清空 metadata.csv，並將下一筆 ID 重設為 fruit_001。此動作無法復原。</p>
+                    </div>
+                    <button id="btn-reset-dataset" type="button" class="button danger">重置 Dataset</button>
+                </section>
             </div>
-        </section>
+        </details>
     </div>
 </main>
 
@@ -170,7 +320,7 @@
     <div class="image-dialog-body">
         <div class="image-dialog-header">
             <strong id="image-dialog-title" class="image-dialog-title">照片預覽</strong>
-            <button id="btn-close-image-dialog" class="image-dialog-close" type="button">關閉</button>
+            <button id="btn-close-image-dialog" class="button image-dialog-close" type="button">關閉</button>
         </div>
         <img id="image-dialog-image" class="image-dialog-image" alt="照片預覽">
     </div>

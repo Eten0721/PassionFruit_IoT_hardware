@@ -122,6 +122,7 @@ class CaptureController {
   int lastFeedCommandId_ = 0;
   uint32_t feederStartedAt_ = 0;
   String feederSensorState_ = "unavailable";
+  bool awaitingFruitAfterTimeout_ = false;
   bool triggerArmed_ = true;
   bool autoTriggerEnabled_ = false;
   String lastServerStatus_;
@@ -129,7 +130,7 @@ class CaptureController {
   void advanceMotion(uint32_t currentTime);
   void handleSensor(uint32_t currentTime);
   bool shouldStartAutoTrigger(float distanceCM, uint32_t currentTime, String& reason) const;
-  void startAutoTrigger(uint32_t currentTime);
+  void latchAutoTrigger(uint32_t currentTime);
   bool processAutoTrigger(uint32_t currentTime);
   void sendFastPathReport(uint32_t currentTime);
   void sendLegacyTriggerReport(uint32_t currentTime);
@@ -169,11 +170,10 @@ class CaptureController {
   void startSequence(const MotorCommand& command, uint32_t currentTime);
   void releaseGate(const MotorCommand& command, uint32_t currentTime);
   void startClassifier(const MotorCommand& command, uint32_t currentTime);
-  void startFeeder(const MotorCommand& command, uint32_t currentTime);
+  void startFeeder(const MotorCommand& command);
   void stopFeeder(
       const String& event,
-      const String& stopReason,
-      uint32_t currentTime);
+      const String& stopReason);
   void queueClassifierFailure(const MotorCommand& command, const String& reason);
   void logCommandRejected(const MotorCommand& command, const String& reason) const;
   void queueMotorError(const MotorCommand& command, const String& reason);

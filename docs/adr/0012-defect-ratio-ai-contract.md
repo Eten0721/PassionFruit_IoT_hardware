@@ -13,4 +13,4 @@
 
 ## Consequences
 
-現行特徵名稱、正規化與輸出介面由 [`decision_layer/README.md`](../../decision_layer/README.md) 定義。模型不得直接控制硬體。
+現行特徵名稱、正規化與輸出介面由模型 Repository 的 [Decision Dataset 正式契約](https://github.com/fcu-passionfruit-project/ps-quality-detection-system/blob/main/docs/specs/decision-dataset-generator.md) 定義。模型不得直接控制硬體。

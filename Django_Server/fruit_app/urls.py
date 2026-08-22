@@ -13,6 +13,11 @@ urlpatterns = [
     path('api/capture_timing/', views.capture_timing_api, name='capture_timing_api'),
     path('api/auto_run/', views.auto_run_api, name='auto_run_api'),
     path('api/feeder/test/', views.feeder_test_api, name='feeder_test_api'),
+    path(
+        'api/feeder/calibration/confirm/',
+        views.feeder_calibration_confirm_api,
+        name='feeder_calibration_confirm_api',
+    ),
     path('api/esp32_trigger/', views.esp32_trigger_api, name='esp32_trigger_api'),
     path('api/esp32/command/', views.esp32_command_api, name='esp32_command_api'),
     path('api/esp32/report/', views.esp32_report_api, name='esp32_report_api'),

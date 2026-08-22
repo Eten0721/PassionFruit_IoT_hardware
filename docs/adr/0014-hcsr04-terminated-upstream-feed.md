@@ -1,7 +1,11 @@
 # ADR-0014：HC-SR04 終止上游送料
 
-- Status: Accepted；機構背景由 ADR-0015 取代
+- Status: Accepted；現行機構背景見 ADR-0016
 - Date: 2026-07-30
+
+> 後續狀態（2026-08-09）：Issue #11 已將本 ADR 的停止契約接入 production `feed_one`，並以 runtime 安全條件開放正式自動運轉；機構校正與連續運轉仍依實機驗收項目執行。下方「本階段只實作 calibration」保留為當時的漸進開放紀錄，不代表目前軟體狀態。
+
+> 機構更新（2026-08-22）：[ADR-0016](0016-hardware-platform-feeder-sorter-redesign.md) 已取代 ADR-0015 的徑向撥片、MG996R 送料馬達與電池盒假設；本 ADR 的 HC-SR04 本機停止、安全逾時與不自動補轉契約維持有效。
 
 ## Context
 
