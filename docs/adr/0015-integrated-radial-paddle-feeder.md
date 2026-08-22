@@ -1,7 +1,9 @@
 # ADR-0015：一體式徑向撥料送料筒
 
-- Status: Accepted
+- Status: Superseded by ADR-0016
 - Date: 2026-08-08
+
+> 後續狀態（2026-08-22）：[ADR-0016](0016-hardware-platform-feeder-sorter-redesign.md) 已取代本 ADR 的四片徑向撥片、MG996R 送料馬達與電池盒假設。一體式送料筒與側面出口繼續保留，但分槽盤尺寸及出口幾何須依新機構重新驗收。下文保留為歷史決策背景。
 
 ## Context
 

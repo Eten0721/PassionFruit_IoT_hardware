@@ -4,13 +4,17 @@
 namespace {
 
 constexpr uint8_t kServoPin = 23;
+constexpr uint8_t kButtonPin = 0;
 constexpr uint16_t kAttachMinUS = 1000;
 constexpr uint16_t kAttachMaxUS = 2000;
 constexpr uint16_t kDefaultStopUS = 1500;
+constexpr uint16_t kButtonDriveUS = 1350;
 constexpr uint16_t kMinimumStopUS = 1400;
 constexpr uint16_t kMaximumStopUS = 1600;
 constexpr uint32_t kMinimumRunMS = 100;
-constexpr uint32_t kMaximumRunMS = 3000;
+constexpr uint32_t kMaximumRunMS = 5000;
+constexpr uint32_t kButtonRunMS = 5000;
+constexpr uint32_t kButtonDebounceMS = 25;
 constexpr size_t kMaximumCommandLength = 64;
 
 Servo feeder;
@@ -18,7 +22,10 @@ String commandBuffer;
 uint16_t stopPulseUS = kDefaultStopUS;
 uint16_t activePulseUS = kDefaultStopUS;
 uint32_t stopAtMS = 0;
+uint32_t buttonStateChangedAtMS = 0;
 bool running = false;
+bool rawButtonPressed = false;
+bool stableButtonPressed = false;
 
 bool timeReached(uint32_t currentTime, uint32_t deadline) {
   return static_cast<int32_t>(currentTime - deadline) >= 0;
@@ -30,10 +37,11 @@ void printHelp() {
   Serial.println("  status                 Show the current output state");
   Serial.println("  stop                   Stop immediately");
   Serial.println("  stop <1400..1600 us>   Set and apply the neutral pulse (5 us step)");
-  Serial.println("  run <1000..2000 us> <100..3000 ms>");
+  Serial.println("  run <1000..2000 us> <100..5000 ms>");
   Serial.println("                         Run once, then stop automatically");
   Serial.println("  help                   Show this help");
   Serial.println();
+  Serial.println("BOOT button: run at 1350 us for 5000 ms");
   Serial.println("Start with: run 1300 1000");
   Serial.println("Opposite direction example: run 1700 1000");
 }
@@ -47,6 +55,19 @@ void stopMotor(const char* reason) {
   Serial.print(reason);
   Serial.print(" pulse_us=");
   Serial.println(stopPulseUS);
+}
+
+void startMotor(uint16_t pulseUS, uint32_t durationMS, const char* source) {
+  activePulseUS = pulseUS;
+  feeder.writeMicroseconds(activePulseUS);
+  stopAtMS = millis() + durationMS;
+  running = true;
+  Serial.print("RUN source=");
+  Serial.print(source);
+  Serial.print(" pulse_us=");
+  Serial.print(activePulseUS);
+  Serial.print(" duration_ms=");
+  Serial.println(durationMS);
 }
 
 void printStatus() {
@@ -123,18 +144,37 @@ void handleRunCommand(const String& arguments) {
     return;
   }
   if (durationMS < kMinimumRunMS || durationMS > kMaximumRunMS) {
-    Serial.println("ERROR duration must be 100..3000 ms");
+    Serial.println("ERROR duration must be 100..5000 ms");
     return;
   }
 
-  activePulseUS = static_cast<uint16_t>(pulseUS);
-  feeder.writeMicroseconds(activePulseUS);
-  stopAtMS = millis() + durationMS;
-  running = true;
-  Serial.print("RUN pulse_us=");
-  Serial.print(activePulseUS);
-  Serial.print(" duration_ms=");
-  Serial.println(durationMS);
+  startMotor(static_cast<uint16_t>(pulseUS), durationMS, "serial_command");
+}
+
+void handleButton() {
+  const uint32_t currentTime = millis();
+  const bool buttonPressed = digitalRead(kButtonPin) == LOW;
+  if (buttonPressed != rawButtonPressed) {
+    rawButtonPressed = buttonPressed;
+    buttonStateChangedAtMS = currentTime;
+    return;
+  }
+
+  if (buttonPressed == stableButtonPressed ||
+      currentTime - buttonStateChangedAtMS < kButtonDebounceMS) {
+    return;
+  }
+
+  stableButtonPressed = buttonPressed;
+  if (!stableButtonPressed) {
+    return;
+  }
+  if (running) {
+    Serial.println("BUTTON ignored: motor is already running");
+    return;
+  }
+
+  startMotor(kButtonDriveUS, kButtonRunMS, "boot_button");
 }
 
 void handleCommand(String command) {
@@ -199,6 +239,7 @@ void enforceRunDeadline() {
 
 void setup() {
   Serial.begin(115200);
+  pinMode(kButtonPin, INPUT_PULLUP);
   feeder.attach(kServoPin, kAttachMinUS, kAttachMaxUS);
   feeder.writeMicroseconds(stopPulseUS);
   delay(100);
@@ -212,6 +253,7 @@ void setup() {
 
 void loop() {
   enforceRunDeadline();
+  handleButton();
   readSerialCommands();
   enforceRunDeadline();
 }

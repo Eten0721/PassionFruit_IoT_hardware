@@ -66,10 +66,10 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 
 1. 操作員由 Dashboard 啟用自動運轉，Django 在安全邊界建立單顆送料命令。
 2. ESP32 驅動上游送料；HC-SR04 確認果實抵達後先在本機停止馬達，再建立採集工作階段。
-3. 每站皆遵守「果實停穩、手機上傳、Django 保存成功、下一閘門放行」。
-4. 三站完成後，使用者檢查並分類照片。
-5. Django 先提交 Dataset 與 metadata，再嘗試下發實體分類命令。
-6. 分類器完成且安全條件仍成立時，Django 才建立下一次送料。
+3. 前兩站皆遵守「果實停穩、手機上傳、Django 保存成功、下一閘門放行」；第 3 張保存後，果實繼續停留在 Gate 3。
+4. 使用者檢查並分類三張照片，Django 先提交 Dataset 與 metadata。
+5. `classify_fruit` 先將下置式分類器轉到目標出口，再放行 Gate 3；果實通過落料管後，Gate 3 與分類器才歸位並回報完成。
+6. 複合分類動作完成且安全條件仍成立時，Django 才建立下一次送料。
 7. 未完成工作與實機驗證由 GitHub Issues 追蹤。
 
 完整事件、API、command 與 timeout 見 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md)。
@@ -78,6 +78,7 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 
 - Django 是中央狀態來源；手機與 ESP32 不自行推測流程完成。
 - 當站照片原子保存成功前，不得放行下一閘門。
+- 第 3 張照片保存後不得直接放行 Gate 3；下置式分類器到達目標出口後才能放行。
 - 正式流程不提供 manual capture；重拍只重新執行同一顆果實的三站流程，不驅動送料。
 - 未分類資料、active capture 或 sorter 動作存在時，不得開始下一顆。
 - 送料馬達正常由 HC-SR04 回授停止，感測異常或最大運轉時間到期時也必須由 ESP32 本機停止；網路 retry 不得重複實體送料。
@@ -85,6 +86,7 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 - 首站加速只能縮短安全條件成立後的控制往返，不得縮短機構停穩或照片保存交握。
 - HTTP timeout 是不確定結果；retry 必須維持冪等，不能假定前次失敗。
 - 資料分類先於實體分類；硬體失敗不得回滾已提交的照片、metadata 或 counter。
+- 分類器、Gate 3 放行與歸位共同構成一次 `classify_fruit` 實體動作；結果不確定時不得自動重放。
 - AI 只能輸出結構化結果並進入既有分類邊界，不得直接控制 GPIO、角度或 PWM。
 - 硬體供電、邏輯電壓與共地安全優先於持續執行。
 
@@ -94,5 +96,5 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 - 目前狀態：[CURRENT_STATUS.md](CURRENT_STATUS.md)
 - 架構決策：[adr/README.md](adr/README.md)
 - 機構紀錄：[HARDWARE_DEVELOPMENT_REPORT.md](HARDWARE_DEVELOPMENT_REPORT.md)
-- AI 決策層：[`decision_layer/README.md`](../decision_layer/README.md)
+- AI 決策層：[模型 Repository README](https://github.com/fcu-passionfruit-project/ps-quality-detection-system/blob/main/README.md)
 - 安全稽核：[SECURITY_AUDIT_2026-07-11.md](SECURITY_AUDIT_2026-07-11.md)

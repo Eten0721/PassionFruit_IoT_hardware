@@ -55,6 +55,7 @@ Necessary_library/*
 *.avi
 !hardware_notes/*.png
 !docs/images/hardware-development/*.png
+!docs/images/hardware-redesign-2026-08-22/*.png
 
 # YOLO / ML training outputs and model weights
 **/runs/
