@@ -3,16 +3,16 @@
 #include <Arduino.h>
 #include <ESP32Servo.h>
 
+#include "ClassificationSequence.h"
+#include "GateController.h"
+
 class ClassifierController {
  public:
   enum class State : uint8_t {
     kUninitialized,
     kBootHomeSettling,
     kIdleHome,
-    kHoldingClassificationPosition,
-    kReturningHome,
-    kHomeSettling,
-    kErrorReturningHome,
+    kRunning,
     kPermanentInitializationError,
   };
 
@@ -31,7 +31,7 @@ class ClassifierController {
           reason("") {}
   };
 
-  void begin(uint32_t currentTime);
+  void begin(uint32_t currentTime, GateController& gates);
   void tick(uint32_t currentTime);
   bool start(
       int commandId,
@@ -39,31 +39,22 @@ class ClassifierController {
       uint32_t currentTime,
       String& reason);
   bool busy() const;
+  bool available() const;
   bool hasResult() const;
   Result takeResult();
 
  private:
-  enum class Classification : uint8_t {
-    kInvalid,
-    kHigh,
-    kLow,
-    kProcessing,
-    kMedium,
-  };
-
   Servo servo_;
+  GateController* gates_ = nullptr;
+  ClassificationSequence sequence_;
   State state_ = State::kUninitialized;
-  uint32_t phaseDeadlineAt_ = 0;
-  uint32_t operationStartedAt_ = 0;
-  int commandId_ = 0;
-  String classificationCode_;
-  String pendingFailureReason_;
-  bool completingWithError_ = false;
+  uint32_t bootHomeStartedAt_ = 0;
+  String activeClassificationCode_;
   Result result_;
 
-  Classification parseClassification(const String& code) const;
-  int angleForClassification(Classification classification) const;
-  void startReturnHome(uint32_t currentTime, bool withError, const String& reason);
-  void finishOperation(bool success, const String& reason);
-  static bool timeReached(uint32_t currentTime, uint32_t deadline);
+  void applyStep(const ClassificationSequence::Step& step);
+  void finishOperation(
+      bool success,
+      int commandId,
+      const char* reason);
 };

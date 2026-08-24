@@ -19,7 +19,8 @@ class DjangoApiClient {
   HttpResult pollCommand(
       const String& feederState,
       const String& feederSensorState,
-      int lastFeedCommandId);
+      int lastFeedCommandId,
+      bool sorterCapable);
   HttpResult postReport(
       const String& event,
       int stationIndex,

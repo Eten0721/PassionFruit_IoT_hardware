@@ -10,6 +10,7 @@ class GateController {
   void begin();
   bool moveGate(uint8_t stationIndex, int angle);
   void moveAll(int angle);
+  bool atAngle(uint8_t stationIndex, int angle) const;
   bool allAtAngle(int angle) const;
   bool atHome() const;
 

@@ -26,6 +26,13 @@ void GateController::moveAll(int angle) {
   }
 }
 
+bool GateController::atAngle(uint8_t stationIndex, int angle) const {
+  if (stationIndex < 1 || stationIndex > FirmwareConfig::kGateCount) {
+    return false;
+  }
+  return angles_[stationIndex - 1] == angle;
+}
+
 bool GateController::allAtAngle(int angle) const {
   for (uint8_t index = 0; index < FirmwareConfig::kGateCount; index += 1) {
     if (angles_[index] != angle) {

@@ -286,7 +286,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 ### 自動化
 
 - Django：`C:\Users\qoqoo\anaconda3\envs\PF\python.exe -s manage.py test fruit_app`
-- Firmware：以 `esp32:esp32:esp32` 與 `ESP32Servo 3.2.1` 編譯正式 sketch。
+- Firmware：依 [`firmware/tests/README.md`](../firmware/tests/README.md) 執行純 C++ Gate 3／分類器狀態機 harness，並以 `esp32:esp32:esp32` 與 `ESP32Servo 3.2.1` 編譯正式 sketch。
 - Repository：`git diff --check`
 
 ### 實機
@@ -304,4 +304,4 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 11. 以混合尺寸、形狀與蒂頭方向的果實連續完成 `20` 顆送料與完整分類；每個 `feed_one` 都由一次有效 HC-SR04 讀值正常停止且恰好一顆，無漏送／雙送、無須人工重對送料桿。
 12. 模擬最大運轉逾時、送料中 Echo timeout，以及逾時後果實才抵達；確認馬達先停止、不自動補轉，延遲果實仍完成三站流程且自動送料保持關閉。
 13. 同一個 `20` 顆測試確認送料 XINHUI `60KG`、三站與分類器共四顆 MG996R 均無抖動／異音，ESP32 無 reset，兩組電源、LM25116、配電端子與線材無異常溫升；記錄兩條伺服電源軌的空載電壓、動作中最低電壓、峰值電流與送料馬達未起轉次數。任一項失敗時，校正或修正後重新累計連續 `20` 顆。
-14. 模擬 ESP32 與 Django 分別在 `feed_one` 回報前後重新啟動，確認不會自動重複送料，且 Dashboard 顯示可操作的復原提示。
+14. 模擬 ESP32 與 Django 分別在 `feed_one`、三站拍攝、Gate 3 等待分類及 `classify_fruit` terminal report 前後重新啟動，確認不會自動重播送料、閘門或分類器動作，且 Dashboard 顯示可操作的復原提示。

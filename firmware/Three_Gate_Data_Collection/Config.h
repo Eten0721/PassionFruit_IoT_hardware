@@ -13,11 +13,6 @@ constexpr uint8_t kFeederPin = 23;
 
 constexpr int kHomeAngle = 0;
 constexpr int kReleaseAngle = 90;
-constexpr int kClassifierHomeAngle = 85;
-constexpr int kClassifierHighAngle = 25;
-constexpr int kClassifierMediumAngle = 55;
-constexpr int kClassifierLowAngle = 115;
-constexpr int kClassifierProcessingAngle = 145;
 
 constexpr float kTriggerDistanceCM = 6.0F;
 constexpr float kRearmDistanceCM = 8.0F;
@@ -39,9 +34,6 @@ constexpr uint32_t kServoSettleMS = 200UL;
 constexpr uint32_t kFruitSettleMS = 350UL;
 constexpr uint32_t kFirstStationSettleMS = 300UL;
 constexpr uint32_t kFinalGateReturnDelayMS = 300UL;
-constexpr uint32_t kClassifierHoldMS = 1000UL;
-constexpr uint32_t kClassifierHomeSettleMS = 500UL;
-constexpr uint32_t kClassifierTimeoutMS = 5000UL;
 
 constexpr uint32_t kReportRetryIntervalMS = 1000UL;
 constexpr uint32_t kAutoTriggerReportRetryIntervalMS = 1000UL;

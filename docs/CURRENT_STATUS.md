@@ -1,6 +1,6 @@
 # 目前狀態
 
-更新日期：2026-08-22
+更新日期：2026-08-24
 
 本文件是可覆寫的目前快照。完成歷史由 Git、tag 與 release 保存；未完成工作的詳細規格與討論以 GitHub Issues 為準。
 
@@ -10,10 +10,10 @@
 - 每顆果實保存三張站點照片，照片保存成功後才放行下一閘門。
 - 首站捷徑、timeout retry、transition trace、照片原子保存與未分類資料鎖定可運作。
 - Capture 與 sorter 共用單一 motor command slot，command ID 可跨 Django 重啟保持遞增。
-- 人工分類先提交 Dataset 與 metadata，再驅動位置型 MG996R 分類器；硬體失敗不回滾資料。
+- 第 3 張照片保存後，Gate 1／2 維持 Release、Gate 3 維持 Home；人工分類先提交 Dataset 與 metadata，再以同一筆 `classify_fruit` 命令驅動 Gate 3／位置型 MG996R 分類器，硬體失敗不回滾資料。
 - Dashboard 可管理拍攝 timing、檢查三張照片、分類與刪除；送料測試成功後勾選即保存人工確認，不需第二次測試或再次套用。手機頁使用 single in-flight polling，Dashboard 預覽依影片原始比例縮放。
 - 上游正式送料與測試送料共用 HC-SR04 回授停止，並具備 `1000～20000 ms`、間距 `500 ms` 的本機 max timeout、sensor unavailable 安全停止與同 revision 校正確認；推薦上限為 `5000 ms`。
-- 正式自動運轉會在 ESP32、送料校正、感測區、相機與三站流程皆就緒時送入單顆果實；同一筆 HC-SR04 trigger 啟動首站，分類器完成後才允許下一顆。
+- 正式自動運轉會在 ESP32 同時回報 `feeder_v1` 與 `gate3_sorter_v1`、送料校正、感測區、相機與三站流程皆就緒時送入單顆果實；同一筆 HC-SR04 trigger 啟動首站，分類器 terminal report 完成後才允許下一顆。
 - 正式 Firmware 已按感測、閘門、分類器、HTTPS 與流程控制拆分模組。
 - Django 與模型開發統一使用 `PF` Conda 環境，基準為 Python `3.14.4` 與 Django `5.2.16` LTS。
 - 硬體與模型採獨立 Repository，照片快照存於獨立資料目錄。
@@ -29,7 +29,7 @@ Issue #9、#11 與 #12 的 Django、Dashboard 與 Firmware 軟體實作已完成
 
 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md) 已接受新硬體目標：三站閘門全部改為位置型 MG996R；上游使用 XINHUI `60KG` 連續旋轉伺服帶動分槽盤；分類器移到平台出口正下方且只保留一顆位置型 MG996R；全部馬達改用兩組獨立 `12 V／20 A` 電源與兩顆 LM25116。平台目標為低點 `7 cm`、高點 `18 cm`、水平長度 `55 cm`、寬度 `21 cm`、軌道內寬 `10 cm` 與站距 `16 cm`。上述機構尚未完成製作與實機驗收。
 
-現行 Django 與 Firmware 仍在第 3 張照片保存後建立 `station_index=3` 的 `release_gate`，並在三顆 Gate 歸位後才開放人工分類。目標流程需改為第 3 張保存後讓 Gate 1／2 維持 Release、Gate 3 維持 Home；收到分類結果後，分類器依現行規格的四個目標角度轉向並等待 `500 ms`，Gate 3 再放行，落果保持 `1000 ms` 後四顆馬達同時歸位並等待 `500 ms`。Django 另須以 `gate3_sorter_v1` 阻擋舊 Firmware。此軟體差異尚未實作，不得把新硬體契約視為目前已穩定運作。
+Issue [#14](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/14) 的 Django、Dashboard 與 Firmware 軟體實作已完成：第 3 張保存後不再建立 `station_index=3` 的 `release_gate` 或等待獨立 `capture_sequence_finished`；分類器依四個目標角度轉向並等待 `500 ms`，Gate 3 放行、落果保持 `1000 ms`，再讓三顆 Gate 與分類器同時歸位並等待 `500 ms`。Django 會以 `gate3_sorter_v1` 阻擋舊 Firmware，並以原子 recovery marker 在 ESP32／Django 重啟或 terminal report retry 時避免重送實體動作；結果不確定時須由 Dashboard 明確確認人工安全復原，才可清除鎖定。純 C++ harness、Django 測試與正式 ESP32 編譯已通過；新機構的實體動作仍須依 Issue [#15](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/15) 驗收，不得把軟體驗證視為硬體已穩定運作。
 
 ## 已知問題
 
@@ -61,4 +61,4 @@ Issue #9、#11 與 #12 的 Django、Dashboard 與 Firmware 軟體實作已完成
 
 ## 下一個里程碑
 
-依 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 與 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md) 完成 Issue [#14](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/14) 的 Gate 3／分類器複合流程、Issue [#15](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/15) 的完整實機驗收，以及 Issue [#16](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/16) 的三站直接控制觀察。
+依 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 與 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md) 完成 Issue [#15](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/15) 的完整實機驗收，以及 Issue [#16](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/16) 的三站直接控制觀察。

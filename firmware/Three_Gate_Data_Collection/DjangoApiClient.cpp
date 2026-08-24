@@ -82,11 +82,15 @@ void DjangoApiClient::closeConnection() {
 HttpResult DjangoApiClient::pollCommand(
     const String& feederState,
     const String& feederSensorState,
-    int lastFeedCommandId) {
+    int lastFeedCommandId,
+    bool sorterCapable) {
   String url(commandUrl);
   url += url.indexOf('?') >= 0 ? "&" : "?";
   url += "boot_id=" + encodeFormValue(bootId_);
   url += "&capability=feeder_v1";
+  if (sorterCapable) {
+    url += "&sorter_capability=gate3_sorter_v1";
+  }
   url += "&feeder_state=" + encodeFormValue(feederState);
   url += "&feeder_sensor_state=" + encodeFormValue(feederSensorState);
   url += "&last_feed_command_id=" + String(lastFeedCommandId);

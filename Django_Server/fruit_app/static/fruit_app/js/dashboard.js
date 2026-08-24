@@ -438,7 +438,7 @@ const remoteVideo = document.getElementById('remote-video');
         recaptureButton.disabled = Boolean(controlActionInFlight)
             || data.sorter_busy
             || !data.can_recapture;
-        resetDatasetButton.disabled = Boolean(controlActionInFlight) || data.sorter_busy;
+        resetDatasetButton.disabled = Boolean(controlActionInFlight) || !data.can_reset_dataset;
         setCounterButton.disabled = Boolean(controlActionInFlight);
     }
 
@@ -490,11 +490,14 @@ const remoteVideo = document.getElementById('remote-video');
 
     function renderReadiness(data) {
         const timing = data.capture_timing || {};
+        const missingEsp32Capability = !data.esp32_feeder_capable
+            ? '缺少 feeder_v1'
+            : '缺少 gate3_sorter_v1';
         setReadinessState(
             readinessItems.esp32,
-            Boolean(data.esp32_online && data.esp32_feeder_capable),
-            '在線且支援 feeder_v1',
-            data.esp32_online ? '缺少 feeder_v1' : 'ESP32 離線',
+            Boolean(data.esp32_online && data.esp32_feeder_capable && data.esp32_sorter_capable),
+            '在線且支援 feeder_v1／gate3_sorter_v1',
+            data.esp32_online ? missingEsp32Capability : 'ESP32 離線',
         );
         setReadinessState(
             readinessItems.camera,
@@ -1121,7 +1124,19 @@ const remoteVideo = document.getElementById('remote-video');
         }
         try {
             const enabled = !Boolean(lastState && lastState.auto_run_enabled);
-            const payload = await postJson('/api/auto_run/', { enabled });
+            let recoveryConfirmed = false;
+            if (enabled && lastState && lastState.sorter_recovery_required) {
+                recoveryConfirmed = confirm(
+                    '分類器結果因 Django 重啟而不確定。請先確認 Gate 3、分類器與果實位置安全；是否已完成檢查並復原？',
+                );
+                if (!recoveryConfirmed) {
+                    return;
+                }
+            }
+            const payload = await postJson('/api/auto_run/', {
+                enabled,
+                recovery_confirmed: recoveryConfirmed,
+            });
             lastState = payload;
             renderState(payload);
             setMessage(enabled

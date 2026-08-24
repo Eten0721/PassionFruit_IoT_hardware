@@ -14,7 +14,7 @@ void CaptureController::begin() {
   feeder_.writeMicroseconds(FirmwareConfig::kFeederStopUS);
 
   const uint32_t currentTime = millis();
-  classifier_.begin(currentTime);
+  classifier_.begin(currentTime, gates_);
   appliedTiming_ = defaultTimingConfig();
   motionPhase_ = MotionPhase::kBootHomeSettling;
   phaseDeadlineAt_ = currentTime + appliedTiming_.servoSettleMS;
@@ -627,7 +627,11 @@ void CaptureController::handlePendingReportSuccess(const String& event) {
   if (event == "classification_sorter_completed" ||
       event == "classification_sorter_failed") {
     classifierCommandActive_ = false;
+    sequenceActive_ = false;
+    activeStationIndex_ = 0;
+    motionPhase_ = MotionPhase::kIdle;
     activeCommand_ = MotorCommand();
+    clearActiveTiming();
     return;
   }
 }
@@ -637,6 +641,9 @@ void CaptureController::collectClassifierResult() {
     return;
   }
   const ClassifierController::Result result = classifier_.takeResult();
+  sequenceActive_ = false;
+  activeStationIndex_ = 0;
+  motionPhase_ = MotionPhase::kWaitingForReport;
   queueReport(
       result.success ? "classification_sorter_completed"
                      : "classification_sorter_failed",
@@ -752,7 +759,7 @@ void CaptureController::clearActiveTiming() {
 }
 
 void CaptureController::pollCommand(uint32_t currentTime) {
-  if (!api_.wifiConnected()) {
+  if (!api_.wifiConnected() || !classifier_.available()) {
     return;
   }
   const bool waitingForStartSequence = autoTrigger_.waitingForStartSequence;
@@ -779,7 +786,8 @@ void CaptureController::pollCommand(uint32_t currentTime) {
   const HttpResult result = api_.pollCommand(
       awaitingFruitAfterTimeout_ ? "awaiting_fruit" : "idle",
       feederSensorState_,
-      lastFeedCommandId_);
+      lastFeedCommandId_,
+      classifier_.available());
   if (!result.isSuccess()) {
     Serial.print("Command GET failed: ");
     Serial.print(result.statusCode);
@@ -839,8 +847,15 @@ void CaptureController::handleCommand(
   }
 
   if (command.command == "classify_fruit") {
-    if (sequenceActive_ || motionPhase_ != MotionPhase::kIdle) {
-      queueClassifierFailure(command, "capture_sequence_active");
+    const bool waitingForGate3Classification =
+        sequenceActive_ &&
+        activeStationIndex_ == FirmwareConfig::kGateCount &&
+        motionPhase_ == MotionPhase::kWaitingForCommand &&
+        gates_.atAngle(1, FirmwareConfig::kReleaseAngle) &&
+        gates_.atAngle(2, FirmwareConfig::kReleaseAngle) &&
+        gates_.atAngle(3, FirmwareConfig::kHomeAngle);
+    if (!waitingForGate3Classification) {
+      queueClassifierFailure(command, "gate3_classification_not_ready");
       return;
     }
     if (classifierCommandActive_ || classifier_.busy()) {
@@ -965,6 +980,7 @@ void CaptureController::startClassifier(
   classifierCommandActive_ = true;
   executingCommandId_ = command.commandId;
   activeCommand_ = command;
+  motionPhase_ = MotionPhase::kWaitingForReport;
   setAutoTriggerEnabled(false, "classifier_busy");
 
   String reason;
@@ -989,6 +1005,7 @@ void CaptureController::queueClassifierFailure(
   classifierCommandActive_ = true;
   executingCommandId_ = command.commandId;
   activeCommand_ = command;
+  motionPhase_ = MotionPhase::kWaitingForReport;
   setAutoTriggerEnabled(false, "classifier_error");
   logCommandRejected(command, reason);
   queueReport(

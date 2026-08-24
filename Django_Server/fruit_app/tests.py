@@ -76,11 +76,9 @@ class DataCollectionFlowTests(SimpleTestCase):
         response = self._upload_station('fruit_120', station_3['capture_token'], 3)
         self.assertEqual(response.status_code, 200)
 
-        command = self._esp32_command()
-        self.assertEqual(command['station_index'], 3)
-        response = self._report('capture_sequence_finished', command_id=command['command_id'])
-        self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['status'], 'uploaded')
+        self.assertEqual(response.json()['motor_command']['command'], 'none')
+        self.assertIsNone(response.json()['active_station_index'])
 
         response = self._post_json('/api/classify/', {
             'label': '上等',
@@ -263,28 +261,200 @@ class DataCollectionFlowTests(SimpleTestCase):
             rows = list(csv.DictReader(csv_file))
         self.assertEqual([row['label'] for row in rows], list(expected_codes))
 
-    def test_classification_succeeds_offline_and_sorter_blocks_new_capture(self):
+    def test_classification_requires_gate3_sorter_capability_before_dataset_commit(self):
+        self._complete_auto_session('fruit_001')
+        views.APP_STATE['esp32_sorter_capable'] = False
+
+        state = self.client.get('/api/state/').json()
+        self.assertFalse(state['can_classify'])
+        self.assertEqual(state['classify_disabled_reason'], 'sorter_capability_missing')
+
+        response = self._post_json('/api/classify/', {'label': '上等'})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'sorter_capability_missing')
+        self.assertTrue((self.dataset_root / 'temp' / 'fruit_001' / 'img_03.jpg').exists())
+        self.assertFalse((self.dataset_root / '上等' / 'fruit_001').exists())
+        with (self.dataset_root / 'metadata.csv').open('r', encoding='utf-8-sig', newline='') as csv_file:
+            self.assertEqual(list(csv.DictReader(csv_file)), [])
+
+    def test_auto_run_requires_gate3_sorter_capability(self):
+        self._prepare_auto_run(camera_ready=True)
+        self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-auto',
+            'capability': 'feeder_v1',
+            'feeder_state': 'idle',
+            'feeder_sensor_state': 'clear',
+            'last_feed_command_id': '0',
+        })
+
+        response = self._post_json('/api/auto_run/', {'enabled': True})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'sorter_capability_missing')
+        self.assertFalse(views.APP_STATE['auto_run_enabled'])
+        self.assertIsNone(views.APP_STATE['motor_command'])
+
+    def test_esp32_restart_while_gate3_waits_blocks_classification_without_committing_data(self):
+        self._complete_auto_session('fruit_001')
+
+        restarted = self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-after-gate3-restart',
+            'capability': 'feeder_v1',
+            'sorter_capability': 'gate3_sorter_v1',
+            'feeder_state': 'idle',
+            'feeder_sensor_state': 'clear',
+            'last_feed_command_id': '0',
+        })
+        self.assertEqual(restarted.status_code, 200)
+
+        response = self._post_json('/api/classify/', {'label': '中等'})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'gate3_boot_unconfirmed')
+        self.assertTrue((self.dataset_root / 'temp' / 'fruit_001' / 'img_03.jpg').exists())
+        self.assertFalse((self.dataset_root / '中等' / 'fruit_001').exists())
+
+    def test_esp32_restart_during_sorter_never_resends_physical_command(self):
+        self._complete_auto_session('fruit_001')
+        classified = self._post_json('/api/classify/', {'label': '加工'}).json()
+        command = self._esp32_command()
+        self.assertEqual(command['command'], 'classify_fruit')
+
+        restarted = self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-during-sorter-restart',
+            'capability': 'feeder_v1',
+            'sorter_capability': 'gate3_sorter_v1',
+            'feeder_state': 'idle',
+            'feeder_sensor_state': 'clear',
+            'last_feed_command_id': '0',
+        }).json()
+
+        self.assertEqual(restarted['command'], 'none')
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(state['sorter_status'], 'failed')
+        self.assertEqual(state['sorter_error'], 'esp32_restarted_during_sorter')
+        self.assertFalse(state['auto_run_enabled'])
+        self.assertTrue((self.dataset_root / '加工' / classified['fruit_id']).exists())
+
+        late = self._report(
+            'classification_sorter_completed',
+            command_id=command['command_id'],
+            classification_code=command['classification_code'],
+        )
+        self.assertEqual(late.status_code, 200)
+        self.assertTrue(late.json()['ignored'])
+
+    def test_esp32_restart_during_capture_never_replays_gate_command(self):
+        self._mark_esp32_online()
+        started = self._report('hcsr04_trigger').json()
+        command = self._esp32_command()
+        self.assertEqual(command['command'], 'start_sequence')
+
+        restarted = self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-during-capture-restart',
+            'capability': 'feeder_v1',
+            'sorter_capability': 'gate3_sorter_v1',
+            'feeder_state': 'idle',
+            'feeder_sensor_state': 'clear',
+            'last_feed_command_id': '0',
+        }).json()
+
+        self.assertEqual(restarted['command'], 'none')
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(state['status'], 'error')
+        self.assertFalse(state['auto_run_enabled'])
+        self.assertEqual(
+            state['operator_alert']['reason'],
+            'esp32_restarted_during_capture',
+        )
+        self.assertTrue((self.dataset_root / 'temp' / started['fruit_id']).exists())
+
+    def test_late_sorter_report_after_django_restart_is_ignored_without_next_feed(self):
+        self._complete_auto_session('fruit_001')
+        self._post_json('/api/classify/', {'label': '上等'})
+        command = self._esp32_command()
+        self.assertTrue(views._sorter_recovery_path().exists())
+
+        views.reset_runtime_state_for_tests()
+        views._ensure_dataset_structure()
+        self.assertTrue(views.APP_STATE['sorter_recovery_required'])
+        self._mark_esp32_online()
+        views.APP_STATE['capture_timing']['feeder_calibrated'] = True
+        views.APP_STATE['capture_timing_applied_revision'] = views.APP_STATE['capture_timing_revision']
+        views.APP_STATE['camera_last_live_frame_monotonic'] = views.time.monotonic()
+
+        blocked = self._post_json('/api/auto_run/', {'enabled': True})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(blocked.json()['reason'], 'django_restarted_during_sorter')
+        reset = self._post_json('/api/reset_dataset/')
+        self.assertEqual(reset.status_code, 409)
+        self.assertEqual(reset.json()['reason'], 'django_restarted_during_sorter')
+
+        response = self._report(
+            'classification_sorter_completed',
+            command_id=command['command_id'],
+            classification_code=command['classification_code'],
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['ignored'])
+        self.assertEqual(response.json()['reason'], 'sorter_terminal_state')
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertFalse(views.APP_STATE['auto_feed_pending'])
+        self.assertTrue((self.dataset_root / '上等' / 'fruit_001').exists())
+        self.assertTrue(views._sorter_recovery_path().exists())
+
+        still_blocked = self._post_json('/api/auto_run/', {'enabled': True})
+        self.assertEqual(still_blocked.status_code, 409)
+        self.assertEqual(still_blocked.json()['reason'], 'django_restarted_during_sorter')
+
+        recovered = self._post_json('/api/auto_run/', {
+            'enabled': True,
+            'recovery_confirmed': True,
+        })
+        self.assertEqual(recovered.status_code, 200)
+        self.assertEqual(recovered.json()['motor_command']['command'], 'feed_one')
+        self.assertFalse(views._sorter_recovery_path().exists())
+
+    def test_django_restart_requires_gate3_recovery_before_classification(self):
+        self._complete_auto_session('fruit_001')
+
+        views.reset_runtime_state_for_tests()
+        views._ensure_dataset_structure()
+        self._mark_esp32_online()
+        recovered = self.client.get('/api/state/').json()
+        self.assertEqual(recovered['status'], 'uploaded')
+
+        response = self._post_json('/api/classify/', {'label': '下等'})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'gate3_boot_unconfirmed')
+        self.assertTrue((self.dataset_root / 'temp' / 'fruit_001').exists())
+        self.assertFalse((self.dataset_root / '下等' / 'fruit_001').exists())
+
+        discarded = self._post_json('/api/discard/').json()
+        self.assertEqual(
+            discarded['operator_alert']['reason'],
+            'gate3_manual_removal_required',
+        )
+        self.assertIn('切斷伺服電源', discarded['operator_alert']['instruction'])
+
+    def test_classification_offline_preserves_gate3_fruit_and_temp_dataset(self):
         self._complete_auto_session('fruit_001')
         views.APP_STATE['last_esp32_poll_monotonic'] = None
 
         response = self._post_json('/api/classify/', {'label': '加工'})
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertTrue(payload['data_classified'])
-        self.assertTrue(payload['sorter_command_queued'])
-        self.assertEqual(payload['sorter_status'], 'pending')
-        self.assertTrue((self.dataset_root / '加工' / 'fruit_001').exists())
-
-        trigger = self._report('hcsr04_trigger')
-        self.assertTrue(trigger.json()['ignored'])
-        self.assertEqual(trigger.json()['reason'], 'classifier_busy')
-        reset = self._post_json('/api/reset_dataset/')
-        self.assertEqual(reset.status_code, 409)
-        self.assertEqual(reset.json()['reason'], 'classifier_busy')
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'esp32_offline')
+        self.assertTrue((self.dataset_root / 'temp' / 'fruit_001').exists())
+        self.assertFalse((self.dataset_root / '加工' / 'fruit_001').exists())
+        self.assertIsNone(views.APP_STATE['motor_command'])
 
     def test_data_stays_classified_when_sorter_slot_is_busy(self):
         self._complete_auto_session('fruit_001')
         with views.STATE_LOCK:
+            views.APP_STATE['auto_run_enabled'] = True
             views.APP_STATE['motor_command'] = {
                 'command': 'release_gate',
                 'command_id': 999,
@@ -298,8 +468,69 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertTrue(payload['data_classified'])
         self.assertFalse(payload['sorter_command_queued'])
         self.assertEqual(payload['sorter_error'], 'sorter_command_slot_busy')
+        self.assertFalse(views.APP_STATE['auto_run_enabled'])
+        self.assertFalse(views.APP_STATE['auto_feed_pending'])
+        self.assertEqual(
+            self.client.get('/api/state/').json()['operator_alert']['reason'],
+            'sorter_command_slot_busy',
+        )
         self.assertEqual(views.APP_STATE['motor_command']['command_id'], 999)
         self.assertTrue((self.dataset_root / '下等' / 'fruit_001' / 'img_03.jpg').exists())
+
+        self.assertTrue(views.APP_STATE['sorter_recovery_required'])
+        self.assertTrue(views._sorter_recovery_path().exists())
+
+        views.reset_runtime_state_for_tests()
+        views._ensure_dataset_structure()
+        blocked = self._post_json('/api/auto_run/', {'enabled': True})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(blocked.json()['reason'], 'django_restarted_during_sorter')
+
+    def test_sorter_marker_update_failure_keeps_recovery_lock(self):
+        self._complete_auto_session('fruit_001')
+
+        with mock.patch.object(
+            views,
+            '_write_sorter_recovery_marker',
+            side_effect=OSError('disk unavailable'),
+        ):
+            response = self._post_json('/api/classify/', {'label': '加工'})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['data_classified'])
+        self.assertFalse(payload['sorter_command_queued'])
+        self.assertEqual(payload['sorter_error'], 'sorter_recovery_persist_failed')
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertTrue(views.APP_STATE['sorter_recovery_required'])
+        self.assertTrue(views._sorter_recovery_path().exists())
+
+        views.reset_runtime_state_for_tests()
+        views._ensure_dataset_structure()
+        blocked = self._post_json('/api/auto_run/', {'enabled': True})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(blocked.json()['reason'], 'django_restarted_during_sorter')
+
+    def test_restart_after_dataset_commit_keeps_sorter_recovery_lock(self):
+        self._complete_auto_session('fruit_001')
+
+        with mock.patch.object(
+            views,
+            '_queue_sorter_command',
+            side_effect=RuntimeError('simulated process stop'),
+        ):
+            with self.assertRaises(RuntimeError):
+                self._post_json('/api/classify/', {'label': '中等'})
+
+        self.assertFalse((self.dataset_root / 'temp' / 'fruit_001').exists())
+        self.assertTrue((self.dataset_root / '中等' / 'fruit_001').exists())
+        self.assertTrue(views._sorter_recovery_path().exists())
+
+        views.reset_runtime_state_for_tests()
+        views._ensure_dataset_structure()
+        blocked = self._post_json('/api/auto_run/', {'enabled': True})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(blocked.json()['reason'], 'django_restarted_during_sorter')
 
     def test_failed_data_classification_never_creates_sorter_command(self):
         invalid = self._post_json('/api/classify/', {'label': '未知'})
@@ -324,6 +555,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self._complete_auto_session('fruit_001')
         classified = self._post_json('/api/classify/', {'label': '中等'}).json()
         command = self._esp32_command()
+        views.APP_STATE['auto_run_enabled'] = True
         failed = self._report(
             'classification_sorter_failed',
             command_id=command['command_id'],
@@ -332,7 +564,21 @@ class DataCollectionFlowTests(SimpleTestCase):
         )
         self.assertEqual(failed.status_code, 200)
         self.assertEqual(failed.json()['sorter_status'], 'failed')
+        failed_state = self.client.get('/api/state/').json()
+        self.assertFalse(failed_state['auto_run_enabled'])
+        self.assertFalse(views.APP_STATE['auto_feed_pending'])
+        self.assertEqual(
+            failed_state['operator_alert']['reason'],
+            'classifier_attach_failed',
+        )
         self.assertTrue((self.dataset_root / '中等' / classified['fruit_id']).exists())
+
+        with views.STATE_LOCK:
+            views._clear_sorter_recovery_marker()
+            views._reset_sorter_state()
+            views.APP_STATE['auto_run_recovery_reason'] = None
+            views.APP_STATE['last_error_reason'] = None
+            views.APP_STATE['status'] = 'idle'
 
         self._complete_auto_session('fruit_002')
         second = self._post_json('/api/classify/', {'label': '上等'}).json()
@@ -429,6 +675,111 @@ class DataCollectionFlowTests(SimpleTestCase):
 
         command = self._esp32_command_text()
         self.assertEqual(command['auto_trigger_enabled'], '1')
+
+    def test_discard_while_gate3_waits_requires_manual_power_off_removal(self):
+        self._complete_auto_session('fruit_001')
+        views.APP_STATE['auto_run_enabled'] = True
+
+        response = self._post_json('/api/discard/')
+
+        self.assertEqual(response.status_code, 200)
+        state = self.client.get('/api/state/').json()
+        self.assertFalse(state['auto_run_enabled'])
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertEqual(state['operator_alert']['reason'], 'gate3_manual_removal_required')
+        self.assertIn('斷電', state['message'])
+        self.assertFalse((self.dataset_root / 'temp' / 'fruit_001').exists())
+
+    def test_gate3_waiting_rejects_recapture_and_dataset_reset(self):
+        self._complete_auto_session('fruit_001')
+        views.APP_STATE['auto_run_enabled'] = True
+
+        recapture = self._post_json('/api/recapture/')
+        reset = self._post_json('/api/reset_dataset/')
+
+        self.assertEqual(recapture.status_code, 409)
+        self.assertEqual(recapture.json()['reason'], 'gate3_manual_removal_required')
+        self.assertEqual(reset.status_code, 409)
+        self.assertEqual(reset.json()['reason'], 'gate3_manual_removal_required')
+        state = self.client.get('/api/state/').json()
+        self.assertFalse(state['can_recapture'])
+        self.assertFalse(state['can_reset_dataset'])
+        self.assertFalse(state['auto_run_enabled'])
+        self.assertEqual(state['image_total'], 3)
+        self.assertIsNone(views.APP_STATE['motor_command'])
+
+    def test_esp32_restart_during_third_upload_cannot_confirm_new_boot(self):
+        self._mark_esp32_online()
+        self._report('hcsr04_trigger')
+        command = self._esp32_command()
+        station_1 = self._report(
+            'station_1_ready', station_index=1, command_id=command['command_id']
+        ).json()
+        self._upload_station('fruit_001', station_1['capture_token'], 1)
+        command = self._esp32_command()
+        station_2 = self._report(
+            'station_2_ready', station_index=2, command_id=command['command_id']
+        ).json()
+        self._upload_station('fruit_001', station_2['capture_token'], 2)
+        command = self._esp32_command()
+        station_3 = self._report(
+            'station_3_ready', station_index=3, command_id=command['command_id']
+        ).json()
+        save_image = views._save_station_image
+
+        def save_then_restart(*args):
+            save_image(*args)
+            self.client.get('/api/esp32/command/', {
+                'boot_id': 'boot-during-upload',
+                'capability': 'feeder_v1',
+                'sorter_capability': 'gate3_sorter_v1',
+                'feeder_state': 'idle',
+                'feeder_sensor_state': 'clear',
+                'last_feed_command_id': '0',
+            })
+
+        with mock.patch.object(views, '_save_station_image', side_effect=save_then_restart):
+            response = self._upload_station('fruit_001', station_3['capture_token'], 3)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'capture_state_changed_during_upload')
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(state['status'], 'error')
+        self.assertEqual(state['last_error_reason'], 'esp32_restarted_during_capture')
+        self.assertFalse(state['can_recapture'])
+        self.assertFalse(state['can_reset_dataset'])
+        self.assertIsNone(views.APP_STATE['gate3_waiting_boot_id'])
+        self.assertTrue((self.dataset_root / 'temp' / 'fruit_001' / 'img_03.jpg').exists())
+
+    def test_failed_upload_does_not_overwrite_restart_recovery(self):
+        station_payload = self._start_capture_and_ready_station_1()
+        fruit_id = station_payload['active_fruit_id']
+        token = station_payload['capture_token']
+
+        def restart_then_fail(*args):
+            self.client.get('/api/esp32/command/', {
+                'boot_id': 'boot-during-failed-upload',
+                'capability': 'feeder_v1',
+                'sorter_capability': 'gate3_sorter_v1',
+                'feeder_state': 'idle',
+                'feeder_sensor_state': 'clear',
+                'last_feed_command_id': '0',
+            })
+            raise views.DatasetFileBusyError('write locked')
+
+        with mock.patch.object(views, '_save_station_image', side_effect=restart_then_fail):
+            response = self._upload_station(fruit_id, token, 1)
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'capture_state_changed_during_upload')
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(state['status'], 'error')
+        self.assertEqual(state['last_error_reason'], 'esp32_restarted_during_capture')
+        self.assertFalse(state['capture_requested'])
+
+        retry = self._upload_station(fruit_id, token, 1)
+        self.assertEqual(retry.status_code, 409)
+        self.assertEqual(retry.json()['reason'], 'capture_not_requested')
 
     def test_auto_trigger_is_enabled_after_reset_dataset(self):
         response = self._report('hcsr04_trigger')
@@ -1118,7 +1469,12 @@ class DataCollectionFlowTests(SimpleTestCase):
             self.assertEqual(response.status_code, 400)
 
     def test_feeder_test_requires_capability_latest_ack_and_safe_idle(self):
-        self._mark_esp32_online()
+        self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-a',
+            'feeder_state': 'idle',
+            'feeder_sensor_state': 'clear',
+            'last_feed_command_id': '0',
+        })
         missing_capability = self._post_json('/api/feeder/test/')
         self.assertEqual(missing_capability.status_code, 409)
         self.assertEqual(missing_capability.json()['reason'], 'feeder_capability_missing')
@@ -1289,6 +1645,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.client.get('/api/esp32/command/', {
             'boot_id': 'boot-after-reload',
             'capability': 'feeder_v1',
+            'sorter_capability': 'gate3_sorter_v1',
             'feeder_state': 'idle',
             'feeder_sensor_state': 'clear',
             'last_feed_command_id': '0',
@@ -1380,6 +1737,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         waiting = self.client.get('/api/esp32/command/', {
             'boot_id': 'boot-auto',
             'capability': 'feeder_v1',
+            'sorter_capability': 'gate3_sorter_v1',
             'feeder_state': 'awaiting_fruit',
             'feeder_sensor_state': 'blocked',
             'last_feed_command_id': str(feed_command['command_id']),
@@ -1422,14 +1780,6 @@ class DataCollectionFlowTests(SimpleTestCase):
             200,
         )
 
-        command = self._esp32_command()
-        self.assertEqual(
-            self._report(
-                'capture_sequence_finished',
-                command_id=command['command_id'],
-            ).status_code,
-            200,
-        )
         classified = self._post_json('/api/classify/', {'label': '上等'})
         self.assertTrue(classified.json()['sorter_command_queued'])
         self._complete_sorter()
@@ -1665,6 +2015,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         restarted = self.client.get('/api/esp32/command/', {
             'boot_id': 'boot-restarted',
             'capability': 'feeder_v1',
+            'sorter_capability': 'gate3_sorter_v1',
             'feeder_state': 'idle',
             'feeder_sensor_state': 'clear',
             'last_feed_command_id': '0',
@@ -1689,6 +2040,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.client.get('/api/esp32/command/', {
             'boot_id': 'boot-restarted',
             'capability': 'feeder_v1',
+            'sorter_capability': 'gate3_sorter_v1',
             'feeder_state': 'idle',
             'last_feed_command_id': '0',
         })
@@ -1704,6 +2056,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         response = self.client.get('/api/esp32/command/', {
             'boot_id': 'boot-after-django-restart',
             'capability': 'feeder_v1',
+            'sorter_capability': 'gate3_sorter_v1',
             'feeder_state': 'awaiting_fruit',
             'feeder_sensor_state': 'clear',
             'last_feed_command_id': '17',
@@ -1731,6 +2084,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         dispatch = self.client.get('/api/esp32/command/', {
             'boot_id': 'boot-after-django-restart',
             'capability': 'feeder_v1',
+            'sorter_capability': 'gate3_sorter_v1',
             'feeder_state': 'awaiting_fruit',
             'feeder_sensor_state': 'clear',
             'last_feed_command_id': '17',
@@ -2244,6 +2598,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertNotIn('timing', payload)
 
     def test_dataset_operation_releases_state_lock_and_rejects_duplicate_mutation(self):
+        self._mark_esp32_online()
         fruit_id = 'fruit_001'
         fruit_dir = self.dataset_root / 'temp' / fruit_id
         fruit_dir.mkdir(parents=True)
@@ -2253,6 +2608,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             views.APP_STATE['active_fruit_id'] = fruit_id
             views.APP_STATE['status'] = 'uploaded'
             views.APP_STATE['capture_time'] = views._now_string()
+            views.APP_STATE['gate3_waiting_boot_id'] = views.APP_STATE['esp32_boot_id']
 
         operation_started = threading.Event()
         allow_operation_to_finish = threading.Event()
@@ -2328,43 +2684,45 @@ class DataCollectionFlowTests(SimpleTestCase):
         config = (firmware_root / 'Config.h').read_text(encoding='utf-8')
         classifier_header = (firmware_root / 'ClassifierController.h').read_text(encoding='utf-8')
         classifier_source = (firmware_root / 'ClassifierController.cpp').read_text(encoding='utf-8')
+        sequence_header = (firmware_root / 'ClassificationSequence.h').read_text(encoding='utf-8')
+        sequence_source = (firmware_root / 'ClassificationSequence.cpp').read_text(encoding='utf-8')
         api_source = (firmware_root / 'DjangoApiClient.cpp').read_text(encoding='utf-8')
         capture_source = (firmware_root / 'CaptureController.cpp').read_text(encoding='utf-8')
 
         for contract in (
             'kGatePins[kGateCount] = {18, 19, 21}',
             'kClassifierPin = 25',
-            'kClassifierHomeAngle = 85',
-            'kClassifierHighAngle = 25',
-            'kClassifierMediumAngle = 55',
-            'kClassifierLowAngle = 115',
-            'kClassifierProcessingAngle = 145',
-            'kClassifierHoldMS = 1000UL',
-            'kClassifierHomeSettleMS = 500UL',
-            'kClassifierTimeoutMS = 5000UL',
             'kIdleCommandPollIntervalMS = 250UL',
         ):
             self.assertIn(contract, config)
         for code in ('high', 'medium', 'low', 'processing', 'high_medium', 'discard'):
-            self.assertIn(f'code == "{code}"', classifier_source)
-        self.assertIn('code == "high" || code == "high_medium"', classifier_source)
-        self.assertIn('code == "medium" || code == "discard"', classifier_source)
+            self.assertIn(f'classificationCode, "{code}"', sequence_source)
+        self.assertIn('classificationCode, "high_medium"', sequence_source)
+        self.assertIn('classificationCode, "discard"', sequence_source)
         for state in (
             'kUninitialized',
             'kBootHomeSettling',
             'kIdleHome',
-            'kHoldingClassificationPosition',
-            'kReturningHome',
-            'kHomeSettling',
-            'kErrorReturningHome',
+            'kRunning',
             'kPermanentInitializationError',
         ):
             self.assertIn(state, classifier_header)
-        self.assertNotIn('GateController', classifier_header + classifier_source)
+        self.assertIn('GateController', classifier_header + classifier_source)
+        self.assertIn('kSorterPositionSettleMS = 500UL', sequence_header)
+        self.assertIn('kFruitDropHoldMS = 1000UL', sequence_header)
+        self.assertIn('kJointHomeSettleMS = 500UL', sequence_header)
+        self.assertIn('kSorterHomeAngle = 85', sequence_header)
+        for angle in ('return 55;', 'return 70;', 'return 100;', 'return 115;'):
+            self.assertIn(angle, sequence_source)
+        self.assertIn('Action::kReleaseGate3', sequence_source)
+        self.assertIn('Action::kHomeAll', sequence_source)
         self.assertNotIn('delay(', classifier_source)
+        self.assertNotIn('delay(', sequence_source)
         self.assertIn('readTextValue(body, "station_index").toInt()', api_source)
         self.assertIn('classification_sorter_completed', capture_source)
         self.assertIn('classification_sorter_failed', capture_source)
+        self.assertIn('&sorter_capability=gate3_sorter_v1', api_source)
+        self.assertIn('classifier_.available()', capture_source)
         self.assertIn('return appliedTiming_.idleCommandPollIntervalMS;', capture_source)
         self.assertIn('timing.idleCommandPollIntervalMS >= 100UL', capture_source)
         self.assertIn('timing.idleCommandPollIntervalMS <= 5000UL', capture_source)
@@ -2487,6 +2845,11 @@ class DataCollectionFlowTests(SimpleTestCase):
 
         self.assertIn("camera_ready ? '可拍攝' : '未就緒'", dashboard_js)
         self.assertIn('function renderReadiness(data)', dashboard_js)
+        self.assertIn(
+            'data.esp32_online && data.esp32_feeder_capable && data.esp32_sorter_capable',
+            dashboard_js,
+        )
+        self.assertIn('gate3_sorter_v1', dashboard_js)
         self.assertIn('function renderOperatorAlert(alert)', dashboard_js)
         self.assertIn("idle: '閒置'", dashboard_js)
         self.assertIn("unavailable: { label: '無有效回音', tone: 'error' }", dashboard_js)
@@ -2583,7 +2946,14 @@ class DataCollectionFlowTests(SimpleTestCase):
         )
 
     def _mark_esp32_online(self):
-        response = self.client.get('/api/esp32/command/')
+        response = self.client.get('/api/esp32/command/', {
+            'boot_id': views.APP_STATE.get('esp32_boot_id') or 'boot-test',
+            'capability': 'feeder_v1',
+            'sorter_capability': 'gate3_sorter_v1',
+            'feeder_state': 'idle',
+            'feeder_sensor_state': 'clear',
+            'last_feed_command_id': views.APP_STATE.get('esp32_last_feed_command_id', 0),
+        })
         self.assertEqual(response.status_code, 200)
 
     def _prepare_auto_run(self, *, camera_ready=False):
@@ -2597,6 +2967,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         response = self.client.get('/api/esp32/command/', {
             'boot_id': 'boot-auto',
             'capability': 'feeder_v1',
+            'sorter_capability': 'gate3_sorter_v1',
             'feeder_state': 'idle',
             'feeder_sensor_state': 'clear',
             'last_feed_command_id': '0',
@@ -2642,6 +3013,9 @@ class DataCollectionFlowTests(SimpleTestCase):
         return {
             'boot_id': views.APP_STATE['esp32_boot_id'],
             'capability': 'feeder_v1' if views.APP_STATE['esp32_feeder_capable'] else '',
+            'sorter_capability': (
+                'gate3_sorter_v1' if views.APP_STATE['esp32_sorter_capable'] else ''
+            ),
             'feeder_state': (
                 'idle'
                 if views.APP_STATE.get('active_fruit_id')
@@ -2716,6 +3090,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         return response.json()
 
     def _complete_auto_session(self, expected_fruit_id):
+        self._mark_esp32_online()
         response = self._report('hcsr04_trigger')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['fruit_id'], expected_fruit_id)
@@ -2732,11 +3107,9 @@ class DataCollectionFlowTests(SimpleTestCase):
 
         command = self._esp32_command()
         station_3 = self._report('station_3_ready', station_index=3, command_id=command['command_id']).json()
-        self.assertEqual(self._upload_station(expected_fruit_id, station_3['capture_token'], 3).status_code, 200)
-
-        command = self._esp32_command()
-        response = self._report('capture_sequence_finished', command_id=command['command_id'])
+        response = self._upload_station(expected_fruit_id, station_3['capture_token'], 3)
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'uploaded')
 
     def _complete_sorter(self, event='classification_sorter_completed', message=None):
         command = self._esp32_command()
