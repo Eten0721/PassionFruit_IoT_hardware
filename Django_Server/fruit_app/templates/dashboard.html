@@ -83,7 +83,7 @@
                 <div class="panel-heading">
                     <div>
                         <span class="section-kicker">THREE-STATION CAPTURE</span>
-                        <h2 id="station-panel-title">三站照片預覽</h2>
+                        <h2 id="station-panel-title">三張原圖預覽</h2>
                     </div>
                     <strong id="station-progress-label" class="panel-meta">0／3 完成</strong>
                 </div>
@@ -126,6 +126,19 @@
                     </div>
                     <span id="state-badge" class="state-badge" data-state="idle"><span class="status-dot" aria-hidden="true"></span><strong id="state-label">閒置</strong></span>
                 </div>
+                <div class="collection-options">
+                    <label for="work-mode">工作模式</label>
+                    <select id="work-mode" disabled>
+                        <option value="collection">蒐集模式</option>
+                        <option value="detection" disabled>自動檢測（尚未開放）</option>
+                    </select>
+                    <label for="hardware-mode">硬體選項</label>
+                    <select id="hardware-mode" disabled>
+                        <option value="hardware">使用硬體</option>
+                        <option value="photo_only">純拍攝</option>
+                    </select>
+                    <p id="options-guidance" class="control-guidance"></p>
+                </div>
                 <div class="current-fruit">
                     <div>
                         <span>目前資料</span>
@@ -159,7 +172,7 @@
             <section class="panel classify-panel" aria-labelledby="classification-title">
                 <fieldset>
                     <legend id="classification-title">人工分類</legend>
-                    <p>確認三站照片後，將目前資料提交到對應等級。</p>
+                    <p>確認三張照片後，將目前資料提交到對應等級。</p>
                     <label for="note">分類備註</label>
                     <textarea id="note" placeholder="可留空"></textarea>
                     <div class="button-row" aria-label="百香果等級">
@@ -170,12 +183,6 @@
                     </div>
                     <button id="btn-discard" type="button" class="button danger ghost-danger">跳過／刪除目前資料</button>
                 </fieldset>
-                <dl class="sorter-summary">
-                    <div><dt>硬體分類器</dt><dd id="sorter-status">閒置</dd></div>
-                    <div><dt>分類器資料</dt><dd id="sorter-fruit">無</dd></div>
-                    <div><dt>分類器級別</dt><dd id="sorter-label">無</dd></div>
-                    <div><dt>分類器錯誤</dt><dd id="sorter-error">無</dd></div>
-                </dl>
             </section>
         </aside>
     </div>
@@ -273,6 +280,12 @@
                         <div><dt>馬達命令</dt><dd id="motor-command">none</dd></div>
                         <div><dt>錯誤原因</dt><dd id="error-reason">無</dd></div>
                     </dl>
+                <dl class="sorter-summary">
+                    <div><dt>硬體分類器</dt><dd id="sorter-status">閒置</dd></div>
+                    <div><dt>分類器資料</dt><dd id="sorter-fruit">無</dd></div>
+                    <div><dt>分類器級別</dt><dd id="sorter-label">無</dd></div>
+                    <div><dt>分類器錯誤</dt><dd id="sorter-error">無</dd></div>
+                </dl>
                     <h3>流程時間</h3>
                     <ul class="timing-list">
                         <li>命令到手機開始：<strong id="timing-command-delay">尚無資料</strong></li>

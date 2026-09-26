@@ -79,7 +79,7 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 - Django 是中央狀態來源；手機與 ESP32 不自行推測流程完成。
 - 當站照片原子保存成功前，不得放行下一閘門。
 - 第 3 張照片保存後不得直接放行 Gate 3；ESP32 回報 `gate3_sorter_v1`，且下置式分類器完成目標角度的 `500 ms` 開迴路就位等待後才能放行。
-- 正式流程不提供 manual capture；重拍只重新執行同一顆果實的三站流程，不驅動送料。
+- 正式硬體流程不提供通用 manual capture；重拍只重新執行同一顆果實的三站流程，不驅動送料。純拍攝使用獨立受模式限制的入口，全程不建立 motor command，契約見 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md)。
 - 未分類資料、active capture 或 sorter 動作存在時，不得開始下一顆。
 - 送料馬達正常由 HC-SR04 回授停止，感測異常或最大運轉時間到期時也必須由 ESP32 本機停止；網路 retry 不得重複實體送料。
 - 優雅暫停只禁止後續送料，已承諾送出的果實仍完成既有流程。

@@ -2326,7 +2326,9 @@ class DataCollectionFlowTests(SimpleTestCase):
         dashboard_response = self.client.get('/dashboard/')
         self.assertEqual(dashboard_response.status_code, 200)
         self.assertContains(dashboard_response, '不要開啟 /dashboard/')
-        self.assertContains(dashboard_response, '三站照片預覽')
+        self.assertContains(dashboard_response, '三張原圖預覽')
+        self.assertContains(dashboard_response, 'id="hardware-mode"')
+        self.assertContains(dashboard_response, '<option value="detection" disabled>', html=False)
         for label in ('上等', '中等', '下等', '加工'):
             self.assertContains(dashboard_response, f'data-label="{label}"')
         self.assertNotContains(dashboard_response, 'data-label="上中等"')

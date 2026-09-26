@@ -37,6 +37,8 @@ const remoteVideo = document.getElementById('remote-video');
     const counterInput = document.getElementById('counter-input');
     const noteInput = document.getElementById('note');
     const classifyButtons = Array.from(document.querySelectorAll('.classify-button'));
+    const hardwareModeSelect = document.getElementById('hardware-mode');
+    const optionsGuidance = document.getElementById('options-guidance');
     const autoRunButton = document.getElementById('btn-auto-run');
     const autoRunGuidance = document.getElementById('auto-run-guidance');
     const recaptureButton = document.getElementById('btn-recapture');
@@ -372,6 +374,18 @@ const remoteVideo = document.getElementById('remote-video');
     function renderState(data) {
         const images = data.latest_images || [];
         const status = data.status || 'idle';
+        const photoOnly = data.hardware_mode === 'photo_only';
+        hardwareModeSelect.value = data.hardware_mode || 'hardware';
+        esp32Indicator.hidden = photoOnly;
+        feederSensorIndicator.hidden = photoOnly;
+        stationCards.forEach((card, index) => {
+            setTextIfChanged(card.querySelector('.station-card-heading span'),
+                `第 ${index + 1} ${photoOnly ? '張' : '站'}`);
+        });
+        hardwareModeSelect.disabled = Boolean(controlActionInFlight) || !data.can_change_options;
+        setTextIfChanged(optionsGuidance, data.options_disabled_reason
+            ? `目前無法切換：${data.options_disabled_reason}` : '開始後，本輪選項固定。');
+        recaptureButton.hidden = photoOnly;
         setTextIfChanged(activeFruitEl, data.active_fruit_id || '無暫存資料');
         setTextIfChanged(nextFruitEl, data.next_fruit_id || 'fruit_001');
         setTextIfChanged(stateLabelEl, captureStatusText(status));
@@ -405,7 +419,10 @@ const remoteVideo = document.getElementById('remote-video');
         renderOperatorAlert(data.operator_alert);
         setMessage(data.message || '');
         renderStationStatuses(data.station_statuses || {}, data.active_station_index, status);
-        renderThumbnails(images);
+        setTextIfChanged(thumbnailEmpty, photoOnly
+            ? '手機相機就緒後，按「拍攝本輪三張」自動保存三張原圖。'
+            : '開始自動運轉後，HC-SR04 會啟動三閘門流程，手機每站上傳 1 張照片。');
+        renderThumbnails(images, photoOnly);
         renderTiming(data.timing || {});
         renderCaptureTiming(data);
         renderTransitionTrace(data);
@@ -419,7 +436,11 @@ const remoteVideo = document.getElementById('remote-video');
         discardButton.disabled = Boolean(controlActionInFlight)
             || classificationInFlight
             || !data.can_discard;
-        if (data.auto_run_enabled) {
+        if (photoOnly) {
+            setTextIfChanged(autoRunButton, '拍攝本輪三張');
+            autoRunButton.dataset.mode = 'photo';
+            autoRunButton.disabled = Boolean(controlActionInFlight) || !data.can_start_photo_capture;
+        } else if (data.auto_run_enabled) {
             setTextIfChanged(autoRunButton, '優雅暫停');
             autoRunButton.dataset.mode = 'pause';
             autoRunButton.disabled = Boolean(controlActionInFlight);
@@ -489,6 +510,10 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     function renderReadiness(data) {
+        const photoOnly = data.hardware_mode === 'photo_only';
+        ['esp32', 'sensor', 'timing', 'calibration'].forEach((key) => {
+            readinessItems[key].hidden = photoOnly;
+        });
         const timing = data.capture_timing || {};
         const missingEsp32Capability = !data.esp32_feeder_capable
             ? '缺少 feeder_v1'
@@ -535,6 +560,12 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     function autoRunGuidanceText(data) {
+        if (data.hardware_mode === 'photo_only') {
+            const reason = data.photo_capture_disabled_reason;
+            return reason
+                ? `目前無法開始：${reason}。本輪完成後請分類或刪除。`
+                : '按一次自動拍三張；每張保存成功才拍下一張。果實需自行擺位，三張不保證不同視角。';
+        }
         if (data.auto_run_enabled) {
             return '目前為連續自動運轉；優雅暫停會讓目前果實完成後停止送入下一顆。';
         }
@@ -610,7 +641,8 @@ const remoteVideo = document.getElementById('remote-video');
         setTextIfChanged(stationProgressLabel, `${completed}／3 完成`);
     }
 
-    function renderThumbnails(images) {
+    function renderThumbnails(images, photoOnly = false) {
+        const captureUnit = photoOnly ? '張' : '站';
         const manifest = JSON.stringify(images.map((image) => [image.filename, image.url]));
         if (manifest === lastThumbnailManifest) {
             return;
@@ -625,7 +657,7 @@ const remoteVideo = document.getElementById('remote-video');
             card.querySelector('.station-placeholder').hidden = false;
             card.disabled = true;
             card.onclick = null;
-            card.setAttribute('aria-label', `第 ${index + 1} 站尚未拍攝`);
+            card.setAttribute('aria-label', `第 ${index + 1} ${captureUnit}尚未拍攝`);
             setTextIfChanged(stationFilenames[index], '等待照片');
         });
         thumbnailEmpty.hidden = Boolean(images.length);
@@ -641,11 +673,11 @@ const remoteVideo = document.getElementById('remote-video');
             const card = stationCards[stationIndex];
             const imageElement = stationImages[stationIndex];
             imageElement.src = image.url;
-            imageElement.alt = `第 ${stationIndex + 1} 站照片：${image.filename}`;
+            imageElement.alt = `第 ${stationIndex + 1} ${captureUnit}照片：${image.filename}`;
             imageElement.hidden = false;
             card.querySelector('.station-placeholder').hidden = true;
             card.disabled = false;
-            card.setAttribute('aria-label', `預覽第 ${stationIndex + 1} 站照片 ${image.filename}`);
+            card.setAttribute('aria-label', `預覽第 ${stationIndex + 1} ${captureUnit}照片 ${image.filename}`);
             card.onclick = () => openImagePreview(image);
             setTextIfChanged(stationFilenames[stationIndex], image.filename);
         });
@@ -670,6 +702,7 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     function releaseThumbnailFileHandles() {
+        const captureUnit = lastState && lastState.hardware_mode === 'photo_only' ? '張' : '站';
         lastThumbnailManifest = '';
         closeImagePreview();
         stationImages.forEach((imageElement, index) => {
@@ -680,7 +713,7 @@ const remoteVideo = document.getElementById('remote-video');
             stationCards[index].querySelector('.station-placeholder').hidden = false;
             stationCards[index].disabled = true;
             stationCards[index].onclick = null;
-            stationCards[index].setAttribute('aria-label', `第 ${index + 1} 站尚未拍攝`);
+            stationCards[index].setAttribute('aria-label', `第 ${index + 1} ${captureUnit}尚未拍攝`);
             setTextIfChanged(stationFilenames[index], '等待照片');
         });
         thumbnailEmpty.hidden = false;
@@ -1123,6 +1156,12 @@ const remoteVideo = document.getElementById('remote-video');
             return;
         }
         try {
+            if (lastState && lastState.hardware_mode === 'photo_only') {
+                const payload = await postJson('/api/photo_capture/');
+                lastState = payload;
+                renderState(payload);
+                return;
+            }
             const enabled = !Boolean(lastState && lastState.auto_run_enabled);
             let recoveryConfirmed = false;
             if (enabled && lastState && lastState.sorter_recovery_required) {
@@ -1187,9 +1226,13 @@ const remoteVideo = document.getElementById('remote-video');
             const payload = await postJson('/api/classify/', {
                 label,
                 note: noteInput.value.trim(),
+                fruit_id: lastState.active_fruit_id,
+                capture_token: lastState.capture_token,
             });
             noteInput.value = '';
-            if (payload.sorter_command_queued) {
+            if (payload.hardware_skipped) {
+                setMessage(`${payload.fruit_id} 已分類保存到 ${payload.path}，本輪結束。`);
+            } else if (payload.sorter_command_queued) {
                 setMessage(`${payload.fruit_id} 已分類到 ${payload.path}，等待 ESP32 執行硬體分類器。${warningText(payload)}`);
             } else {
                 setMessage(`${payload.fruit_id} 資料分類已完成，但硬體分類命令建立失敗：${payload.sorter_error || 'sorter_command_queue_failed'}。`);
@@ -1220,7 +1263,10 @@ const remoteVideo = document.getElementById('remote-video');
         }
         try {
             await releaseThumbnailsBeforeFileOperation();
-            const payload = await postJson('/api/discard/');
+            const payload = await postJson('/api/discard/', {
+                fruit_id: lastState.active_fruit_id,
+                capture_token: lastState.capture_token,
+            });
             lastState = payload;
             renderState(payload);
             setMessage(`${discardResultText(payload)}${warningText(payload)}`);
@@ -1319,6 +1365,24 @@ const remoteVideo = document.getElementById('remote-video');
         }
     });
     autoRunButton.addEventListener('click', toggleAutoRun);
+    hardwareModeSelect.addEventListener('change', async () => {
+        const hardwareMode = hardwareModeSelect.value;
+        if (!beginControlAction('collection-options', hardwareModeSelect)) {
+            return;
+        }
+        try {
+            const payload = await postJson('/api/collection_options/', {
+                work_mode: 'collection', hardware_mode: hardwareMode,
+            });
+            lastState = payload;
+            renderState(payload);
+        } catch (error) {
+            await refreshState();
+            setMessage(`選項切換失敗：${error.message}`);
+        } finally {
+            endControlAction(hardwareModeSelect);
+        }
+    });
     recaptureButton.addEventListener('click', recaptureCurrent);
     document.getElementById('btn-open-folder').addEventListener('click', openDatasetFolder);
     discardButton.addEventListener('click', discardCurrent);

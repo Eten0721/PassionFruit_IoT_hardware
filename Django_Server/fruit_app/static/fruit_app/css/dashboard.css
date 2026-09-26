@@ -1315,3 +1315,19 @@ textarea {
         width: 100%;
     }
 }
+
+.collection-options {
+    display: grid;
+    padding: 16px 16px 0;
+    gap: 0.5rem;
+    margin-bottom: 0;
+}
+.collection-options select {
+    width: 100%;
+    padding: 0.65rem;
+    border: 1px solid #c5cec8;
+    border-radius: 0.5rem;
+    background: #fff;
+    color: #20362b;
+    font: inherit;
+}

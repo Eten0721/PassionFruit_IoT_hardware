@@ -118,6 +118,8 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 | `GET` | `/api/state/` | Dashboard 完整狀態 |
 | `GET` | `/api/camera/state/` | 手機精簡 capture state 與相機 ready heartbeat |
 | `POST` | `/api/capture_timing/` | 更新 runtime profile 數值 |
+| `POST` | `/api/collection_options/` | 安全閒置時選擇工作與硬體模式 |
+| `POST` | `/api/photo_capture/` | 僅純拍攝可用的單輪三張入口 |
 | `POST` | `/api/auto_run/` | 啟用正式自動運轉或要求優雅暫停 |
 | `POST` | `/api/feeder/test/` | 在安全 idle 狀態測試一次 HC-SR04 回授送料 |
 | `POST` | `/api/feeder/calibration/confirm/` | 保存目前 revision 的人工送料確認 |
@@ -183,7 +185,7 @@ ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、送料能力
 
 暫停可發生於送料後等待、三站拍攝、等待人工分類、實體分類或分類後尚未建立下一次送料。Dashboard 主操作區只使用同一按鈕：停止時顯示「開始執行」、運轉時顯示「優雅暫停」、正在完成目前果實時顯示 disabled「正在完成目前果實」。本軟體暫停不是實體緊急斷電。
 
-重拍與刪除成功時都關閉自動運轉。重拍由操作員將同一顆果實放回 Gate 1，再走既有 `start_sequence`，不驅動送料機構；完成後由操作員重新按「開始執行」。正式 Dashboard 與 API 完整移除 manual capture。
+重拍與刪除成功時都關閉自動運轉。重拍由操作員將同一顆果實放回 Gate 1，再走既有 `start_sequence`，不驅動送料機構；完成後由操作員重新按「開始執行」。正式硬體流程不提供通用 manual capture；純拍攝僅使用下述受模式限制的獨立入口。
 
 ### 重新啟動與重複動作
 
@@ -280,6 +282,14 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 ```
 
 跳過／刪除先關閉自動運轉，再嘗試實體刪除；Windows 檔案占用時移至 `_delete_pending`，仍失敗則持久標記待清理並跳過該 fruit ID。成功結果必須清除 capture token、等待計時器、fast-path 與 motor command，安全回到 idle，且不得自動送料。
+
+## 純拍攝 API 契約
+
+`POST /api/collection_options/` 接收 `work_mode=collection` 與 `hardware_mode=hardware|photo_only`。自動檢測回 `400 work_mode_unavailable`；既有 capture、Dataset、motor、自動運轉或復原鎖存在時回 `409` 與具體 reason，不清除鎖定。預設使用硬體；開始後固定本輪 `session_hardware_mode`。純拍攝啟動前會在暫存 fruit 目錄原子保存 `.capture-session.json`，供 Django 重啟後恢復硬體選項與拍攝時間；資料提交成功後清理該內部標記，不改變 metadata CSV 欄位。
+
+`POST /api/photo_capture/` 僅接受純拍攝；相機 heartbeat 過期回 `409 camera_not_ready`，有待處理資料回 `409 active_fruit_exists`，拒絕時不建立 fruit 資料夾。成功後重用手機 capture state 與 upload API，每張原子保存成功才更新 token 並要求下一張，不等待 station ready，也不建立任何 motor command。ESP32 事件回 `200 ignored`，直接 trigger 回 `409 hardware_mode_required`；ESP32 boot 改變不影響純拍攝上傳。
+
+三張保存後才開放人工分類；純拍攝的 `/api/classify/` 與 `/api/discard/` 必須附目前 `fruit_id`、`capture_token`，過期請求回 `409 stale_capture`。分類維持既有照片、metadata 與 counter 契約，成功回 `hardware_skipped=true`，不建立分類器復原紀錄或實體命令。分類、刪除後回 idle，不自動開始下一輪。拍攝失敗沿用既有等待與同 token 重試；逾時保留已保存照片，操作員刪除本輪後重新開始。
 
 ## 驗收
 

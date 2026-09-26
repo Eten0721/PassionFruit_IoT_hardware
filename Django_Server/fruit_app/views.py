@@ -2,6 +2,7 @@ import csv
 import json
 import os
 import re
+import secrets
 import shutil
 import time
 from datetime import datetime
@@ -123,6 +124,8 @@ CLIENT_TIMING_KEYS = (
 )
 
 APP_STATE = RuntimeState({
+    'hardware_mode': 'hardware',
+    'session_hardware_mode': 'hardware',
     'pending_capture': False,
     'capture_token': 0,
     'active_fruit_id': None,
@@ -509,6 +512,101 @@ def feeder_calibration_confirm_api(request):
     return JsonResponse(payload)
 
 
+def _photo_only_session():
+    return APP_STATE.get('session_hardware_mode') == 'photo_only'
+
+
+def _options_disabled_reason():
+    if APP_STATE.get('dataset_operation'):
+        return 'dataset_operation_in_progress'
+    if APP_STATE.get('sorter_recovery_required'):
+        return 'sorter_recovery_required'
+    if APP_STATE.get('auto_run_recovery_reason'):
+        return APP_STATE['auto_run_recovery_reason']
+    if APP_STATE.get('auto_run_enabled') or APP_STATE.get('auto_run_finishing') or APP_STATE.get('auto_feed_pending'):
+        return 'auto_run_active'
+    if APP_STATE.get('active_fruit_id'):
+        return 'active_fruit_exists'
+    if APP_STATE.get('motor_command'):
+        return 'pending_motor_command'
+    if _sorter_busy():
+        return 'classifier_busy'
+    if APP_STATE.get('status') not in ('idle', 'classified'):
+        return 'system_not_idle'
+    if APP_STATE.get('hardware_mode') == 'hardware' and APP_STATE.get('esp32_feeder_state') == 'awaiting_fruit':
+        return 'feed_arrival_unconfirmed'
+    if _has_unclassified_temp_fruit():
+        return 'temp_fruit_exists'
+    return None
+
+
+def _photo_capture_disabled_reason():
+    if APP_STATE.get('hardware_mode') != 'photo_only':
+        return 'photo_only_required'
+    if APP_STATE.get('status') == 'uploading':
+        return 'camera_busy'
+    return _options_disabled_reason() or (None if _camera_is_ready() else 'camera_not_ready')
+
+
+@csrf_exempt
+@require_POST
+def collection_options_api(request):
+    _ensure_dataset_structure()
+    data = _request_data(request)
+    if data.get('work_mode') != 'collection':
+        return _json_error('自動檢測尚未實作。', reason='work_mode_unavailable')
+    if data.get('hardware_mode') not in ('hardware', 'photo_only'):
+        return _json_error('硬體選項無效。', reason='invalid_hardware_mode')
+    with STATE_LOCK:
+        reason = _options_disabled_reason()
+        if reason:
+            return _json_error('目前流程尚未結束，無法切換選項。', status=409, reason=reason)
+        APP_STATE['hardware_mode'] = data['hardware_mode']
+        APP_STATE['message'] = '已選擇純拍攝，等待手機相機就緒。' if data['hardware_mode'] == 'photo_only' else '已選擇使用硬體。'
+        _record_transition('collection_options_changed')
+        return JsonResponse(_state_payload())
+
+
+def _request_photo_capture(station_index):
+    capture_session.request_station_capture(
+        APP_STATE, fruit_id=APP_STATE['active_fruit_id'], station_index=station_index,
+        now_string=_now_string, monotonic=time.monotonic, increment_token=True,
+    )
+    APP_STATE['message'] = f'純拍攝：等待第 {station_index}/{IMAGE_COUNT} 張照片。'
+    _start_wait_timer()
+    _record_transition('photo_capture_requested', station_index=station_index)
+
+
+@csrf_exempt
+@require_POST
+def photo_capture_api(request):
+    _ensure_dataset_structure()
+    with STATE_LOCK:
+        _sync_active_state_with_filesystem()
+        reason = _photo_capture_disabled_reason()
+        if reason:
+            return _json_error('目前無法開始純拍攝。', status=409, reason=reason)
+        fruit_id = _format_fruit_id(_next_available_number(_read_counter()))
+        try:
+            fruit_dir = _prepare_fruit_dir(fruit_id, 'photo_only')
+            capture_time = _now_string()
+            dataset_store.save_photo_session(fruit_dir, capture_time)
+        except CaptureCommandError as exc:
+            return _json_error(exc.message, status=exc.status, reason=exc.reason)
+        except OSError as exc:
+            try:
+                _safe_rmtree(fruit_dir)
+            except DatasetFileBusyError:
+                pass  # The existing temp cleanup will retry an empty folder.
+            return _json_error(f'無法保存本輪選項：{exc}', status=503, reason='capture_options_persist_failed')
+        _start_new_capture_session(fruit_id, 'photo_only', 'waiting_camera', '純拍攝開始。')
+        APP_STATE['capture_time'] = capture_time
+        # Stay within JavaScript's exact integer range and across hardware resets.
+        APP_STATE['capture_token'] = secrets.randbits(48)
+        _request_photo_capture(1)
+        return JsonResponse(_state_payload(extra={'ok': True}))
+
+
 @csrf_exempt
 @require_POST
 def auto_run_api(request):
@@ -524,6 +622,8 @@ def auto_run_api(request):
 
     with STATE_LOCK:
         _sync_active_state_with_filesystem()
+        if enabled and APP_STATE.get('hardware_mode') == 'photo_only':
+            return _json_error('純拍攝不啟用自動送料。', status=409, reason='hardware_mode_required')
         if not enabled:
             waiting_without_fruit = (
                 APP_STATE.get('status') == 'waiting_fruit'
@@ -716,6 +816,7 @@ def esp32_command_api(request):
             and boot_id != previous_boot_id
             and APP_STATE.get('active_fruit_id')
             and APP_STATE.get('status') == 'uploaded'
+            and not _photo_only_session()
         ):
             _disable_auto_run()
             APP_STATE['auto_run_finishing'] = False
@@ -759,7 +860,8 @@ def esp32_command_api(request):
             and current_command.get('recovery_confirmed')
         )
         if (
-            feeder_state == 'awaiting_fruit'
+            APP_STATE.get('hardware_mode') != 'photo_only'
+            and feeder_state == 'awaiting_fruit'
             and not APP_STATE.get('active_fruit_id')
             and not known_feed_wait
             and not recovery_feed_pending
@@ -791,6 +893,10 @@ def esp32_report_api(request):
 
     with STATE_LOCK:
         APP_STATE['last_esp32_report_at'] = _now_string()
+        if APP_STATE.get('hardware_mode') == 'photo_only':
+            return JsonResponse(_compact_esp32_payload({
+                'ok': True, 'event': event, 'ignored': True, 'reason': 'photo_only_mode',
+            }))
         if event == 'timing_config_applied':
             try:
                 payload = _handle_timing_config_applied(data)
@@ -905,6 +1011,8 @@ def recapture_api(request):
         if not fruit_id:
             return _json_error('目前沒有可重新拍攝的資料。', status=409)
 
+        if _photo_only_session():
+            return _json_error('請刪除本輪後重新開始純拍攝。', status=409, reason='photo_only_discard_required')
         _disable_auto_run()
         APP_STATE['auto_run_finishing'] = False
         if not _esp32_is_online():
@@ -1048,12 +1156,13 @@ def upload_images_api(request):
         APP_STATE['status'] = 'uploading'
         APP_STATE['message'] = f'{active_fruit_id} 正在接收第 {station_index} 站照片，請勿刪除或重置。'
         upload_boot_id = APP_STATE.get('esp32_boot_id')
+        photo_only = _photo_only_session()
 
     try:
         _save_station_image(fruit_dir, station_index, image_file)
     except (DatasetFileBusyError, OSError) as exc:
         with STATE_LOCK:
-            boot_changed = APP_STATE.get('esp32_boot_id') != upload_boot_id
+            boot_changed = not photo_only and APP_STATE.get('esp32_boot_id') != upload_boot_id
             if boot_changed:
                 _set_capture_restart_recovery(active_fruit_id, photo_saved=False)
             upload_state_changed = (
@@ -1078,8 +1187,8 @@ def upload_images_api(request):
     with STATE_LOCK:
         if active_fruit_id != APP_STATE['active_fruit_id'] or request_capture_token != APP_STATE['capture_token']:
             return _json_error('上傳完成時拍攝命令已過期，請重新拍攝。', status=409)
-        if APP_STATE.get('status') != 'uploading' or APP_STATE.get('esp32_boot_id') != upload_boot_id:
-            if APP_STATE.get('esp32_boot_id') != upload_boot_id:
+        if APP_STATE.get('status') != 'uploading' or (not photo_only and APP_STATE.get('esp32_boot_id') != upload_boot_id):
+            if not photo_only and APP_STATE.get('esp32_boot_id') != upload_boot_id:
                 _set_capture_restart_recovery(active_fruit_id, photo_saved=True)
             return _json_error(
                 '照片已保存，但上傳期間硬體狀態已變更；不會放行或確認 Gate 3，請依提示復原。',
@@ -1115,6 +1224,15 @@ def upload_images_api(request):
             },
         )
         APP_STATE['station_statuses'][str(station_index)] = 'captured'
+        if photo_only:
+            if station_index < IMAGE_COUNT:
+                _request_photo_capture(station_index + 1)
+            else:
+                APP_STATE['active_station_index'] = None
+                APP_STATE['status'] = 'uploaded'
+                APP_STATE['message'] = f'{active_fruit_id} 三張照片已完成，請檢查後人工分類保存。'
+                _clear_wait_timer()
+            return JsonResponse(_state_payload(extra={'uploaded_fruit_id': active_fruit_id, 'station_index': station_index}))
         if station_index == IMAGE_COUNT:
             APP_STATE['motor_command'] = None
             APP_STATE['active_station_index'] = None
@@ -1164,6 +1282,10 @@ def classify_api(request):
         if APP_STATE.get('dataset_operation'):
             return _json_error('已有 dataset 檔案操作進行中，請稍後再試。', status=409, reason='dataset_busy')
         fruit_id = APP_STATE['active_fruit_id']
+        if fruit_id and _photo_only_session():
+            data = _request_data(request)
+            if data.get('fruit_id') != fruit_id or _safe_int(data.get('capture_token')) != APP_STATE['capture_token']:
+                return _json_error('本輪資料已變更，請重新確認照片。', status=409, reason='stale_capture')
         if not fruit_id:
             return _json_error('目前沒有可分類的暫存資料。', status=409)
 
@@ -1172,25 +1294,27 @@ def classify_api(request):
             return _json_error('暫存資料夾不存在，請重新拍攝。', status=404)
         if APP_STATE['status'] != 'uploaded' or _temp_image_count(src_dir) != IMAGE_COUNT:
             return _json_error(f'{fruit_id} 尚未完成 {IMAGE_COUNT} 張照片上傳。', status=409)
-        if not _esp32_is_online():
-            return _json_error(
-                'ESP32 已離線；Gate 3 上的果實與暫存照片都會保留，請先恢復連線。',
-                status=409,
-                reason='esp32_offline',
-            )
-        if not APP_STATE.get('esp32_sorter_capable'):
-            return _json_error(
-                'Firmware 不相容：缺少 gate3_sorter_v1，已保留暫存照片與 Gate 3 上的果實。',
-                status=409,
-                reason='sorter_capability_missing',
-            )
-        if APP_STATE.get('gate3_waiting_boot_id') != APP_STATE.get('esp32_boot_id'):
-            return _json_error(
-                'Gate 3 等待狀態無法與目前 ESP32 boot 確認；已保留暫存照片與果實，'
-                '請依斷電程序檢查並重新拍攝或刪除。',
-                status=409,
-                reason='gate3_boot_unconfirmed',
-            )
+        photo_only = _photo_only_session()
+        if not photo_only:
+            if not _esp32_is_online():
+                return _json_error(
+                    'ESP32 已離線；Gate 3 上的果實與暫存照片都會保留，請先恢復連線。',
+                    status=409,
+                    reason='esp32_offline',
+                )
+            if not APP_STATE.get('esp32_sorter_capable'):
+                return _json_error(
+                    'Firmware 不相容：缺少 gate3_sorter_v1，已保留暫存照片與 Gate 3 上的果實。',
+                    status=409,
+                    reason='sorter_capability_missing',
+                )
+            if APP_STATE.get('gate3_waiting_boot_id') != APP_STATE.get('esp32_boot_id'):
+                return _json_error(
+                    'Gate 3 等待狀態無法與目前 ESP32 boot 確認；已保留暫存照片與果實，'
+                    '請依斷電程序檢查並重新拍攝或刪除。',
+                    status=409,
+                    reason='gate3_boot_unconfirmed',
+                )
 
         dest_dir = _dataset_root() / label / fruit_id
         if dest_dir.exists():
@@ -1207,18 +1331,19 @@ def classify_api(request):
         relative_path = f'{label}/{fruit_id}'
         capture_time = APP_STATE['capture_time'] or _now_string()
         classification_code = CLASSIFICATION_CODES[label]
-        try:
-            _write_sorter_recovery_intent(fruit_id, label, classification_code)
-        except OSError as exc:
-            return _json_error(
-                f'無法建立分類器安全復原紀錄：{exc}',
-                status=503,
-                reason='sorter_recovery_persist_failed',
-            )
-        APP_STATE['sorter_recovery_required'] = True
-        APP_STATE['sorter_fruit_id'] = fruit_id
-        APP_STATE['sorter_label'] = label
-        APP_STATE['sorter_classification_code'] = classification_code
+        if not photo_only:
+            try:
+                _write_sorter_recovery_intent(fruit_id, label, classification_code)
+            except OSError as exc:
+                return _json_error(
+                    f'無法建立分類器安全復原紀錄：{exc}',
+                    status=503,
+                    reason='sorter_recovery_persist_failed',
+                )
+            APP_STATE['sorter_recovery_required'] = True
+            APP_STATE['sorter_fruit_id'] = fruit_id
+            APP_STATE['sorter_label'] = label
+            APP_STATE['sorter_classification_code'] = classification_code
         operation_token = APP_STATE.begin_dataset_operation('classify', fruit_id)
         APP_STATE['message'] = f'{fruit_id} 正在分類為「{label}」。'
 
@@ -1228,11 +1353,20 @@ def classify_api(request):
         fruit_number = _fruit_number(fruit_id)
         if fruit_number is not None:
             _write_counter(max(_read_counter(), fruit_number + 1))
+        if photo_only:
+            try:
+                (dest_dir / '.capture-session.json').unlink(missing_ok=True)
+            except OSError:
+                pass  # Metadata and photos are already committed; cleanup is best effort.
     except (DatasetFileBusyError, OSError) as exc:
         with STATE_LOCK:
             APP_STATE.finish_dataset_operation(operation_token)
             dataset_untouched = src_dir.exists() and not dest_dir.exists()
-            if dataset_untouched:
+            if photo_only:
+                APP_STATE['message'] = f'{fruit_id} 分類保存失敗：{exc}'
+                APP_STATE['status'] = 'uploaded' if dataset_untouched else 'error'
+                APP_STATE['last_error_reason'] = 'dataset_commit_failed'
+            elif dataset_untouched:
                 try:
                     _clear_sorter_recovery_marker()
                     _reset_sorter_state()
@@ -1279,7 +1413,11 @@ def classify_api(request):
         APP_STATE.finish_dataset_operation(operation_token)
         _clear_classified_dataset_state(fruit_id, label)
         _record_transition('fruit_classified', fruit_id=fruit_id, details={'label': label})
-        sorter_result = _queue_sorter_command(fruit_id, label)
+        if photo_only:
+            APP_STATE['status'] = 'idle'
+            sorter_result = {'sorter_command_queued': False, 'hardware_skipped': True}
+        else:
+            sorter_result = _queue_sorter_command(fruit_id, label)
         payload = {
             'status': 'success',
             'data_classified': True,
@@ -1303,6 +1441,10 @@ def discard_api(request):
         if APP_STATE['status'] == 'uploading':
             return _json_error('照片正在上傳中，請等待上傳完成後再刪除。', status=409)
         fruit_id = APP_STATE['active_fruit_id']
+        if fruit_id and _photo_only_session():
+            data = _request_data(request)
+            if data.get('fruit_id') != fruit_id or _safe_int(data.get('capture_token')) != APP_STATE['capture_token']:
+                return _json_error('本輪資料已變更，請重新確認照片。', status=409, reason='stale_capture')
         if not fruit_id:
             return _json_error('目前沒有可刪除的暫存資料。', status=409)
 
@@ -1517,6 +1659,8 @@ def webrtc_state_api(request):
 def reset_runtime_state_for_tests():
     with STATE_LOCK:
         APP_STATE.update({
+            'hardware_mode': 'hardware',
+            'session_hardware_mode': 'hardware',
             'pending_capture': False,
             'capture_token': 0,
             'active_fruit_id': None,
@@ -2040,6 +2184,8 @@ def _append_metadata(fruit_id, label, capture_time, relative_path, note, fruit_d
 
 
 def _create_capture_session(source):
+    if APP_STATE.get('hardware_mode') == 'photo_only':
+        raise CaptureCommandError('純拍攝不接受硬體觸發。', reason='hardware_mode_required')
     _sync_active_state_with_filesystem()
     if APP_STATE.get('sorter_recovery_required'):
         raise CaptureCommandError(
@@ -2294,6 +2440,7 @@ def _start_new_capture_session(fruit_id, source, status, message):
     APP_STATE['active_fruit_id'] = fruit_id
     APP_STATE['capture_time'] = _now_string()
     APP_STATE['source'] = source
+    APP_STATE['session_hardware_mode'] = APP_STATE['hardware_mode']
     APP_STATE['active_station_index'] = None
     APP_STATE['station_statuses'] = {str(index): 'pending' for index in range(1, IMAGE_COUNT + 1)}
     APP_STATE['motor_command'] = None
@@ -2563,6 +2710,8 @@ def _set_motor_command(
     classification_code=None,
     feed_context=None,
 ):
+    if APP_STATE.get('hardware_mode') == 'photo_only':
+        raise CaptureCommandError('純拍攝禁止馬達命令。', reason='hardware_mode_required')
     if APP_STATE.get('motor_command'):
         raise CaptureCommandError(
             '單一 motor command slot 目前已有命令，不能覆蓋。',
@@ -2913,6 +3062,8 @@ def _handle_timing_config_applied(data):
 
 
 def _auto_trigger_enabled():
+    if APP_STATE.get('hardware_mode') == 'photo_only':
+        return False
     if APP_STATE.get('dataset_operation'):
         return False
     if APP_STATE.get('auto_run_recovery_reason') in (
@@ -3038,6 +3189,8 @@ def _feeder_calibration_confirm_disabled_reason():
 
 
 def _feeder_hardware_disabled_reason(*, allow_recovery=False):
+    if APP_STATE.get('hardware_mode') == 'photo_only':
+        return 'hardware_mode_required'
     recovery = bool(APP_STATE.get('auto_run_recovery_reason'))
     if APP_STATE.get('dataset_operation'):
         return 'dataset_operation_in_progress'
@@ -3209,6 +3362,10 @@ def _capture_started_debug_payload(received_fruit_id, received_capture_token, re
 
 
 def _operator_alert_payload():
+    if APP_STATE.get('hardware_mode') == 'photo_only' and not (
+        APP_STATE.get('last_error_reason') or APP_STATE.get('auto_run_recovery_reason')
+    ):
+        return None
     reason = (
         APP_STATE.get('last_error_reason')
         or APP_STATE.get('auto_run_recovery_reason')
@@ -3251,6 +3408,8 @@ def _operator_alert_payload():
         'feeder_state_not_idle': 'upstream_feeder',
         'camera_not_ready': 'camera station',
         'camera_upload_timeout': 'camera station',
+        'capture_options_invalid': 'Django / temp',
+        'dataset_commit_failed': 'dataset storage',
         'classifier_busy': 'MG996R classifier',
         'classifier_attach_failed': 'MG996R classifier',
         'gate3_release_failed': 'Gate 3 / MG996R classifier',
@@ -3265,6 +3424,9 @@ def _operator_alert_payload():
         'system_not_idle': 'Django state machine',
     }.get(reason, APP_STATE.get('status') or 'unknown')
     instruction = {
+        'camera_upload_timeout': '手機上傳逾時。檢查相機後刪除本輪，再按一次開始新一輪純拍攝。' if _photo_only_session() else '檢查手機相機頁與網路連線後重新拍攝。',
+        'dataset_commit_failed': '照片保存狀態不確定，請檢查暫存資料與 Dataset 後再操作。',
+        'capture_options_invalid': '請保留照片並檢查暫存資料的復原紀錄。',
         'feeder_max_run_timeout': (
             '優雅暫停已生效；請檢查送料筒、出口、卡料與感測區域。'
             '若果實延遲抵達，讓它完成三站流程，不要補轉。'
@@ -3304,6 +3466,8 @@ def _classification_disabled_reason(active_fruit_id, image_total):
         return 'no_active_fruit'
     if image_total != IMAGE_COUNT or APP_STATE.get('status') != 'uploaded':
         return 'capture_incomplete'
+    if _photo_only_session():
+        return None
     if not _esp32_is_online():
         return 'esp32_offline'
     if not APP_STATE.get('esp32_sorter_capable'):
@@ -3314,6 +3478,8 @@ def _classification_disabled_reason(active_fruit_id, image_total):
 
 
 def _gate3_manual_removal_required():
+    if _photo_only_session():
+        return False
     fruit_id = APP_STATE.get('active_fruit_id')
     if not fruit_id or APP_STATE.get('status') not in ('uploaded', 'error'):
         return False
@@ -3330,7 +3496,7 @@ def _state_payload(extra=None):
     can_classify = classify_disabled_reason is None
     can_discard = bool(active_fruit_id) and not is_uploading and not dataset_busy
     gate3_manual_removal_required = _gate3_manual_removal_required()
-    can_recapture = not gate3_manual_removal_required and not dataset_busy and bool(active_fruit_id) and APP_STATE['status'] in (
+    can_recapture = not _photo_only_session() and not gate3_manual_removal_required and not dataset_busy and bool(active_fruit_id) and APP_STATE['status'] in (
         'waiting_esp32_start',
         'waiting_station_ready',
         'waiting_camera',
@@ -3345,6 +3511,13 @@ def _state_payload(extra=None):
         and not _sorter_busy()
     )
     payload = {
+        'work_mode': 'collection',
+        'hardware_mode': APP_STATE['hardware_mode'],
+        'session_hardware_mode': APP_STATE['session_hardware_mode'],
+        'can_change_options': _options_disabled_reason() is None,
+        'options_disabled_reason': _options_disabled_reason(),
+        'can_start_photo_capture': _photo_capture_disabled_reason() is None,
+        'photo_capture_disabled_reason': _photo_capture_disabled_reason(),
         'status': APP_STATE['status'],
         'message': APP_STATE['message'],
         'pending_capture': APP_STATE['pending_capture'],
@@ -3446,6 +3619,20 @@ def _compact_esp32_payload(payload):
     return api_payloads.compact_esp32_report(payload, APP_STATE.get('status'))
 
 
+def _restore_capture_options(fruit_dir):
+    try:
+        options = dataset_store.read_capture_options(fruit_dir)
+    except (OSError, ValueError) as exc:
+        APP_STATE['session_hardware_mode'] = 'hardware'
+        APP_STATE['status'] = 'error'
+        APP_STATE['last_error_reason'] = 'capture_options_invalid'
+        APP_STATE['message'] = f'無法確認本輪硬體選項，請保留照片並檢查復原紀錄：{exc}'
+        return
+    APP_STATE['session_hardware_mode'] = options['hardware_mode']
+    APP_STATE['hardware_mode'] = options['hardware_mode']
+    APP_STATE['capture_time'] = options.get('capture_time') or APP_STATE['capture_time']
+
+
 def _sync_active_state_with_filesystem():
     _apply_session_timeouts()
     if APP_STATE.get('dataset_operation'):
@@ -3528,6 +3715,7 @@ def _sync_active_state_with_filesystem():
         APP_STATE['capture_time'] = _now_string()
         APP_STATE['status'] = 'multiple_temp'
         APP_STATE['message'] = 'temp 內有多個未處理資料夾，請逐筆刪除或重置 dataset。'
+        _restore_capture_options(fruit_dir)
         return
 
     if len(non_empty_dirs) != 1:
@@ -3548,6 +3736,7 @@ def _sync_active_state_with_filesystem():
         APP_STATE['message'] = f'已從 temp 恢復 {fruit_dir.name}，但只有 {image_total}/{IMAGE_COUNT} 張照片，請刪除後重新拍攝。'
     if not completed and APP_STATE['capture_token'] == 0:
         APP_STATE['capture_token'] = 1
+    _restore_capture_options(fruit_dir)
 
 
 def _clear_active_state(message, status='idle'):

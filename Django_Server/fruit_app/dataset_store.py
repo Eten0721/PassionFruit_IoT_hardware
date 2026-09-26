@@ -7,6 +7,8 @@ same camera request without advancing a gate.
 
 from __future__ import annotations
 
+import json
+
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -36,3 +38,27 @@ def save_station_image(
     except Exception:
         safe_unlink(staging)
         raise
+
+
+def save_photo_session(fruit_dir: Path, capture_time: str) -> None:
+    """Persist the hardware isolation choice before exposing a camera request."""
+    target = fruit_dir / '.capture-session.json'
+    staging = target.with_suffix('.json.tmp')
+    try:
+        staging.write_text(json.dumps({
+            'hardware_mode': 'photo_only', 'capture_time': capture_time,
+        }), encoding='utf-8')
+        staging.replace(target)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def read_capture_options(fruit_dir: Path) -> dict:
+    """Legacy fruit folders require hardware; only explicit markers skip it."""
+    try:
+        payload = json.loads((fruit_dir / '.capture-session.json').read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return {'hardware_mode': 'hardware'}
+    if not isinstance(payload, dict) or payload.get('hardware_mode') != 'photo_only':
+        raise ValueError('Invalid capture session hardware mode')
+    return payload
