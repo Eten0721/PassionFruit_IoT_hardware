@@ -72,9 +72,11 @@ class PhotoOnlyFlowTests(SimpleTestCase):
         self.assertEqual(self._post_json('/api/auto_run/', {'enabled': True}).status_code, 409)
         self.assertEqual(self._post_json('/api/feeder/test/').status_code, 409)
         self.assertEqual(self._post_json('/api/manual_capture/').status_code, 404)
-        self.assertEqual(self._post_json('/api/collection_options/', {
+        detection = self._post_json('/api/collection_options/', {
             'work_mode': 'detection', 'hardware_mode': 'photo_only',
-        }).json()['reason'], 'work_mode_unavailable')
+        })
+        self.assertEqual(detection.status_code, 200)
+        self.assertEqual(detection.json()['work_mode'], 'detection')
         from unittest import mock
         with mock.patch('fruit_app.views.time.monotonic', return_value=100):
             self.client.get('/api/camera/state/?camera_ready=1')

@@ -98,6 +98,45 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 # 百香果資料蒐集輸出根目錄。
 DATASET_ROOT = BASE_DIR / 'dataset'
 
+# Automatic inspection stays separate from the manually labelled Dataset.
+def _project_path(environment_name, default):
+    configured = Path(os.environ.get(environment_name, default)).expanduser()
+    return configured if configured.is_absolute() else BASE_DIR.parent / configured
+
+
+MODEL_REPOSITORY_ROOT = _project_path(
+    'MODEL_REPOSITORY_ROOT',
+    BASE_DIR.parent / 'external' / 'ps-quality-detection-system',
+)
+DETECTION_OUTPUT_ROOT = _project_path(
+    'DETECTION_OUTPUT_ROOT',
+    BASE_DIR / 'detection_results',
+)
+DETECTION_MODEL_PATHS = {
+    'roi': str(_project_path(
+        'DETECTION_ROI_MODEL',
+        str(MODEL_REPOSITORY_ROOT / 'models' / 'ROI_crop.pt'),
+    )),
+    'color': str(_project_path(
+        'DETECTION_COLOR_MODEL',
+        str(MODEL_REPOSITORY_ROOT / 'models' / 'v2_color.pt'),
+    )),
+    'wrinkle': str(_project_path(
+        'DETECTION_WRINKLE_MODEL',
+        str(MODEL_REPOSITORY_ROOT / 'models' / 'v2_wrinkle.pt'),
+    )),
+    'defect': str(_project_path(
+        'DETECTION_DEFECT_MODEL',
+        str(MODEL_REPOSITORY_ROOT / 'models' / 'v22_defect.pt'),
+    )),
+}
+DETECTION_MODEL_OPTIONS = {
+    'roi': {'confidence': 0.25, 'imgsz': 640},
+    'color': {'imgsz': 320},
+    'wrinkle': {'imgsz': 320},
+    'defect': {'imgsz': 1024},
+}
+
 # Dashboard 停穩時間的單一持久化設定。此檔案不屬於 dataset，避免與照片資料混在一起。
 RUNTIME_CONFIG_ROOT = BASE_DIR / 'runtime_config'
 CAPTURE_TIMING_CONFIG_PATH = RUNTIME_CONFIG_ROOT / 'capture_timing.json'

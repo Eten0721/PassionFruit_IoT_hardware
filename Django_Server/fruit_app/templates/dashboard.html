@@ -115,6 +115,17 @@
                 </div>
                 <p id="thumbnail-empty" class="station-help">開始自動運轉後，HC-SR04 會啟動三閘門流程，手機每站上傳 1 張照片。</p>
             </section>
+
+            <section id="detection-panel" class="panel detection-panel" aria-labelledby="detection-title" hidden>
+                <div class="panel-heading">
+                    <div>
+                        <span class="section-kicker">AUTOMATIC INSPECTION</span>
+                        <h2 id="detection-title">四模型檢測結果</h2>
+                    </div>
+                    <strong id="detection-summary" class="panel-meta">等待本輪三張照片</strong>
+                </div>
+                <div id="detection-results" class="detection-results" aria-live="polite"></div>
+            </section>
         </div>
 
         <aside class="operation-workspace" aria-label="流程操作">
@@ -130,7 +141,7 @@
                     <label for="work-mode">工作模式</label>
                     <select id="work-mode" disabled>
                         <option value="collection">蒐集模式</option>
-                        <option value="detection" disabled>自動檢測（尚未開放）</option>
+                        <option value="detection">自動檢測</option>
                     </select>
                     <label for="hardware-mode">硬體選項</label>
                     <select id="hardware-mode" disabled>
@@ -169,7 +180,7 @@
                 <button id="btn-recapture" type="button" class="button warning">重新拍攝目前 fruit</button>
             </section>
 
-            <section class="panel classify-panel" aria-labelledby="classification-title">
+            <section id="classification-panel" class="panel classify-panel" aria-labelledby="classification-title">
                 <fieldset>
                     <legend id="classification-title">人工分類</legend>
                     <p>確認三張照片後，將目前資料提交到對應等級。</p>

@@ -40,13 +40,19 @@ def save_station_image(
         raise
 
 
-def save_photo_session(fruit_dir: Path, capture_time: str) -> None:
+def save_photo_session(
+    fruit_dir: Path,
+    capture_time: str,
+    work_mode: str = 'collection',
+) -> None:
     """Persist the hardware isolation choice before exposing a camera request."""
     target = fruit_dir / '.capture-session.json'
     staging = target.with_suffix('.json.tmp')
     try:
         staging.write_text(json.dumps({
-            'hardware_mode': 'photo_only', 'capture_time': capture_time,
+            'hardware_mode': 'photo_only',
+            'work_mode': work_mode,
+            'capture_time': capture_time,
         }), encoding='utf-8')
         staging.replace(target)
     finally:
@@ -58,7 +64,10 @@ def read_capture_options(fruit_dir: Path) -> dict:
     try:
         payload = json.loads((fruit_dir / '.capture-session.json').read_text(encoding='utf-8'))
     except FileNotFoundError:
-        return {'hardware_mode': 'hardware'}
+        return {'hardware_mode': 'hardware', 'work_mode': 'collection'}
     if not isinstance(payload, dict) or payload.get('hardware_mode') != 'photo_only':
         raise ValueError('Invalid capture session hardware mode')
+    if payload.get('work_mode', 'collection') not in ('collection', 'detection'):
+        raise ValueError('Invalid capture session work mode')
+    payload.setdefault('work_mode', 'collection')
     return payload

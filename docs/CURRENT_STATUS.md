@@ -6,7 +6,7 @@
 
 ## 現行穩定功能
 
-- Issue [#17](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/17) 新增純拍攝：手機自動三張、人工分類保存與硬體隔離；Dashboard 分離工作模式與硬體選項，自動檢測仍未開放。API 暫存檔測試已通過，手機端連續拍攝仍待實機驗證。
+- Issue [#17](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/17) 新增純拍攝：手機自動三張、人工分類保存與硬體隔離；Dashboard 分離工作模式與硬體選項。Issue [#18](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/18) 已開放「自動檢測＋純拍攝」：第三張原圖保存後，以背景工作執行既有四模型 batch pipeline，逐張顯示 ROI、色澤、皺褶與局部瑕疵，並將原圖、處理圖及單一 `result.json` 保存到獨立輸出根目錄。正式權重的三張既有照片驗證、API 暫存檔測試與 ESP32 編譯已通過；手機端連續拍攝與窄螢幕操作仍待實機驗證。
 
 - Django 中央狀態機可協調 HC-SR04 自動觸發、手機單站拍攝與 ESP32 三站閘門。
 - 每顆果實保存三張站點照片，照片保存成功後才放行下一閘門。

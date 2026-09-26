@@ -37,7 +37,12 @@ const remoteVideo = document.getElementById('remote-video');
     const counterInput = document.getElementById('counter-input');
     const noteInput = document.getElementById('note');
     const classifyButtons = Array.from(document.querySelectorAll('.classify-button'));
+    const workModeSelect = document.getElementById('work-mode');
     const hardwareModeSelect = document.getElementById('hardware-mode');
+    const classificationPanel = document.getElementById('classification-panel');
+    const detectionPanel = document.getElementById('detection-panel');
+    const detectionResults = document.getElementById('detection-results');
+    const detectionSummary = document.getElementById('detection-summary');
     const optionsGuidance = document.getElementById('options-guidance');
     const autoRunButton = document.getElementById('btn-auto-run');
     const autoRunGuidance = document.getElementById('auto-run-guidance');
@@ -107,6 +112,7 @@ const remoteVideo = document.getElementById('remote-video');
     let webrtcPollTimer = null;
     let lastState = null;
     let lastThumbnailManifest = '';
+    let lastDetectionManifest = '';
     let timingInputsDirty = false;
     let feederSettingsDirty = false;
     let timingUpdateInFlight = false;
@@ -375,7 +381,10 @@ const remoteVideo = document.getElementById('remote-video');
         const images = data.latest_images || [];
         const status = data.status || 'idle';
         const photoOnly = data.hardware_mode === 'photo_only';
+        const detectionMode = data.work_mode === 'detection';
+        workModeSelect.value = data.work_mode || 'collection';
         hardwareModeSelect.value = data.hardware_mode || 'hardware';
+        workModeSelect.disabled = Boolean(controlActionInFlight) || !data.can_change_options;
         esp32Indicator.hidden = photoOnly;
         feederSensorIndicator.hidden = photoOnly;
         stationCards.forEach((card, index) => {
@@ -383,6 +392,9 @@ const remoteVideo = document.getElementById('remote-video');
                 `第 ${index + 1} ${photoOnly ? '張' : '站'}`);
         });
         hardwareModeSelect.disabled = Boolean(controlActionInFlight) || !data.can_change_options;
+        hardwareModeSelect.querySelector('option[value="hardware"]').disabled = detectionMode;
+        classificationPanel.hidden = detectionMode;
+        detectionPanel.hidden = !detectionMode;
         setTextIfChanged(optionsGuidance, data.options_disabled_reason
             ? `目前無法切換：${data.options_disabled_reason}` : '開始後，本輪選項固定。');
         recaptureButton.hidden = photoOnly;
@@ -423,6 +435,7 @@ const remoteVideo = document.getElementById('remote-video');
             ? '手機相機就緒後，按「拍攝本輪三張」自動保存三張原圖。'
             : '開始自動運轉後，HC-SR04 會啟動三閘門流程，手機每站上傳 1 張照片。');
         renderThumbnails(images, photoOnly);
+        renderDetection(data);
         renderTiming(data.timing || {});
         renderCaptureTiming(data);
         renderTransitionTrace(data);
@@ -475,6 +488,10 @@ const remoteVideo = document.getElementById('remote-video');
             waiting_motor: '等待閘門',
             uploaded: '拍攝完成',
             classified: '分類完成',
+            detection_pending: '等待檢測',
+            detection_running: '檢測中',
+            detection_completed: '檢測完成',
+            detection_failed: '檢測未完整',
             incomplete: '照片不完整',
             multiple_temp: '暫存衝突',
             error: '需要處理',
@@ -483,10 +500,10 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     function captureStatusTone(status) {
-        if (['uploaded', 'classified'].includes(status)) {
+        if (['uploaded', 'classified', 'detection_completed'].includes(status)) {
             return 'completed';
         }
-        if (['error', 'incomplete', 'multiple_temp'].includes(status)) {
+        if (['error', 'incomplete', 'multiple_temp', 'detection_failed'].includes(status)) {
             return 'error';
         }
         if (status === 'idle') {
@@ -681,6 +698,130 @@ const remoteVideo = document.getElementById('remote-video');
             card.onclick = () => openImagePreview(image);
             setTextIfChanged(stationFilenames[stationIndex], image.filename);
         });
+    }
+
+    function confidenceText(value) {
+        return Number.isFinite(Number(value))
+            ? `｜信心值 ${(Number(value) * 100).toFixed(1)}%`
+            : '';
+    }
+
+    function detectionJudgement(stage, image) {
+        if (stage.key === 'roi') {
+            const roi = image.roi || {};
+            return roi.status === 'ok'
+                ? `已偵測 ROI${confidenceText(roi.confidence)}`
+                : `ROI 不可用：${roi.reason || '尚未產生'}`;
+        }
+        const model = (image.models || {})[stage.key] || {};
+        if (model.status !== 'ok') {
+            return `判定失敗：${model.reason || '尚未執行'}`;
+        }
+        if (stage.key !== 'defect') {
+            return `${model.display_label || model.class_name || '未知'}${confidenceText(model.confidence)}`;
+        }
+        const detections = model.detections || [];
+        if (!detections.length) {
+            return '未偵測到局部瑕疵｜面積比例 0%';
+        }
+        return detections.map((item) => {
+            const ratio = Number.isFinite(Number(item.mask_area_ratio))
+                ? `｜面積 ${(Number(item.mask_area_ratio) * 100).toFixed(2)}%`
+                : '';
+            return `${item.class_name || '未知瑕疵'}${confidenceText(item.confidence)}${ratio}`;
+        }).join('；');
+    }
+
+    function renderDetection(data) {
+        const result = data.detection_result;
+        const manifest = JSON.stringify([
+            data.detection_status, data.detection_error, result,
+        ]);
+        if (manifest === lastDetectionManifest) {
+            return;
+        }
+        lastDetectionManifest = manifest;
+        detectionResults.replaceChildren();
+
+        const statusLabels = {
+            idle: '等待本輪三張照片',
+            capturing: '拍攝中',
+            pending: '等待批次檢測',
+            running: '四模型檢測中',
+            completed: '檢測與保存完成',
+            failed: '檢測未完整完成',
+        };
+        setTextIfChanged(
+            detectionSummary,
+            statusLabels[data.detection_status] || data.detection_status || '等待',
+        );
+        if (!result) {
+            const empty = document.createElement('p');
+            empty.className = 'detection-empty';
+            empty.textContent = data.detection_error
+                ? `未產生結果：${data.detection_error}`
+                : '等待三張原圖保存完成。';
+            detectionResults.append(empty);
+            return;
+        }
+
+        const stages = [
+            { key: 'roi', title: 'ROI', artifact: 'roi_annotated' },
+            { key: 'color', title: 'color', artifact: 'masked_roi' },
+            { key: 'wrinkle', title: 'wrinkle', artifact: 'wrinkle_gray' },
+            { key: 'defect', title: 'defect', artifact: 'defect_annotated' },
+        ];
+        Object.entries(result.images || {}).forEach(
+            ([filename, image], imageIndex) => {
+                const group = document.createElement('section');
+                group.className = 'detection-group';
+                const heading = document.createElement('h3');
+                heading.textContent = `照片 ${imageIndex + 1}｜${filename}`;
+                group.append(heading);
+                const grid = document.createElement('div');
+                grid.className = 'detection-grid';
+
+                stages.forEach((stage) => {
+                    const card = document.createElement('article');
+                    card.className = 'detection-card';
+                    const title = document.createElement('h4');
+                    title.textContent = stage.title;
+                    card.append(title);
+                    const media = document.createElement('div');
+                    media.className = 'detection-media';
+                    const urls = image.artifact_urls || {};
+                    const url = urls[stage.artifact]
+                        || (stage.key === 'roi' ? urls.original : null);
+                    if (url) {
+                        const button = document.createElement('button');
+                        button.type = 'button';
+                        button.className = 'detection-image-button';
+                        const preview = document.createElement('img');
+                        preview.src = url;
+                        preview.alt = `照片 ${imageIndex + 1} ${stage.title}：${filename}`;
+                        button.append(preview);
+                        button.addEventListener('click', () => openImagePreview({
+                            filename: `${filename}｜${stage.title}`,
+                            url,
+                        }));
+                        media.append(button);
+                    } else {
+                        const placeholder = document.createElement('span');
+                        placeholder.className = 'detection-placeholder';
+                        placeholder.textContent = '影像不可用';
+                        media.append(placeholder);
+                    }
+                    card.append(media);
+                    const judgement = document.createElement('p');
+                    judgement.className = 'detection-judgement';
+                    judgement.textContent = detectionJudgement(stage, image);
+                    card.append(judgement);
+                    grid.append(card);
+                });
+                group.append(grid);
+                detectionResults.append(group);
+            },
+        );
     }
 
     function openImagePreview(image) {
@@ -1365,6 +1506,26 @@ const remoteVideo = document.getElementById('remote-video');
         }
     });
     autoRunButton.addEventListener('click', toggleAutoRun);
+    workModeSelect.addEventListener('change', async () => {
+        const workMode = workModeSelect.value;
+        const hardwareMode = workMode === 'detection'
+            ? 'photo_only' : hardwareModeSelect.value;
+        if (!beginControlAction('collection-options', workModeSelect)) {
+            return;
+        }
+        try {
+            const payload = await postJson('/api/collection_options/', {
+                work_mode: workMode, hardware_mode: hardwareMode,
+            });
+            lastState = payload;
+            renderState(payload);
+        } catch (error) {
+            await refreshState();
+            setMessage(`選項切換失敗：${error.message}`);
+        } finally {
+            endControlAction(workModeSelect);
+        }
+    });
     hardwareModeSelect.addEventListener('change', async () => {
         const hardwareMode = hardwareModeSelect.value;
         if (!beginControlAction('collection-options', hardwareModeSelect)) {
@@ -1372,7 +1533,8 @@ const remoteVideo = document.getElementById('remote-video');
         }
         try {
             const payload = await postJson('/api/collection_options/', {
-                work_mode: 'collection', hardware_mode: hardwareMode,
+                work_mode: workModeSelect.value,
+                hardware_mode: hardwareMode,
             });
             lastState = payload;
             renderState(payload);

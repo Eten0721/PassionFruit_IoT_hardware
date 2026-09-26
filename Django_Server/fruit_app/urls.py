@@ -30,6 +30,11 @@ urlpatterns = [
     path('api/discard/', views.discard_api, name='discard_api'),
     path('api/reset_dataset/', views.reset_dataset_api, name='reset_dataset_api'),
     path('api/image/<str:fruit_id>/<str:filename>/', views.dataset_image_api, name='dataset_image_api'),
+    path(
+        'api/detection/image/<str:fruit_id>/<str:filename>/',
+        views.detection_image_api,
+        name='detection_image_api',
+    ),
     path('api/open_dataset_folder/', views.open_dataset_folder_api, name='open_dataset_folder_api'),
     path('api/webrtc/offer', views.webrtc_offer_api, name='webrtc_offer_api'),
     path('api/webrtc/answer', views.webrtc_answer_api, name='webrtc_answer_api'),
