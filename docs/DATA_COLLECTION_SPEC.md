@@ -283,13 +283,40 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 跳過／刪除先關閉自動運轉，再嘗試實體刪除；Windows 檔案占用時移至 `_delete_pending`，仍失敗則持久標記待清理並跳過該 fruit ID。成功結果必須清除 capture token、等待計時器、fast-path 與 motor command，安全回到 idle，且不得自動送料。
 
-## 純拍攝 API 契約
+## 純拍攝與 YOLO 檢測模式設計
 
-`POST /api/collection_options/` 接收 `work_mode=collection` 與 `hardware_mode=hardware|photo_only`。自動檢測回 `400 work_mode_unavailable`；既有 capture、Dataset、motor、自動運轉或復原鎖存在時回 `409` 與具體 reason，不清除鎖定。預設使用硬體；開始後固定本輪 `session_hardware_mode`。純拍攝啟動前會在暫存 fruit 目錄原子保存 `.capture-session.json`，供 Django 重啟後恢復硬體選項與拍攝時間；資料提交成功後清理該內部標記，不改變 metadata CSV 欄位。
+本節記錄純拍攝與自動檢測的現行契約；既有硬體交握仍以上述規格為準，實機驗證狀態見 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
+
+### 模式與硬體隔離
+
+- Dashboard 提供「蒐集模式／自動檢測模式」選單；蒐集模式保留人工級距分類，自動檢測模式隱藏級距按鈕，僅輸出 YOLO 外觀檢測結果。
+- 硬體選項只有「使用硬體／純拍攝」，不另設送料開關。純拍攝完全隔離硬體，不要求 ESP32 連線、能力回報或送料校正，也不模擬超音波事件或建立任何 motor command。
+- 純拍攝由「手動觸發本輪」啟動，要求手機相機 readiness 有效且沒有處理中的工作階段；僅預覽連線不代表相機已可拍攝。
+- 純拍攝按一次即自動拍攝三張，不需逐張確認。Django 在每張驗證並保存成功後才要求下一張，保留拍攝 token、上傳驗證與重複請求防護；不等待實體 station ready。三張是三次拍攝，不保證果實已轉動或具有不同視角。
+- 使用硬體時包含上游送料、HC-SR04 與三站閘門交握，沿用既有 readiness、能力回報與送料校正條件。純拍攝的略過條件不得套用到實體流程。
+- 模式與硬體選項只能在沒有 active capture、待處理果實、推論或 motor command，且硬體沒有待復原動作時切換；切換選項不得清除既有鎖定。
+
+### 純拍攝 API 契約
+
+`POST /api/collection_options/` 接收 `work_mode=collection|detection` 與 `hardware_mode=hardware|photo_only`。自動檢測目前只接受 `photo_only`，搭配 `hardware` 時回 `400 hardware_mode_unavailable`；既有 capture、Dataset、motor、自動運轉、推論或復原鎖存在時回 `409` 與具體 reason，不清除鎖定。預設使用硬體；開始後固定本輪 `session_work_mode` 與 `session_hardware_mode`。純拍攝啟動前會在暫存 fruit 目錄原子保存 `.capture-session.json`，供 Django 重啟後恢復工作模式、硬體選項與拍攝時間；資料提交成功後清理該內部標記，不改變 metadata CSV 欄位。
 
 `POST /api/photo_capture/` 僅接受純拍攝；相機 heartbeat 過期回 `409 camera_not_ready`，有待處理資料回 `409 active_fruit_exists`，拒絕時不建立 fruit 資料夾。成功後重用手機 capture state 與 upload API，每張原子保存成功才更新 token 並要求下一張，不等待 station ready，也不建立任何 motor command。ESP32 事件回 `200 ignored`，直接 trigger 回 `409 hardware_mode_required`；ESP32 boot 改變不影響純拍攝上傳。
 
 三張保存後才開放人工分類；純拍攝的 `/api/classify/` 與 `/api/discard/` 必須附目前 `fruit_id`、`capture_token`，過期請求回 `409 stale_capture`。分類維持既有照片、metadata 與 counter 契約，成功回 `hardware_skipped=true`，不建立分類器復原紀錄或實體命令。分類、刪除後回 idle，不自動開始下一輪。拍攝失敗沿用既有等待與同 token 重試；逾時保留已保存照片，操作員刪除本輪後重新開始。
+
+### 檢測、保存與結束
+
+- 自動檢測模式在三張原圖全部保存後，將三張交給模型 Repository 的既有推論 pipeline；ROI 處理後分別執行 color、wrinkle 與 local defect。此階段不產生品質級距，也不將 YOLO 結果當成人工標籤。
+- 每顆果實獨立資料夾，保存原始上傳照片、成功產生的原圖 ROI 框選圖、遮罩 ROI、灰階加 CLAHE 圖、局部瑕疵標示圖與一份 `result.json`；以照片檔名維持結果對應，不要求站點、時間或模型版本欄位。檢測產物與人工級距 Dataset 分開保存，均不納入 Git。
+- Dashboard 在自動檢測模式以三張照片分組，每組依序顯示 ROI 框選、color、wrinkle、defect 四格影像與判定，共十二格；四模型有跳過、缺失或失敗時，整輪不得顯示完整成功。蒐集模式保留原照片預覽。
+- 部分檢測失敗仍保留三張原圖、成功產物與每張的具體失敗原因，顯示「檢測未完整完成」後結束，不自動重拍；無法產生的裁切或標示圖不建立。保存失敗不得顯示存檔成功。
+- 本階段自動檢測採單輪操作，成功或失敗後均不自動啟動下一輪或送料。純拍攝存檔完成後結束該工作階段；實體流程的檢測結束不代表果實已離開 Gate 3，保留既有硬體鎖定，不自動放行或假定歸位。
+
+### UI 展示與操作摘要
+
+完整影像對應、好壞文字、失敗占位、響應式排版與驗收契約以 [Issue #18 的 UI 展示契約](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/18#ui-display-contract) 為本期唯一詳細來源；[Issue #17](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/17) 建立簡潔操作配置，[Issue #19](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/19) 重用相同檢測展示。
+
+主要區域只保留模式選擇、啟動／暫停、必要狀態與結果；詳細設定、校正、診斷及低頻資料管理置於頁面底部，預設摺疊。阻擋操作的原因與安全復原提示仍直接可見。展示重用模型實際前處理產物；本期「圓形遮罩」沿用依 ROI 長寬產生的既有橢圓遮罩，不另改推論演算法。
 
 ## 驗收
 
