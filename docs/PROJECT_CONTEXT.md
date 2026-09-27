@@ -50,13 +50,13 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 
 ### 硬體 Repository
 
-`Eten0721/PassionFruit_IoT_hardware` 維護 Django、ESP32 Firmware、硬體筆記、資料採集契約與未來 AI adapter。它不追蹤原始照片、Dataset、模型權重、訓練輸出或 child Repository。
+`Eten0721/PassionFruit_IoT_hardware` 維護 Django、ESP32 Firmware、硬體筆記、資料採集契約、AI adapter，以及 `Django_Server/models/` 內四個經驗收的部署權重。它不追蹤原始照片、Dataset、訓練輸出、歷史 checkpoint 或 child Repository。
 
 ### 模型 Repository
 
-`fcu-passionfruit-project/ps-quality-detection-system` 獨立維護模型訓練、推論 pipeline、Dataset manifest 與正式權重。本機 checkout 放在 `external/ps-quality-detection-system/` 並保留自己的 `.git`；操作方式見 [`external/README.md`](../external/README.md)。
+`fcu-passionfruit-project/ps-quality-detection-system` 獨立維護模型訓練、推論 pipeline、Dataset manifest 與候選權重。本機 checkout 放在 `external/ps-quality-detection-system/` 並保留自己的 `.git`；操作方式見 [`external/README.md`](../external/README.md)。
 
-兩個 Repository 必須分別檢查、commit 與 push。模型只有通過驗收的正式權重可使用 Git LFS；原始照片、`runs/` 與歷史 checkpoint 不進 Git。
+兩個 Repository 必須分別檢查、commit 與 push。正式部署只讀取本 Repository 的 `Django_Server/models/ROI.pt`、`Color.pt`、`Wrinkle.pt`、`Defect.pt`，並以 Git LFS 管理；原始照片、`runs/` 與歷史 checkpoint 不進 Git。責任切分見 [ADR-0017](adr/0017-fixed-django-model-assets.md)。
 
 ### Dataset
 

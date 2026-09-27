@@ -12,9 +12,9 @@
 
 ## Repository 邊界
 
-- 硬體、Firmware 與 Django 由本 Repository 維護。
-- 模型訓練與檢測層位於 `external/ps-quality-detection-system/`，保留獨立 `.git`。
-- 兩個 Repository 分別 commit 與 push；父層不得追蹤 child Repository、照片、模型輸出或權重。
+- 硬體、Firmware、Django 與 `Django_Server/models/` 的四個正式部署權重由本 Repository 維護。
+- 模型訓練與推論 pipeline 位於 `external/ps-quality-detection-system/`，保留獨立 `.git`。
+- 兩個 Repository 分別 commit 與 push；父層不得追蹤 child Repository、照片、訓練輸出或歷史 checkpoint。
 - Dataset 實體位於獨立資料目錄，不納入 Git。
 
 ## Git 安全
@@ -23,7 +23,7 @@
 - 修改後先顯示 `git diff` 或變更摘要，不直接 commit。
 - commit 前檢查 `git diff --cached --name-only` 與 `git diff --cached`，並明確指定 `git add <檔案>`。
 - 不提交 `secrets.h`、`.env`、Wi-Fi 密碼、API key、原始照片、`runs/`、`last.pt`、歷史 checkpoint 或大型訓練輸出。
-- 正式模型權重只可在模型 Repository 通過驗收後以 Git LFS 管理。
+- 通過驗收的正式部署權重固定命名為 `ROI.pt`、`Color.pt`、`Wrinkle.pt`、`Defect.pt`，只可存於 `Django_Server/models/` 並以 Git LFS 管理。
 - 不使用 `git reset --hard`，除非使用者明確要求；回溯優先使用 `git revert` 或恢復指定檔案。
 - 保留工作樹中與任務無關的既有修改。
 

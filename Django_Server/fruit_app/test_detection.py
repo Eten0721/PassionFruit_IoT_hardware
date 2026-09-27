@@ -7,10 +7,23 @@ from pathlib import Path
 from unittest import mock
 
 import numpy as np
+from django.conf import settings
 from django.test import SimpleTestCase, override_settings
 
 from . import tests as existing
 from . import views
+
+
+class DetectionModelSettingsTests(SimpleTestCase):
+    def test_default_weights_use_fixed_django_model_assets(self):
+        model_root = Path(settings.BASE_DIR) / 'models'
+        self.assertEqual(Path(settings.DETECTION_MODEL_ROOT), model_root)
+        self.assertEqual(settings.DETECTION_MODEL_PATHS, {
+            'roi': str(model_root / 'ROI.pt'),
+            'color': str(model_root / 'Color.pt'),
+            'wrinkle': str(model_root / 'Wrinkle.pt'),
+            'defect': str(model_root / 'Defect.pt'),
+        })
 
 
 class DetectionFlowTests(SimpleTestCase):

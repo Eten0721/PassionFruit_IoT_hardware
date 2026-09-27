@@ -112,23 +112,12 @@ DETECTION_OUTPUT_ROOT = _project_path(
     'DETECTION_OUTPUT_ROOT',
     BASE_DIR / 'detection_results',
 )
+DETECTION_MODEL_ROOT = BASE_DIR / 'models'
 DETECTION_MODEL_PATHS = {
-    'roi': str(_project_path(
-        'DETECTION_ROI_MODEL',
-        str(MODEL_REPOSITORY_ROOT / 'models' / 'ROI_crop.pt'),
-    )),
-    'color': str(_project_path(
-        'DETECTION_COLOR_MODEL',
-        str(MODEL_REPOSITORY_ROOT / 'models' / 'v2_color.pt'),
-    )),
-    'wrinkle': str(_project_path(
-        'DETECTION_WRINKLE_MODEL',
-        str(MODEL_REPOSITORY_ROOT / 'models' / 'v2_wrinkle.pt'),
-    )),
-    'defect': str(_project_path(
-        'DETECTION_DEFECT_MODEL',
-        str(MODEL_REPOSITORY_ROOT / 'models' / 'v22_defect.pt'),
-    )),
+    'roi': str(DETECTION_MODEL_ROOT / 'ROI.pt'),
+    'color': str(DETECTION_MODEL_ROOT / 'Color.pt'),
+    'wrinkle': str(DETECTION_MODEL_ROOT / 'Wrinkle.pt'),
+    'defect': str(DETECTION_MODEL_ROOT / 'Defect.pt'),
 }
 DETECTION_MODEL_OPTIONS = {
     'roi': {'confidence': 0.25, 'imgsz': 640},

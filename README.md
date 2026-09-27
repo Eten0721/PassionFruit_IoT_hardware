@@ -33,11 +33,11 @@ flowchart LR
     ESP32 --> Capture["HC-SR04<br/>三站 MG996R 閘門"]
     ESP32 --> Sorter["下置式 MG996R 分類器"]
     Django --> Dataset["Dataset<br/>三站照片與 metadata"]
-    Dataset -. 規劃中 .-> AI["獨立模型 Repository<br/>四級辨識"]
+    Dataset -.-> AI["獨立推論 pipeline<br/>Django 固定部署權重"]
     AI -. 結構化結果 .-> Django
 ```
 
-Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS client 輪詢命令，在本機負責感測、馬達停止與有界硬體流程；手機只處理相機 readiness、單站拍攝與上傳。模型訓練與推論位於獨立 Repository，不由本 Repository 追蹤權重或訓練輸出。
+Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS client 輪詢命令，在本機負責感測、馬達停止與有界硬體流程；手機只處理相機 readiness、單站拍攝與上傳。模型訓練與推論 pipeline 位於獨立 Repository；本 Repository 只以 Git LFS 保存 Django 部署所需的四個正式權重，不追蹤訓練輸出。
 
 硬體使用兩組彼此獨立的 `AC 110 V → DC 12 V／20 A` 電源。電源 A 經 LM25116 降至 `6.0 V`，供三站與分類器共四顆 MG996R；電源 B 經另一顆 LM25116 降至 `8.4 V`，只供 XINHUI 送料馬達。完整接線與市電安全要求見 [硬體接線與驗收摘要](hardware_notes/硬體接線與驗收摘要.md)。
 
@@ -88,14 +88,14 @@ Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS clie
 
 ```text
 PassionFruit_IoT_hardware/
-├── Django_Server/      # Dashboard、手機相機、API、狀態機與 Dataset 管理
+├── Django_Server/      # Dashboard、API、狀態機、Dataset 管理與正式部署權重
 ├── firmware/           # 正式 ESP32 Firmware 與硬體測試程式
 ├── docs/               # 架構、規格、現況、ADR、部署與硬體紀錄
 ├── hardware_notes/     # 接線安全、驗收摘要與機構參考圖
 └── external/           # 被忽略的獨立模型 Repository checkout
 ```
 
-模型訓練、推論與 Decision Dataset 契約由獨立的 [ps-quality-detection-system](https://github.com/fcu-passionfruit-project/ps-quality-detection-system) Repository 維護；Dataset、原始照片、模型權重與訓練輸出不納入本 Repository。
+模型訓練、推論 pipeline 與 Decision Dataset 契約由獨立的 [ps-quality-detection-system](https://github.com/fcu-passionfruit-project/ps-quality-detection-system) Repository 維護；本 Repository 的 `Django_Server/models/` 只保存四個經驗收的部署權重。Dataset、原始照片與訓練輸出不納入本 Repository。
 
 ## 文件導覽
 

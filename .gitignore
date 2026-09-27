@@ -61,6 +61,7 @@ Necessary_library/*
 # YOLO / ML training outputs and model weights
 **/runs/
 *.pt
+!Django_Server/models/*.pt
 *.pth
 *.onnx
 *.weights

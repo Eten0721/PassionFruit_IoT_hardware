@@ -18,7 +18,7 @@
 - 正式自動運轉會在 ESP32 同時回報 `feeder_v1` 與 `gate3_sorter_v1`、送料校正、感測區、相機與三站流程皆就緒時送入單顆果實；同一筆 HC-SR04 trigger 啟動首站，分類器 terminal report 完成後才允許下一顆。
 - 正式 Firmware 已按感測、閘門、分類器、HTTPS 與流程控制拆分模組。
 - Django 與模型開發統一使用 `PF` Conda 環境，基準為 Python `3.14.4` 與 Django `5.2.16` LTS。
-- 硬體與模型採獨立 Repository，照片快照存於獨立資料目錄。
+- 模型訓練與推論 pipeline 採獨立 Repository；四個 Django 正式部署權重固定存於 `Django_Server/models/` 並由 Git LFS 管理，照片快照存於獨立資料目錄。
 - 目前 Dataset 快照包含 `327` 顆果實與 `981` 張照片，尚待建立正式 train／valid／test 切分與第二份備份。
 
 現行協定與數值見 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md)。
