@@ -31,10 +31,7 @@ def _model_modules(repository_root: Path):
     manager_module = importlib.import_module(
         'passionfruit.inference.model_manager'
     )
-    image_processing = importlib.import_module(
-        'passionfruit.inference.image_processing'
-    )
-    return pipeline, manager_module, image_processing
+    return pipeline, manager_module
 
 
 def _class_names(model) -> set[str]:
@@ -77,7 +74,7 @@ def execute_model_batch(
     model_options: dict[str, dict] | None = None,
 ):
     """Call the existing batch pipeline after validating actual weights."""
-    pipeline, manager_module, _ = _model_modules(repository_root)
+    pipeline, manager_module = _model_modules(repository_root)
     manager = manager_module.PassionFruitModelManager()
     for role in MODEL_ROLES:
         path = model_paths.get(role, '')
@@ -183,15 +180,22 @@ def run_and_save(
     run_dir.mkdir()
 
     images: dict[str, dict] = {}
+    save_errors = []
     for source in image_paths:
         source = Path(source)
         target_name = f'{source.stem}_original{source.suffix.lower()}'
-        _copy_original(source, run_dir / target_name)
         images[source.name] = {
             'roi': {'status': 'pending', 'reason': None},
             'models': {},
-            'artifacts': {'original': target_name},
+            'artifacts': {},
         }
+        try:
+            _copy_original(source, run_dir / target_name)
+            images[source.name]['artifacts']['original'] = target_name
+        except Exception as error:
+            save_errors.append(
+                f'{source.name}/original: {type(error).__name__}: {error}'
+            )
 
     try:
         reports, artifacts_list = execute_model_batch(
@@ -216,7 +220,6 @@ def run_and_save(
         ]
         artifacts_list = [{} for _ in image_paths]
 
-    save_errors = []
     for source, report, artifacts in zip(
         image_paths, reports, artifacts_list, strict=True
     ):
@@ -253,10 +256,56 @@ def run_and_save(
         'images': images,
     }
     _atomic_json(run_dir / 'result.json', result)
-    _atomic_json(root / '.current.json', {
+    return result
+
+
+def interrupted_result(
+    *, fruit_id: str, image_paths: list[Path], save_errors=None
+) -> dict:
+    return {
         'fruit_id': fruit_id,
-        'result': f'{fruit_id}/result.json',
-    })
+        'status': 'failed',
+        'complete': False,
+        'reason': 'service_restarted',
+        'save_errors': list(save_errors or []),
+        'images': {
+            Path(source).name: {
+                'roi': {'status': 'error', 'reason': 'service_restarted'},
+                'models': {
+                    role: {'status': 'skipped', 'reason': 'service_restarted'}
+                    for role in MODEL_ROLES[1:]
+                },
+                'artifacts': {},
+            }
+            for source in image_paths
+        },
+    }
+
+
+def save_interrupted_result(
+    *, fruit_id: str, image_paths: list[Path], output_root: Path
+) -> dict:
+    """Persist a restart terminal state without re-running any model."""
+    run_dir = Path(output_root).resolve() / fruit_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    result = interrupted_result(fruit_id=fruit_id, image_paths=image_paths)
+    for source in map(Path, image_paths):
+        artifacts = result['images'][source.name]['artifacts']
+        original_name = f'{source.stem}_original{source.suffix.lower()}'
+        original_path = run_dir / original_name
+        try:
+            if not original_path.is_file():
+                _copy_original(source, original_path)
+            artifacts['original'] = original_name
+        except Exception as error:
+            result['save_errors'].append(
+                f'{source.name}/original: {type(error).__name__}: {error}'
+            )
+        for name in ARTIFACT_NAMES:
+            filename = f'{source.stem}_{name}.jpg'
+            if (run_dir / filename).is_file():
+                artifacts[name] = filename
+    _atomic_json(run_dir / 'result.json', result)
     return result
 
 

@@ -135,6 +135,7 @@ class DetectionFlowTests(SimpleTestCase):
 
         run_dir = self.detection_root / fruit_id
         result = json.loads((run_dir / 'result.json').read_text('utf-8'))
+        self.assertFalse((self.detection_root / '.current.json').exists())
         self.assertEqual(len(result['images']), 3)
         self.assertNotIn('capture_time', result)
         self.assertNotIn('model_paths', json.dumps(result))
@@ -234,6 +235,35 @@ class DetectionFlowTests(SimpleTestCase):
         self.assertTrue((run_dir / 'result.json').is_file())
         self.assertFalse((run_dir / 'img_01_masked_roi.jpg').exists())
 
+    @mock.patch(
+        'fruit_app.detection.execute_model_batch', side_effect=_external_result
+    )
+    @mock.patch(
+        'fruit_app.detection._copy_original',
+        side_effect=OSError('disk full'),
+    )
+    def test_original_write_failure_keeps_durable_failed_result(
+        self, _copy, _execute
+    ):
+        fruit_id = self._start_detection().json()['active_fruit_id']
+        self._upload_three(fruit_id)
+        state = self._wait_for_detection()
+
+        self.assertEqual(state['detection_status'], 'failed')
+        self.assertFalse(state['detection_result']['complete'])
+        self.assertEqual(
+            state['detection_result']['reason'], 'artifact_save_failed'
+        )
+        result_path = self.detection_root / fruit_id / 'result.json'
+        self.assertTrue(result_path.is_file())
+        result = json.loads(result_path.read_text('utf-8'))
+        self.assertNotIn('original', result['images']['img_01.jpg']['artifacts'])
+
+    def test_existing_detection_output_reserves_fruit_id(self):
+        (self.detection_root / 'fruit_001').mkdir(parents=True)
+        started = self._start_detection().json()
+        self.assertEqual(started['active_fruit_id'], 'fruit_002')
+
     @mock.patch('fruit_app.detection.execute_model_batch')
     def test_restart_during_detection_does_not_replay_or_claim_success(
         self, execute
@@ -254,13 +284,49 @@ class DetectionFlowTests(SimpleTestCase):
         self.assertEqual(state['status'], 'detection_failed')
         self.assertIn('不自動重跑', state['message'])
         release.set()
-        deadline = time.monotonic() + 2
-        while execute.call_count and time.monotonic() < deadline:
-            if (self.detection_root / fruit_id / 'result.json').exists():
-                break
-            time.sleep(0.01)
+        for thread in threading.enumerate():
+            if thread.name == f'detection-{fruit_id}':
+                thread.join(2)
         self.assertEqual(execute.call_count, 1)
         self.assertNotEqual(
             self.client.get('/api/state/').json()['detection_status'],
             'completed',
         )
+        self.client.get('/api/camera/state/?camera_ready=1')
+        next_started = self._post_json('/api/photo_capture/')
+        self.assertEqual(next_started.status_code, 200)
+        self.assertNotEqual(next_started.json()['active_fruit_id'], fruit_id)
+
+    @mock.patch(
+        'fruit_app.detection.save_interrupted_result',
+        side_effect=OSError('read only'),
+    )
+    @mock.patch('fruit_app.detection.execute_model_batch')
+    def test_restart_result_write_failure_keeps_state_api_available(
+        self, execute, _save
+    ):
+        release = threading.Event()
+
+        def blocked(image_paths, model_paths, **kwargs):
+            release.wait(2)
+            return self._external_result(image_paths, model_paths, **kwargs)
+
+        execute.side_effect = blocked
+        fruit_id = self._start_detection().json()['active_fruit_id']
+        self._upload_three(fruit_id)
+        views.reset_runtime_state_for_tests()
+
+        response = self.client.get('/api/state/')
+        self.assertEqual(response.status_code, 200)
+        state = response.json()
+        self.assertEqual(state['detection_status'], 'failed')
+        self.assertEqual(
+            state['detection_result']['reason'], 'service_restarted'
+        )
+        self.client.get('/api/camera/state/?camera_ready=1')
+        self.assertEqual(self._post_json('/api/photo_capture/').status_code, 200)
+
+        release.set()
+        for thread in threading.enumerate():
+            if thread.name == f'detection-{fruit_id}':
+                thread.join(2)

@@ -755,23 +755,19 @@ const remoteVideo = document.getElementById('remote-video');
             detectionSummary,
             statusLabels[data.detection_status] || data.detection_status || '等待',
         );
-        if (!result) {
-            const empty = document.createElement('p');
-            empty.className = 'detection-empty';
-            empty.textContent = data.detection_error
-                ? `未產生結果：${data.detection_error}`
-                : '等待三張原圖保存完成。';
-            detectionResults.append(empty);
-            return;
-        }
-
         const stages = [
             { key: 'roi', title: 'ROI', artifact: 'roi_annotated' },
             { key: 'color', title: 'color', artifact: 'masked_roi' },
             { key: 'wrinkle', title: 'wrinkle', artifact: 'wrinkle_gray' },
             { key: 'defect', title: 'defect', artifact: 'defect_annotated' },
         ];
-        Object.entries(result.images || {}).forEach(
+        const pendingText = data.detection_error
+            ? `未產生結果：${data.detection_error}`
+            : (statusLabels[data.detection_status] || '等待檢測');
+        const images = result?.images || Object.fromEntries(
+            [1, 2, 3].map((index) => [`img_0${index}.jpg`, {}]),
+        );
+        Object.entries(images).forEach(
             ([filename, image], imageIndex) => {
                 const group = document.createElement('section');
                 group.className = 'detection-group';
@@ -808,13 +804,14 @@ const remoteVideo = document.getElementById('remote-video');
                     } else {
                         const placeholder = document.createElement('span');
                         placeholder.className = 'detection-placeholder';
-                        placeholder.textContent = '影像不可用';
+                        placeholder.textContent = result ? '影像不可用' : pendingText;
                         media.append(placeholder);
                     }
                     card.append(media);
                     const judgement = document.createElement('p');
                     judgement.className = 'detection-judgement';
-                    judgement.textContent = detectionJudgement(stage, image);
+                    judgement.textContent = result
+                        ? detectionJudgement(stage, image) : pendingText;
                     card.append(judgement);
                     grid.append(card);
                 });

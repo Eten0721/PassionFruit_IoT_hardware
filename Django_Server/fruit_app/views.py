@@ -2221,6 +2221,8 @@ def _next_available_number(start_number):
 
 
 def _fruit_id_exists(fruit_id):
+    if (Path(settings.DETECTION_OUTPUT_ROOT) / fruit_id).exists():
+        return True
     temp_fruit_dir = _temp_dir() / fruit_id
     if temp_fruit_dir.exists() and _is_deferred_discard_path(temp_fruit_dir):
         return True
@@ -3265,7 +3267,7 @@ def _completed_detection_input(fruit_dir):
         Path(settings.DETECTION_OUTPUT_ROOT)
         / Path(fruit_dir).name
         / 'result.json'
-    ).is_file()
+    ).is_file() or (Path(fruit_dir) / '.detection-terminal').is_file()
 
 
 def _format_command_text(payload):
@@ -3921,6 +3923,30 @@ def _sync_active_state_with_filesystem():
         restored = detection.load_result(
             Path(settings.DETECTION_OUTPUT_ROOT), fruit_dir.name
         )
+        if restored is None:
+            image_paths = [fruit_dir / name for name in IMAGE_FILENAMES]
+            try:
+                restored = detection.save_interrupted_result(
+                    fruit_id=fruit_dir.name,
+                    image_paths=image_paths,
+                    output_root=Path(settings.DETECTION_OUTPUT_ROOT),
+                )
+            except OSError as exc:
+                save_error = f'{type(exc).__name__}: {exc}'
+                restored = detection.interrupted_result(
+                    fruit_id=fruit_dir.name,
+                    image_paths=image_paths,
+                    save_errors=[save_error],
+                )
+                try:
+                    (fruit_dir / '.detection-terminal').write_text(
+                        save_error, encoding='utf-8'
+                    )
+                except OSError as marker_error:
+                    restored['save_errors'].append(
+                        f'{type(marker_error).__name__}: {marker_error}'
+                    )
+                APP_STATE['detection_error'] = save_error
         APP_STATE['detection_result'] = restored
         APP_STATE['detection_status'] = (
             restored.get('status', 'failed') if restored else 'failed'
@@ -3932,12 +3958,10 @@ def _sync_active_state_with_filesystem():
         )
         APP_STATE['message'] = (
             f'已恢復 {fruit_dir.name} 的檢測結果。'
-            if restored
-            else (
-                f'{fruit_dir.name} 的服務曾在檢測期間中斷；'
-                '保留原圖且不自動重跑。'
-            )
+            if restored.get('reason') != 'service_restarted'
+            else f'{fruit_dir.name} 的服務曾在檢測期間中斷；保留原圖且不自動重跑。'
         )
+        _clear_active_state(APP_STATE['message'], status=APP_STATE['status'])
 
 
 def _clear_active_state(message, status='idle'):
