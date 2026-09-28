@@ -236,6 +236,7 @@ class DetectionFlowTests(SimpleTestCase):
             'capture_token': views.APP_STATE['capture_token'],
         })
         self.assertEqual(discarded.status_code, 200)
+        self.assertTrue(views._gate3_recovery_path().exists())
         self.assertEqual(
             discarded.json()['auto_run_recovery_reason'],
             'gate3_manual_removal_required',
@@ -249,6 +250,59 @@ class DetectionFlowTests(SimpleTestCase):
         })
         self.assertEqual(recovered.status_code, 200)
         self.assertEqual(recovered.json()['motor_command']['command'], 'feed_one')
+        self.assertFalse(views._gate3_recovery_path().exists())
+
+    @mock.patch(
+        'fruit_app.detection.execute_model_batch', side_effect=_external_result
+    )
+    def test_restart_after_completed_hardware_detection_keeps_gate3_locked(
+        self, _execute
+    ):
+        fruit_id = self._start_hardware_detection()
+        self._upload_hardware_stations(fruit_id)
+        self.assertEqual(self._wait_for_detection()['detection_status'], 'completed')
+
+        views.reset_runtime_state_for_tests()
+        views._ensure_dataset_structure()
+        state = self.client.get('/api/state/').json()
+
+        self.assertEqual(state['detection_status'], 'completed')
+        self.assertEqual(state['active_fruit_id'], fruit_id)
+        self.assertTrue(state['gate3_manual_removal_required'])
+        self.assertFalse(state['auto_run_enabled'])
+        self.assertEqual(state['motor_command']['command'], 'none')
+
+    @mock.patch(
+        'fruit_app.detection.execute_model_batch', side_effect=_external_result
+    )
+    def test_restart_after_discard_keeps_persisted_gate3_recovery_lock(
+        self, _execute
+    ):
+        fruit_id = self._start_hardware_detection()
+        self._upload_hardware_stations(fruit_id)
+        self._wait_for_detection()
+        discarded = self._post_json('/api/discard/', {
+            'fruit_id': fruit_id,
+            'capture_token': views.APP_STATE['capture_token'],
+        })
+        self.assertEqual(discarded.status_code, 200)
+        self.assertTrue(views._gate3_recovery_path().exists())
+
+        views.reset_runtime_state_for_tests()
+        views._ensure_dataset_structure()
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(
+            state['auto_run_recovery_reason'], 'gate3_manual_removal_required'
+        )
+        self.assertEqual(state['motor_command']['command'], 'none')
+        switched = self._post_json('/api/collection_options/', {
+            'work_mode': 'detection', 'hardware_mode': 'photo_only',
+        })
+        self.assertEqual(switched.status_code, 409)
+        self.assertEqual(switched.json()['reason'], 'gate3_manual_removal_required')
+        blocked = self._post_json('/api/auto_run/', {'enabled': True})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(blocked.json()['reason'], 'gate3_manual_removal_required')
 
     @mock.patch(
         'fruit_app.detection.execute_model_batch', side_effect=_external_result

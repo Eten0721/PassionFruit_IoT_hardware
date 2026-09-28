@@ -623,7 +623,7 @@ def photo_capture_api(request):
         try:
             fruit_dir = _prepare_fruit_dir(fruit_id, 'photo_only')
             capture_time = _now_string()
-            dataset_store.save_photo_session(
+            dataset_store.save_capture_session(
                 fruit_dir, capture_time, APP_STATE['work_mode']
             )
         except CaptureCommandError as exc:
@@ -721,6 +721,15 @@ def auto_run_api(request):
                     reason='sorter_recovery_clear_failed',
                 )
             _reset_sorter_state()
+        if recovery_reason == 'gate3_manual_removal_required':
+            try:
+                _clear_gate3_recovery_marker()
+            except OSError as exc:
+                return _json_error(
+                    f'無法清除 Gate 3 人工復原鎖：{exc}',
+                    status=503,
+                    reason='gate3_recovery_clear_failed',
+                )
         APP_STATE['auto_run_recovery_reason'] = None
         APP_STATE['last_error_reason'] = None
         APP_STATE['last_error_command'] = None
@@ -1601,6 +1610,15 @@ def discard_api(request):
             return _json_error('目前沒有可刪除的暫存資料。', status=409)
 
         gate3_waiting = _gate3_manual_removal_required()
+        if gate3_waiting:
+            try:
+                _write_gate3_recovery_marker(fruit_id)
+            except OSError as exc:
+                return _json_error(
+                    f'無法保存 Gate 3 人工復原鎖：{exc}',
+                    status=503,
+                    reason='gate3_recovery_persist_failed',
+                )
         _disable_auto_run()
         APP_STATE['auto_run_finishing'] = False
         fruit_dir = _temp_dir() / fruit_id
@@ -1961,6 +1979,10 @@ def _sorter_recovery_path():
     return Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).with_name('sorter_recovery.json')
 
 
+def _gate3_recovery_path():
+    return Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).with_name('gate3_recovery.json')
+
+
 def _ensure_dataset_structure():
     _initialise_dataset_structure(_dataset_root())
 
@@ -1976,11 +1998,11 @@ def _initialise_dataset_structure(root):
         _write_counter(1)
     _ensure_capture_timing_config()
     _ensure_metadata_header()
+    _restore_gate3_recovery_marker()
     _restore_sorter_recovery_marker()
 
 
-def _write_sorter_recovery_payload(payload):
-    path = _sorter_recovery_path()
+def _write_recovery_payload(path, payload):
     staging_path = path.with_name(f'{path.name}.tmp')
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1997,7 +2019,7 @@ def _write_sorter_recovery_payload(payload):
 
 
 def _write_sorter_recovery_marker(*, phase, reason=None):
-    _write_sorter_recovery_payload({
+    _write_recovery_payload(_sorter_recovery_path(), {
         'command_id': APP_STATE.get('sorter_command_id'),
         'fruit_id': APP_STATE.get('sorter_fruit_id'),
         'label': APP_STATE.get('sorter_label'),
@@ -2008,7 +2030,7 @@ def _write_sorter_recovery_marker(*, phase, reason=None):
 
 
 def _write_sorter_recovery_intent(fruit_id, label, classification_code):
-    _write_sorter_recovery_payload({
+    _write_recovery_payload(_sorter_recovery_path(), {
         'command_id': None,
         'fruit_id': fruit_id,
         'label': label,
@@ -2064,6 +2086,32 @@ def _restore_sorter_recovery_marker():
 def _clear_sorter_recovery_marker():
     _sorter_recovery_path().unlink(missing_ok=True)
     APP_STATE['sorter_recovery_required'] = False
+
+
+def _write_gate3_recovery_marker(fruit_id):
+    _write_recovery_payload(_gate3_recovery_path(), {
+        'fruit_id': fruit_id,
+        'reason': 'gate3_manual_removal_required',
+    })
+
+
+def _restore_gate3_recovery_marker():
+    if not _gate3_recovery_path().exists():
+        return
+    _disable_auto_run()
+    APP_STATE['auto_run_recovery_reason'] = 'gate3_manual_removal_required'
+    APP_STATE['last_error_reason'] = 'gate3_manual_removal_required'
+    APP_STATE['last_error_command'] = 'classify_fruit'
+    APP_STATE['last_error_command_id'] = None
+    APP_STATE['status'] = 'error'
+    APP_STATE['message'] = (
+        'Django 在 Gate 3 人工安全復原確認前重新啟動；不會重送實體命令，'
+        '請依斷電程序確認安全並移除果實後再明確確認復原。'
+    )
+
+
+def _clear_gate3_recovery_marker():
+    _gate3_recovery_path().unlink(missing_ok=True)
 
 
 def _request_data(request):
@@ -2394,7 +2442,7 @@ def _create_capture_session(source):
     fruit_dir = _prepare_fruit_dir(fruit_id, source)
     if APP_STATE['work_mode'] == 'detection':
         try:
-            dataset_store.save_photo_session(
+            dataset_store.save_capture_session(
                 fruit_dir,
                 _now_string(),
                 APP_STATE['work_mode'],
@@ -3325,19 +3373,29 @@ def _has_unclassified_temp_fruit():
             continue
         if _is_ignored_reset_path(fruit_dir):
             continue
-        if _completed_detection_input(fruit_dir):
+        if _completed_photo_only_detection_input(fruit_dir):
             continue
         if not _is_reusable_temp_dir(fruit_dir):
             return True
     return False
 
 
-def _completed_detection_input(fruit_dir):
-    return (
+def _completed_photo_only_detection_input(fruit_dir):
+    completed = (
         Path(settings.DETECTION_OUTPUT_ROOT)
         / Path(fruit_dir).name
         / 'result.json'
     ).is_file() or (Path(fruit_dir) / '.detection-terminal').is_file()
+    if not completed:
+        return False
+    try:
+        options = dataset_store.read_capture_options(Path(fruit_dir))
+    except (OSError, ValueError, TypeError):
+        return False
+    return (
+        options.get('work_mode') == 'detection'
+        and options.get('hardware_mode') == 'photo_only'
+    )
 
 
 def _format_command_text(payload):
@@ -3949,7 +4007,7 @@ def _sync_active_state_with_filesystem():
             path.is_dir()
             and FRUIT_ID_PATTERN.match(path.name)
             and not _is_deferred_discard_path(path)
-            and not _completed_detection_input(path)
+            and not _completed_photo_only_detection_input(path)
         )
     )
     non_empty_dirs = []

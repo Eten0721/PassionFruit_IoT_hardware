@@ -255,7 +255,7 @@ class PhotoOnlyFlowTests(SimpleTestCase):
         from unittest import mock
         self.select_photo_only()
         self.client.get('/api/camera/state/?camera_ready=1')
-        with mock.patch('fruit_app.dataset_store.save_photo_session', side_effect=PermissionError('disk busy')):
+        with mock.patch('fruit_app.dataset_store.save_capture_session', side_effect=PermissionError('disk busy')):
             response = self._post_json('/api/photo_capture/')
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()['reason'], 'capture_options_persist_failed')

@@ -40,7 +40,7 @@ def save_station_image(
         raise
 
 
-def save_photo_session(
+def save_capture_session(
     fruit_dir: Path,
     capture_time: str,
     work_mode: str = 'collection',
