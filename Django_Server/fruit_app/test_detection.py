@@ -57,6 +57,11 @@ class DetectionFlowTests(SimpleTestCase):
 
     _fake_image = existing.DataCollectionFlowTests._fake_image
     _upload_station = existing.DataCollectionFlowTests._upload_station
+    _prepare_auto_run = existing.DataCollectionFlowTests._prepare_auto_run
+    _esp32_command = existing.DataCollectionFlowTests._esp32_command
+    _esp32_poll_params = existing.DataCollectionFlowTests._esp32_poll_params
+    _report = existing.DataCollectionFlowTests._report
+    _report_feed_success = existing.DataCollectionFlowTests._report_feed_success
 
     def _start_detection(self, hardware_mode='photo_only'):
         response = self._post_json('/api/collection_options/', {
@@ -119,16 +124,131 @@ class DetectionFlowTests(SimpleTestCase):
             })
         return reports, artifacts
 
-    def test_detection_requires_photo_only_and_hides_classification(self):
+    def test_detection_supports_both_hardware_modes_and_hides_classification(self):
         response = self._start_detection('hardware')
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()['reason'], 'hardware_mode_unavailable')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['hardware_mode'], 'hardware')
+        self.assertFalse(response.json()['can_classify'])
         response = self._post_json('/api/collection_options/', {
             'work_mode': 'detection', 'hardware_mode': 'photo_only',
         })
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['work_mode'], 'detection')
         self.assertFalse(response.json()['can_classify'])
+
+    def _start_hardware_detection(self):
+        self._prepare_auto_run(camera_ready=True)
+        selected = self._start_detection('hardware')
+        self.assertEqual(selected.status_code, 200)
+        started = self._post_json('/api/auto_run/', {'enabled': True})
+        self.assertEqual(started.status_code, 200)
+        feed = started.json()['motor_command']
+        self.assertEqual(feed['command'], 'feed_one')
+        self.assertEqual(self._report_feed_success(feed).status_code, 200)
+        triggered = self._report('hcsr04_trigger')
+        self.assertEqual(triggered.status_code, 200)
+        return triggered.json()['fruit_id']
+
+    def _upload_hardware_stations(self, fruit_id):
+        for station in (1, 2, 3):
+            command = self._esp32_command()
+            self.assertEqual(
+                command['command'],
+                'start_sequence' if station == 1 else 'release_gate',
+            )
+            ready = self._report(
+                f'station_{station}_ready',
+                station_index=station,
+                command_id=command['command_id'],
+            )
+            self.assertEqual(ready.status_code, 200)
+            uploaded = self._upload_station(
+                fruit_id, ready.json()['capture_token'], station,
+            )
+            self.assertEqual(uploaded.status_code, 200)
+        return uploaded
+
+    @mock.patch(
+        'fruit_app.detection.execute_model_batch', side_effect=_external_result
+    )
+    def test_hardware_detection_is_single_round_and_keeps_gate3_locked(self, execute):
+        fruit_id = self._start_hardware_detection()
+        third = self._upload_hardware_stations(fruit_id)
+        self.assertIn(third.json()['detection_status'], ('pending', 'running'))
+
+        state = self._wait_for_detection()
+        self.assertEqual(state['detection_status'], 'completed')
+        self.assertEqual(state['active_fruit_id'], fruit_id)
+        self.assertTrue(state['gate3_manual_removal_required'])
+        self.assertEqual(
+            state['operator_alert']['reason'], 'gate3_manual_removal_required'
+        )
+        self.assertFalse(state['auto_run_enabled'])
+        self.assertEqual(state['motor_command']['command'], 'none')
+        self.assertEqual(execute.call_count, 1)
+
+        duplicate = self._report('capture_sequence_finished')
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertTrue(duplicate.json()['ignored'])
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(
+            self._post_json('/api/auto_run/', {'enabled': True}).json()['reason'],
+            'active_fruit_exists',
+        )
+        self.assertEqual(
+            self._post_json('/api/collection_options/', {
+                'work_mode': 'detection', 'hardware_mode': 'photo_only',
+            }).json()['reason'],
+            'active_fruit_exists',
+        )
+
+    @mock.patch('fruit_app.detection.execute_model_batch')
+    def test_partial_hardware_detection_keeps_gate3_locked(self, execute):
+        reports, artifacts = self._external_result(
+            [Path(f'img_{index:02d}.jpg') for index in range(1, 4)], {}
+        )
+        reports[0]['models']['defect'] = {
+            'status': 'failed', 'reason': 'inference_failed',
+        }
+        artifacts[0].pop('defect_annotated')
+        execute.return_value = reports, artifacts
+
+        fruit_id = self._start_hardware_detection()
+        self._upload_hardware_stations(fruit_id)
+        state = self._wait_for_detection()
+
+        self.assertEqual(state['detection_status'], 'failed')
+        self.assertEqual(state['active_fruit_id'], fruit_id)
+        self.assertTrue(state['gate3_manual_removal_required'])
+        self.assertFalse(state['auto_run_enabled'])
+        self.assertEqual(state['motor_command']['command'], 'none')
+
+    @mock.patch(
+        'fruit_app.detection.execute_model_batch', side_effect=_external_result
+    )
+    def test_hardware_detection_recovery_requires_explicit_confirmation(self, _execute):
+        fruit_id = self._start_hardware_detection()
+        self._upload_hardware_stations(fruit_id)
+        self._wait_for_detection()
+
+        discarded = self._post_json('/api/discard/', {
+            'fruit_id': fruit_id,
+            'capture_token': views.APP_STATE['capture_token'],
+        })
+        self.assertEqual(discarded.status_code, 200)
+        self.assertEqual(
+            discarded.json()['auto_run_recovery_reason'],
+            'gate3_manual_removal_required',
+        )
+        blocked = self._post_json('/api/auto_run/', {'enabled': True})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(blocked.json()['reason'], 'gate3_manual_removal_required')
+
+        recovered = self._post_json('/api/auto_run/', {
+            'enabled': True, 'recovery_confirmed': True,
+        })
+        self.assertEqual(recovered.status_code, 200)
+        self.assertEqual(recovered.json()['motor_command']['command'], 'feed_one')
 
     @mock.patch(
         'fruit_app.detection.execute_model_batch', side_effect=_external_result
@@ -309,6 +429,44 @@ class DetectionFlowTests(SimpleTestCase):
         next_started = self._post_json('/api/photo_capture/')
         self.assertEqual(next_started.status_code, 200)
         self.assertNotEqual(next_started.json()['active_fruit_id'], fruit_id)
+
+    @mock.patch('fruit_app.detection.execute_model_batch')
+    def test_restart_during_hardware_detection_keeps_gate3_recovery_lock(
+        self, execute
+    ):
+        release = threading.Event()
+        entered = threading.Event()
+
+        def blocked(image_paths, model_paths, **kwargs):
+            entered.set()
+            release.wait(2)
+            return self._external_result(image_paths, model_paths, **kwargs)
+
+        execute.side_effect = blocked
+        fruit_id = self._start_hardware_detection()
+        self._upload_hardware_stations(fruit_id)
+        self.assertTrue(entered.wait(1))
+        views.reset_runtime_state_for_tests()
+
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(state['work_mode'], 'detection')
+        self.assertEqual(state['hardware_mode'], 'hardware')
+        self.assertEqual(state['detection_status'], 'failed')
+        self.assertEqual(state['status'], 'detection_failed')
+        self.assertEqual(state['active_fruit_id'], fruit_id)
+        self.assertTrue(state['gate3_manual_removal_required'])
+        self.assertFalse(state['auto_run_enabled'])
+        self.assertEqual(state['motor_command']['command'], 'none')
+        self.assertIn('不自動重跑', state['message'])
+
+        release.set()
+        for thread in threading.enumerate():
+            if thread.name == f'detection-{fruit_id}':
+                thread.join(2)
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(
+            self.client.get('/api/state/').json()['detection_status'], 'failed'
+        )
 
     @mock.patch(
         'fruit_app.detection.save_interrupted_result',

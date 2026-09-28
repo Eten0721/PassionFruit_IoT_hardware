@@ -577,11 +577,6 @@ def collection_options_api(request):
         return _json_error('工作模式無效。', reason='invalid_work_mode')
     if data.get('hardware_mode') not in ('hardware', 'photo_only'):
         return _json_error('硬體選項無效。', reason='invalid_hardware_mode')
-    if data['work_mode'] == 'detection' and data['hardware_mode'] != 'photo_only':
-        return _json_error(
-            '自動檢測的實體硬體流程尚未開放。',
-            reason='hardware_mode_unavailable',
-        )
     with STATE_LOCK:
         reason = _options_disabled_reason()
         if reason:
@@ -589,7 +584,11 @@ def collection_options_api(request):
         APP_STATE['work_mode'] = data['work_mode']
         APP_STATE['hardware_mode'] = data['hardware_mode']
         APP_STATE['message'] = (
-            '已選擇自動檢測＋純拍攝，等待手機相機就緒。'
+            (
+                '已選擇自動檢測＋純拍攝，等待手機相機就緒。'
+                if data['hardware_mode'] == 'photo_only'
+                else '已選擇自動檢測＋使用硬體；本輪完成後 Gate 3 保持關閉。'
+            )
             if data['work_mode'] == 'detection'
             else (
                 '已選擇純拍攝，等待手機相機就緒。'
@@ -691,6 +690,16 @@ def auto_run_api(request):
                 'Django 在分類器結果確認前重新啟動；請檢查 Gate 3 與分類器，確認安全後再復原。',
                 status=409,
                 reason='django_restarted_during_sorter',
+            )
+        recovery_reason = APP_STATE.get('auto_run_recovery_reason')
+        if (
+            recovery_reason == 'gate3_manual_removal_required'
+            and data.get('recovery_confirmed') is not True
+        ):
+            return _json_error(
+                '請先依主畫面提示完成人工安全復原，再明確確認開始下一輪。',
+                status=409,
+                reason=recovery_reason,
             )
 
         reason = _auto_run_disabled_reason(allow_recovery=True)
@@ -856,7 +865,10 @@ def esp32_command_api(request):
             and boot_id
             and boot_id != previous_boot_id
             and APP_STATE.get('active_fruit_id')
-            and APP_STATE.get('status') == 'uploaded'
+            and APP_STATE.get('status') in (
+                'uploaded', 'detection_pending', 'detection_running',
+                'detection_completed', 'detection_failed',
+            )
             and not _photo_only_session()
         ):
             _disable_auto_run()
@@ -1209,7 +1221,21 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir):
             if complete
             else f'{fruit_id} 檢測未完整完成；已保留原圖與可用產物。'
         )
-        _clear_active_state(message, status=terminal_status)
+        if _photo_only_session():
+            _clear_active_state(message, status=terminal_status)
+            return
+        _disable_auto_run()
+        APP_STATE['auto_run_finishing'] = False
+        APP_STATE['status'] = terminal_status
+        APP_STATE['message'] = (
+            f'{message} Gate 3 仍保持關閉，請依人工安全復原提示處理果實。'
+        )
+        _clear_wait_timer()
+        _record_transition(
+            terminal_status,
+            fruit_id=fruit_id,
+            details={'complete': complete, 'gate3_locked': True},
+        )
 
 
 def _start_detection_job(fruit_id, fruit_dir):
@@ -1351,6 +1377,18 @@ def upload_images_api(request):
             APP_STATE['motor_command'] = None
             APP_STATE['active_station_index'] = None
             APP_STATE['gate3_waiting_boot_id'] = APP_STATE.get('esp32_boot_id')
+            if APP_STATE.get('session_work_mode') == 'detection':
+                _clear_wait_timer()
+                _record_transition(
+                    'gate3_waiting_detection',
+                    fruit_id=active_fruit_id,
+                    station_index=station_index,
+                )
+                _start_detection_job(active_fruit_id, fruit_dir)
+                return JsonResponse(_state_payload(extra={
+                    'uploaded_fruit_id': active_fruit_id,
+                    'station_index': station_index,
+                }))
             APP_STATE['status'] = 'uploaded'
             APP_STATE['message'] = (
                 f'{active_fruit_id} 三站照片已完成；Gate 3 保持關閉，請確認後分類。'
@@ -2354,6 +2392,24 @@ def _create_capture_session(source):
     fruit_number = _next_available_number(_read_counter())
     fruit_id = _format_fruit_id(fruit_number)
     fruit_dir = _prepare_fruit_dir(fruit_id, source)
+    if APP_STATE['work_mode'] == 'detection':
+        try:
+            dataset_store.save_photo_session(
+                fruit_dir,
+                _now_string(),
+                APP_STATE['work_mode'],
+                APP_STATE['hardware_mode'],
+            )
+        except OSError as exc:
+            try:
+                _safe_rmtree(fruit_dir)
+            except DatasetFileBusyError:
+                pass
+            raise CaptureCommandError(
+                f'無法保存本輪選項：{exc}',
+                status=503,
+                reason='capture_options_persist_failed',
+            ) from exc
 
     if source == 'esp32':
         message = f'ESP32 已觸發 {fruit_id}，等待 ESP32 輪詢 start_sequence。'
@@ -2987,6 +3043,20 @@ def _handle_sequence_finished(command_id=None):
             'duplicate': True,
             'reason': 'sequence_already_finished',
         })
+    if (
+        APP_STATE.get('session_work_mode') == 'detection'
+        and APP_STATE.get('status') in (
+            'detection_pending', 'detection_running',
+            'detection_completed', 'detection_failed',
+        )
+    ):
+        return _state_payload(extra={
+            'ok': True,
+            'event': 'capture_sequence_finished',
+            'ignored': True,
+            'duplicate': True,
+            'reason': 'detection_already_started',
+        })
     current_command = APP_STATE.get('motor_command')
     if current_command and command_id != current_command.get('command_id'):
         raise CaptureCommandError('ESP32 完成回報的 command_id 與目前馬達命令不符。', reason='command_id_mismatch')
@@ -3521,7 +3591,8 @@ def _operator_alert_payload():
     ):
         return None
     reason = (
-        APP_STATE.get('last_error_reason')
+        ('gate3_manual_removal_required' if _gate3_manual_removal_required() else None)
+        or APP_STATE.get('last_error_reason')
         or APP_STATE.get('auto_run_recovery_reason')
         or (
             not APP_STATE.get('auto_run_enabled')
@@ -3637,7 +3708,9 @@ def _gate3_manual_removal_required():
     if _photo_only_session():
         return False
     fruit_id = APP_STATE.get('active_fruit_id')
-    if not fruit_id or APP_STATE.get('status') not in ('uploaded', 'error'):
+    if not fruit_id or APP_STATE.get('status') not in (
+        'uploaded', 'error', 'detection_completed', 'detection_failed',
+    ):
         return False
     return _temp_image_count(_temp_dir() / fruit_id) == IMAGE_COUNT
 
@@ -3700,6 +3773,7 @@ def _state_payload(extra=None):
         'classify_disabled_reason': classify_disabled_reason,
         'can_recapture': can_recapture,
         'can_reset_dataset': can_reset_dataset,
+        'gate3_manual_removal_required': gate3_manual_removal_required,
         'esp32_online': _esp32_is_online(),
         'auto_run_enabled': APP_STATE.get('auto_run_enabled', False),
         'auto_run_finishing': APP_STATE.get('auto_run_finishing', False),
@@ -3832,6 +3906,8 @@ def _sync_active_state_with_filesystem():
             'error',
             'detection_pending',
             'detection_running',
+            'detection_completed',
+            'detection_failed',
         ):
             APP_STATE['pending_capture'] = False
             if APP_STATE['status'] == 'waiting_camera':
@@ -3961,7 +4037,16 @@ def _sync_active_state_with_filesystem():
             if restored.get('reason') != 'service_restarted'
             else f'{fruit_dir.name} 的服務曾在檢測期間中斷；保留原圖且不自動重跑。'
         )
-        _clear_active_state(APP_STATE['message'], status=APP_STATE['status'])
+        if _photo_only_session():
+            _clear_active_state(APP_STATE['message'], status=APP_STATE['status'])
+        else:
+            _disable_auto_run()
+            APP_STATE['auto_run_finishing'] = False
+            APP_STATE['gate3_waiting_boot_id'] = None
+            APP_STATE['message'] = (
+                f'{APP_STATE["message"]} Gate 3 狀態未自動復原，'
+                '請依人工安全復原提示處理果實。'
+            )
 
 
 def _clear_active_state(message, status='idle'):

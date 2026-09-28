@@ -392,7 +392,6 @@ const remoteVideo = document.getElementById('remote-video');
                 `第 ${index + 1} ${photoOnly ? '張' : '站'}`);
         });
         hardwareModeSelect.disabled = Boolean(controlActionInFlight) || !data.can_change_options;
-        hardwareModeSelect.querySelector('option[value="hardware"]').disabled = detectionMode;
         classificationPanel.hidden = detectionMode;
         detectionPanel.hidden = !detectionMode;
         setTextIfChanged(optionsGuidance, data.options_disabled_reason
@@ -400,9 +399,15 @@ const remoteVideo = document.getElementById('remote-video');
         recaptureButton.hidden = photoOnly;
         setTextIfChanged(activeFruitEl, data.active_fruit_id || '無暫存資料');
         setTextIfChanged(nextFruitEl, data.next_fruit_id || 'fruit_001');
-        setTextIfChanged(stateLabelEl, captureStatusText(status));
+        setTextIfChanged(
+            stateLabelEl,
+            data.gate3_manual_removal_required
+                ? '資料完成，Gate 3 待處理'
+                : captureStatusText(status),
+        );
         setTextIfChanged(rawStateLabelEl, status);
-        stateBadge.dataset.state = captureStatusTone(status);
+        stateBadge.dataset.state = data.gate3_manual_removal_required
+            ? 'error' : captureStatusTone(status);
         setTextIfChanged(imageCountEl, `${data.image_total ?? images.length} / ${data.image_count || 3}`);
 
         setTextIfChanged(esp32StatusEl, data.esp32_online ? '在線' : '離線');
@@ -449,6 +454,12 @@ const remoteVideo = document.getElementById('remote-video');
         discardButton.disabled = Boolean(controlActionInFlight)
             || classificationInFlight
             || !data.can_discard;
+        setTextIfChanged(
+            discardButton,
+            detectionMode && !photoOnly
+                ? '資料已另存，進入 Gate 3 安全復原'
+                : '跳過／刪除目前資料',
+        );
         if (photoOnly) {
             setTextIfChanged(autoRunButton, '拍攝本輪三張');
             autoRunButton.dataset.mode = 'photo';
@@ -584,7 +595,9 @@ const remoteVideo = document.getElementById('remote-video');
                 : '按一次自動拍三張；每張保存成功才拍下一張。果實需自行擺位，三張不保證不同視角。';
         }
         if (data.auto_run_enabled) {
-            return '目前為連續自動運轉；優雅暫停會讓目前果實完成後停止送入下一顆。';
+            return data.work_mode === 'detection'
+                ? '本輪使用硬體送料與三站拍攝；檢測完成後不會放行 Gate 3 或送入下一顆。'
+                : '目前為連續自動運轉；優雅暫停會讓目前果實完成後停止送入下一顆。';
         }
         if (data.auto_run_finishing) {
             return '正在完成目前果實，完成後不會送入下一顆。';
@@ -1302,9 +1315,12 @@ const remoteVideo = document.getElementById('remote-video');
             }
             const enabled = !Boolean(lastState && lastState.auto_run_enabled);
             let recoveryConfirmed = false;
-            if (enabled && lastState && lastState.sorter_recovery_required) {
+            if (enabled && lastState && (
+                lastState.sorter_recovery_required
+                || lastState.auto_run_recovery_reason === 'gate3_manual_removal_required'
+            )) {
                 recoveryConfirmed = confirm(
-                    '分類器結果因 Django 重啟而不確定。請先確認 Gate 3、分類器與果實位置安全；是否已完成檢查並復原？',
+                    '請先依主畫面提示確認 Gate 3、分類器與果實位置安全；是否已完成檢查並人工復原？',
                 );
                 if (!recoveryConfirmed) {
                     return;
@@ -1393,7 +1409,10 @@ const remoteVideo = document.getElementById('remote-video');
         if (!lastState || !lastState.active_fruit_id) {
             return;
         }
-        if (!confirm(`確定刪除 ${lastState.active_fruit_id} 的暫存照片嗎？`)) {
+        const prompt = lastState.gate3_manual_removal_required
+            ? `${lastState.active_fruit_id} 的檢測結果已另存。這只會處理暫存原圖，Gate 3 仍保持鎖定；是否進入人工安全復原？`
+            : `確定刪除 ${lastState.active_fruit_id} 的暫存照片嗎？`;
+        if (!confirm(prompt)) {
             return;
         }
         if (!beginControlAction('discard', discardButton)) {
@@ -1505,8 +1524,7 @@ const remoteVideo = document.getElementById('remote-video');
     autoRunButton.addEventListener('click', toggleAutoRun);
     workModeSelect.addEventListener('change', async () => {
         const workMode = workModeSelect.value;
-        const hardwareMode = workMode === 'detection'
-            ? 'photo_only' : hardwareModeSelect.value;
+        const hardwareMode = hardwareModeSelect.value;
         if (!beginControlAction('collection-options', workModeSelect)) {
             return;
         }

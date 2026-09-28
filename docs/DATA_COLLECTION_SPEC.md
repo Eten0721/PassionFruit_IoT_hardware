@@ -298,7 +298,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 ### 純拍攝 API 契約
 
-`POST /api/collection_options/` 接收 `work_mode=collection|detection` 與 `hardware_mode=hardware|photo_only`。自動檢測目前只接受 `photo_only`，搭配 `hardware` 時回 `400 hardware_mode_unavailable`；既有 capture、Dataset、motor、自動運轉、推論或復原鎖存在時回 `409` 與具體 reason，不清除鎖定。預設使用硬體；開始後固定本輪 `session_work_mode` 與 `session_hardware_mode`。純拍攝啟動前會在暫存 fruit 目錄原子保存 `.capture-session.json`，供 Django 重啟後恢復工作模式、硬體選項與拍攝時間；資料提交成功後清理該內部標記，不改變 metadata CSV 欄位。
+`POST /api/collection_options/` 接收 `work_mode=collection|detection` 與 `hardware_mode=hardware|photo_only`，四種組合皆可選；既有 capture、Dataset、motor、自動運轉、推論或復原鎖存在時回 `409` 與具體 reason，不清除鎖定。預設使用硬體；開始後固定本輪 `session_work_mode` 與 `session_hardware_mode`。純拍攝與使用硬體的自動檢測會在暫存 fruit 目錄原子保存 `.capture-session.json`，供 Django 重啟後恢復工作模式、硬體選項與拍攝時間；資料提交成功或完成安全復原後清理該內部標記，不改變 metadata CSV 欄位。
 
 `POST /api/photo_capture/` 僅接受純拍攝；相機 heartbeat 過期回 `409 camera_not_ready`，有待處理資料回 `409 active_fruit_exists`，拒絕時不建立 fruit 資料夾。成功後重用手機 capture state 與 upload API，每張原子保存成功才更新 token 並要求下一張，不等待 station ready，也不建立任何 motor command。ESP32 事件回 `200 ignored`，直接 trigger 回 `409 hardware_mode_required`；ESP32 boot 改變不影響純拍攝上傳。
 
@@ -310,7 +310,8 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 - 每顆果實獨立資料夾，保存原始上傳照片、成功產生的原圖 ROI 框選圖、遮罩 ROI、灰階加 CLAHE 圖、局部瑕疵標示圖與一份 `result.json`；以照片檔名維持結果對應，不要求站點、時間或模型版本欄位。檢測產物與人工級距 Dataset 分開保存，均不納入 Git。
 - Dashboard 在自動檢測模式以三張照片分組，每組依序顯示 ROI 框選、color、wrinkle、defect 四格影像與判定，共十二格；四模型有跳過、缺失或失敗時，整輪不得顯示完整成功。蒐集模式保留原照片預覽。
 - 部分檢測失敗仍保留三張原圖、成功產物與每張的具體失敗原因，顯示「檢測未完整完成」後結束，不自動重拍；無法產生的裁切或標示圖不建立。保存失敗不得顯示存檔成功。
-- 本階段自動檢測採單輪操作，成功或失敗後均不自動啟動下一輪或送料。純拍攝存檔完成後結束該工作階段；實體流程的檢測結束不代表果實已離開 Gate 3，保留既有硬體鎖定，不自動放行或假定歸位。
+- 本階段自動檢測採單輪操作，成功或失敗後均不自動啟動下一輪或送料。純拍攝存檔完成後結束該工作階段；使用硬體時，第 3 張保存後直接執行同一套檢測與保存流程，不建立 `classify_fruit` 或 Gate 3 放行命令。
+- 使用硬體的檢測完成或部分失敗後，active fruit、Gate 3 待處理狀態及人工安全復原提示都必須保留。處理暫存原圖只進入既有復原鎖，不能代表實體果實已移除；操作員依斷電程序移除果實並明確確認後，系統才可清除鎖定、切換純拍攝或建立下一次 `feed_one`。Django／ESP32 重啟與重複 terminal report 不得重跑推論或重播實體動作。
 
 ### UI 展示與操作摘要
 

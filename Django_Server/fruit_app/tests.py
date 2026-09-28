@@ -16,10 +16,12 @@ class DataCollectionFlowTests(SimpleTestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.dataset_root = Path(self.temp_dir.name)
+        self.detection_root = self.dataset_root / 'detection_results'
         self.capture_timing_path = self.dataset_root / 'runtime_config' / 'capture_timing.json'
         self.motor_command_sequence_path = self.dataset_root / 'runtime_config' / 'motor_command_sequence.json'
         self.settings_override = override_settings(
             DATASET_ROOT=self.dataset_root,
+            DETECTION_OUTPUT_ROOT=self.detection_root,
             CAPTURE_TIMING_CONFIG_PATH=self.capture_timing_path,
             MOTOR_COMMAND_SEQUENCE_PATH=self.motor_command_sequence_path,
         )
