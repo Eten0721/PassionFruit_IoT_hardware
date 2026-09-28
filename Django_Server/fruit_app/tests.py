@@ -2809,6 +2809,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn('height: auto;', dashboard_css)
         self.assertIn('max-height: min(52vh, 520px);', dashboard_css)
         self.assertIn('.remote-video-wrap.is-streaming', dashboard_css)
+        self.assertIn('.control-panel > .ghost-danger', dashboard_css)
 
     def test_dashboard_presents_accessible_operator_workspace(self):
         project_root = Path(__file__).resolve().parents[2]

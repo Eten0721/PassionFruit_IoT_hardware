@@ -787,7 +787,8 @@ button:disabled {
 
 .primary-action,
 .control-guidance,
-.control-panel > .warning {
+.control-panel > .warning,
+.control-panel > .ghost-danger {
     width: calc(100% - 32px);
     margin-right: 16px;
     margin-left: 16px;

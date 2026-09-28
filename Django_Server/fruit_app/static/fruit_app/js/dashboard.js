@@ -458,6 +458,8 @@ const remoteVideo = document.getElementById('remote-video');
             discardButton,
             detectionMode && !photoOnly
                 ? '資料已另存，進入 Gate 3 安全復原'
+                : detectionMode && data.discardable_fruit_id && !data.active_fruit_id
+                    ? '清除已保存檢測的暫存原圖'
                 : '跳過／刪除目前資料',
         );
         if (photoOnly) {
@@ -1406,12 +1408,15 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     async function discardCurrent() {
-        if (!lastState || !lastState.active_fruit_id) {
+        const fruitId = lastState && (
+            lastState.discardable_fruit_id || lastState.active_fruit_id
+        );
+        if (!fruitId) {
             return;
         }
         const prompt = lastState.gate3_manual_removal_required
-            ? `${lastState.active_fruit_id} 的檢測結果已另存。這只會處理暫存原圖，Gate 3 仍保持鎖定；是否進入人工安全復原？`
-            : `確定刪除 ${lastState.active_fruit_id} 的暫存照片嗎？`;
+            ? `${fruitId} 的檢測結果已另存。這只會處理暫存原圖，Gate 3 仍保持鎖定；是否進入人工安全復原？`
+            : `確定刪除 ${fruitId} 的暫存照片嗎？`;
         if (!confirm(prompt)) {
             return;
         }
@@ -1421,7 +1426,7 @@ const remoteVideo = document.getElementById('remote-video');
         try {
             await releaseThumbnailsBeforeFileOperation();
             const payload = await postJson('/api/discard/', {
-                fruit_id: lastState.active_fruit_id,
+                fruit_id: fruitId,
                 capture_token: lastState.capture_token,
             });
             lastState = payload;

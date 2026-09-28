@@ -343,6 +343,24 @@ class DetectionFlowTests(SimpleTestCase):
         next_started = self._post_json('/api/photo_capture/').json()
         self.assertNotEqual(next_started['active_fruit_id'], fruit_id)
 
+    @mock.patch(
+        'fruit_app.detection.execute_model_batch', side_effect=_external_result
+    )
+    def test_completed_photo_detection_can_clear_temp_without_deleting_result(
+        self, _execute
+    ):
+        fruit_id = self._start_detection().json()['active_fruit_id']
+        self._upload_three(fruit_id)
+        state = self._wait_for_detection()
+
+        self.assertTrue(state['can_discard'])
+        self.assertEqual(state['discardable_fruit_id'], fruit_id)
+        response = self._post_json('/api/discard/', {'fruit_id': fruit_id})
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse((self.dataset_root / 'temp' / fruit_id).exists())
+        self.assertTrue((self.detection_root / fruit_id / 'result.json').is_file())
+
     @mock.patch('fruit_app.detection.execute_model_batch')
     def test_skipped_model_is_incomplete(self, execute):
         reports, artifacts = self._external_result(

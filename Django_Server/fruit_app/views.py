@@ -1601,10 +1601,15 @@ def discard_api(request):
             return _json_error('已有 dataset 檔案操作進行中，請稍後再試。', status=409, reason='dataset_busy')
         if APP_STATE['status'] == 'uploading':
             return _json_error('照片正在上傳中，請等待上傳完成後再刪除。', status=409)
-        fruit_id = APP_STATE['active_fruit_id']
+        active_fruit_id = APP_STATE['active_fruit_id']
+        fruit_id = _discardable_fruit_id()
         if fruit_id and _photo_only_session():
             data = _request_data(request)
-            if data.get('fruit_id') != fruit_id or _safe_int(data.get('capture_token')) != APP_STATE['capture_token']:
+            stale_capture = (
+                active_fruit_id
+                and _safe_int(data.get('capture_token')) != APP_STATE['capture_token']
+            )
+            if data.get('fruit_id') != fruit_id or stale_capture:
                 return _json_error('本輪資料已變更，請重新確認照片。', status=409, reason='stale_capture')
         if not fruit_id:
             return _json_error('目前沒有可刪除的暫存資料。', status=409)
@@ -3773,6 +3778,19 @@ def _gate3_manual_removal_required():
     return _temp_image_count(_temp_dir() / fruit_id) == IMAGE_COUNT
 
 
+def _discardable_fruit_id():
+    if APP_STATE.get('active_fruit_id'):
+        return APP_STATE['active_fruit_id']
+    if not _photo_only_session() or APP_STATE.get('detection_status') not in (
+        'completed', 'failed',
+    ):
+        return None
+    fruit_id = (APP_STATE.get('detection_result') or {}).get('fruit_id')
+    if not fruit_id or not FRUIT_ID_PATTERN.match(str(fruit_id)):
+        return None
+    return fruit_id if (_temp_dir() / fruit_id).is_dir() else None
+
+
 def _state_payload(extra=None):
     active_fruit_id = APP_STATE['active_fruit_id']
     latest_images = _build_image_list(active_fruit_id) if active_fruit_id else []
@@ -3784,7 +3802,8 @@ def _state_payload(extra=None):
         APP_STATE.get('work_mode') == 'collection'
         and classify_disabled_reason is None
     )
-    can_discard = bool(active_fruit_id) and not is_uploading and not dataset_busy
+    discardable_fruit_id = _discardable_fruit_id()
+    can_discard = bool(discardable_fruit_id) and not is_uploading and not dataset_busy
     gate3_manual_removal_required = _gate3_manual_removal_required()
     can_recapture = not _photo_only_session() and not gate3_manual_removal_required and not dataset_busy and bool(active_fruit_id) and APP_STATE['status'] in (
         'waiting_esp32_start',
@@ -3827,6 +3846,7 @@ def _state_payload(extra=None):
         'image_total': image_total,
         'latest_images': latest_images,
         'can_discard': can_discard,
+        'discardable_fruit_id': discardable_fruit_id,
         'can_classify': can_classify,
         'classify_disabled_reason': classify_disabled_reason,
         'can_recapture': can_recapture,
