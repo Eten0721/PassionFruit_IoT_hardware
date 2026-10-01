@@ -59,9 +59,9 @@ XINHUI `60KG` 送料馬達直立於筒底中央並帶動分槽送料盤。送料
 
 Firmware 可接受舊輸入 alias `high_medium` 與 `discard`，分別套用上等與中等的新角度；Django 與新決策層不得再產生 alias。分類器收到目標角度後先以開迴路方式等待 `500 ms`，再將 Gate 3 直接放行至 `90°`；從 Gate 3 到達 Release 後計時，分類器在目標角度保持 `1000 ms`。落果等待完成後，三顆 Gate 同時回 Home `0°`，分類器同時回 Home `85°`，共同歸位等待 `500 ms` 後才可回報完成。MG996R 沒有位置回授，這些等待只代表控制時序完成，不證明實際位置。複合動作 timeout 必須涵蓋分類器轉向、Gate 3 放行、落果保持與四顆馬達歸位，最終值由實作與實機量測決定。
 
-伺服供電使用兩組獨立 `AC 110 V → DC 12 V／20 A` 電源。電源 A 經 LM25116 初始降至 `6.0 V`，供三站與分類器四顆 MG996R，且不得超過 `6.6 V`；電源 B 經另一顆 LM25116 降至 `8.4 V`，只供 XINHUI 送料馬達。兩路正極不得互接，兩路 DC 負極與 ESP32 GND 必須共地。完整配線、安全與負載估算見 [`hardware_notes/硬體接線與驗收摘要.md`](../hardware_notes/硬體接線與驗收摘要.md)。
+伺服供電使用兩組獨立 `AC 110 V → DC 12 V／20 A` 電源。電源 A 經 LM25116 初始降至 `6.0 V`，供三站與分類器四顆 MG996R，且不得超過 `6.6 V`；電源 B 經另一顆 LM25116 降至 `8.4 V`，只供 XINHUI 送料馬達。兩路正極不得互接，兩路 DC 負極與 ESP32 GND 必須共地。完整配線、安全與負載估算見 [`record_image/硬體接線與驗收摘要.md`](../record_image/硬體接線與驗收摘要.md)。
 
-HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔為 `50 ms`。一次有效觸發即可立即停止送料；只有有效距離大於 `8.0 cm` 才可重新待命。`0 cm`／Echo timeout 代表感測器異常或線材問題，送料前必須拒絕命令，送料中必須立即停止。Echo 分壓、伺服供電與機械驗收見 [`hardware_notes/硬體接線與驗收摘要.md`](../hardware_notes/硬體接線與驗收摘要.md)。
+HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔為 `50 ms`。一次有效觸發即可立即停止送料；只有有效距離大於 `8.0 cm` 才可重新待命。`0 cm`／Echo timeout 代表感測器異常或線材問題，送料前必須拒絕命令，送料中必須立即停止。Echo 分壓、伺服供電與機械驗收見 [`record_image/硬體接線與驗收摘要.md`](../record_image/硬體接線與驗收摘要.md)。
 
 ## Runtime profile
 
@@ -324,7 +324,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 ### 自動化
 
 - Django：`C:\Users\qoqoo\anaconda3\envs\PF\python.exe -s manage.py test fruit_app`
-- Firmware：依 [`firmware/tests/README.md`](../firmware/tests/README.md) 執行純 C++ Gate 3／分類器狀態機 harness，並以 `esp32:esp32:esp32` 與 `ESP32Servo 3.2.1` 編譯正式 sketch。
+- Firmware：以 `esp32:esp32:esp32` 與 `ESP32Servo 3.2.1` 編譯正式 sketch。
 - Repository：`git diff --check`
 
 ### 實機

@@ -39,6 +39,8 @@ Django_Server/0716_dataset/
 Django_Server/runtime_config/
 
 # Project folders not tracked for now
+/output/
+/環境部署/Arduino_Library/
 Necessary_library/*
 !Necessary_library/README.md
 /external/ps-quality-detection-system/
@@ -54,9 +56,9 @@ Necessary_library/*
 *.mp4
 *.mov
 *.avi
-!hardware_notes/*.png
-!docs/images/hardware-development/*.png
-!docs/images/hardware-redesign-2026-08-22/*.png
+!record_image/**/*.png
+!record_image/**/*.jpg
+!record_image/**/*.JPG
 
 # YOLO / ML training outputs and model weights
 **/runs/

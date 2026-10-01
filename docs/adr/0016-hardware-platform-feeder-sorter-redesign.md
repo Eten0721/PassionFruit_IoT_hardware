@@ -29,15 +29,15 @@
 
 位置型 MG996R 沒有位置回授，`500 ms` 只表示分類器就位等待完成，不證明實際到達目標角度。Firmware 必須回報 `gate3_sorter_v1` capability；Django 未收到此能力時，在 Dataset 提交前拒絕分類並保留暫存照片與 Gate 3 上的果實。分類器動作無法開始或結果不確定時，Gate 3 必須保持關閉。斷電、重新啟動或結果不確定時不得自動重放實體動作，必須停止自動運轉並要求操作員檢查。刪除未分類果實時也不自動開啟 Gate 3，由操作員斷電確認安全後移除果實。
 
-![分類器位於拍攝平台出口正下方](../images/hardware-redesign-2026-08-22/classifier-below-platform.png)
+![分類器位於拍攝平台出口正下方](<../../record_image/分類器_第一版本.png>)
 
 ### 上游送料
 
 上游保留頂部開放的一體式送料筒、側面出口、GPIO `23`、HC-SR04 正常停止、安全逾時與不自動補轉契約。筒底中央的四片徑向撥片改成扭蛋機式分槽盤，送料馬達改用 XINHUI `60KG` 連續旋轉版本。槽數、槽寬、盤片間隙、出口幾何與單顆分離能力須依成品實測，不在本 ADR 固定數值。
 
-![扭蛋機式分槽盤參考](../images/hardware-redesign-2026-08-22/slotted-feeder-reference.png)
+![扭蛋機式分槽盤參考](<../../record_image/[目前採用]送料機構實機圖.png>)
 
-![XINHUI 60KG 規格參考](../images/hardware-redesign-2026-08-22/xinhui-60kg-spec.png)
+![XINHUI 60KG 規格參考](<../../record_image/不知道反正都丟進來/xinhui-60kg-spec.png>)
 
 ### 雙電源供電
 
@@ -48,9 +48,9 @@
 - 兩路正極不得互接；兩路 DC 負極、ESP32 GND 與全部伺服訊號地必須共地。
 - 市電端必須具有保護接地、適當保險絲、端子遮罩與可辨識的斷電裝置；配線及維修只能在市電與 DC 輸出都已斷電後執行。
 
-![12 V／20 A 開放式電源規格參考](../images/hardware-redesign-2026-08-22/12v-20a-power-supply.png)
+![12 V／20 A 開放式電源規格參考](<../../record_image/不知道反正都丟進來/12v-20a-power-supply.png>)
 
-![LM25116 降壓模組參考](../images/hardware-redesign-2026-08-22/lm25116-module.png)
+![LM25116 降壓模組參考](<../../record_image/不知道反正都丟進來/lm25116-module.png>)
 
 負載估算將額定、設計預留與實測分開記錄。四顆 MG996R 以保守配電值 `2.5 A／顆` 計算，`6.0 V` 電源軌為 `10 A／60 W`；XINHUI 依購買頁面的 `8.4 V／6.2 A` 計算為 `52.08 W`。不同電壓電源軌的電流不得直接相加，伺服端估算功率可合計為 `112.08 W`。單顆 `12 V／20 A` 電源的電壓電流乘積為 `240 W`；賣場 `250 W` 只視為商品標示。
 

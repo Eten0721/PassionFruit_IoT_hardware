@@ -16,7 +16,7 @@
 
 平台末端連接名目直徑 `10 cm` 的落料管，分類器移到出口正下方。圓形舵盤上的ㄇ型鐵帶輕微坡度，使果實落入後能滾向指定籃子。
 
-![分類器移到平台出口正下方](images/hardware-redesign-2026-08-22/classifier-below-platform.png)
+![分類器移到平台出口正下方](<../record_image/分類器_第一版本.png>)
 
 ## 初期單桿閘門
 
@@ -26,13 +26,9 @@
 - 不規則外形只被推偏，沒有持續向前。
 - 蒂頭與軌道或桿件干涉。
 
-![初期使用單根直桿的三閘門配置](images/hardware-development/initial-single-rod-gates.png)
-
 ## 改良為 L 型閘門
 
 後續改為 L 型結構，旋轉時由後方桿件持續接觸並推動果實，降低停在站點之間的機率。L 型桿仍須配合軌道寬度與接觸高度校正，避免推力位置過高或刮到底板。
-
-![改良後的 L 型閘門與整體安裝配置](images/hardware-development/improved-l-shaped-gates.png)
 
 ## 相鄰閘門高度錯位
 
@@ -46,7 +42,7 @@
 
 ## HC-SR04 位置
 
-感測器原先位於軌道右側，接近閘門旋轉路徑；後續移到左側以避開撞擊。移位後需重新檢查感測方向、固定件反射與觸發穩定性。電壓安全與分壓量測見 [`hardware_notes/硬體接線與驗收摘要.md`](../hardware_notes/硬體接線與驗收摘要.md)。
+感測器原先位於軌道右側，接近閘門旋轉路徑；後續移到左側以避開撞擊。移位後需重新檢查感測方向、固定件反射與觸發穩定性。電壓安全與分壓量測見 [`record_image/硬體接線與驗收摘要.md`](../record_image/硬體接線與驗收摘要.md)。
 
 ## 上游單顆送料機構
 
@@ -54,9 +50,9 @@
 
 送料筒目標內徑維持 `20～22 cm`、內部高度維持 `30 cm`，頂部保持開放。2026-08-22 起，底部中央改由 XINHUI `60KG` 連續旋轉伺服帶動扭蛋機式分槽盤。分槽盤下緣不得摩擦底板，外緣不得碰觸筒壁；槽數、槽寬、盤片厚度、底板間隙、筒壁間隙與舵盤固定方式尚待製作及混合果形測試。電源線與訊號線須直接離開送料筒，筒內不得留下可能被果實或分槽盤勾住的線圈與接頭。
 
-![扭蛋機式分槽盤參考](images/hardware-redesign-2026-08-22/slotted-feeder-reference.png)
+![扭蛋機式分槽盤參考](<../record_image/[目前採用]送料機構實機圖.png>)
 
-![XINHUI 60KG 馬達規格參考](images/hardware-redesign-2026-08-22/xinhui-60kg-spec.png)
+![XINHUI 60KG 馬達規格參考](<../record_image/不知道反正都丟進來/xinhui-60kg-spec.png>)
 
 側面出口直接對齊拍攝平台起點，不另設導料斜道；出口底部與拍攝平台起點的高低差為 `8.5～9 cm`。此高低差以容納一顆百香果並降低落差為目標，仍需用混合果形實測滾落方向、蒂頭干涉與果皮撞傷。
 
@@ -113,13 +109,13 @@ MG996R 未起轉與重新切換電池盒開關後暫時恢復，可能與動作�
 
 四顆 MG996R 以保守配電值 `2.5 A／顆` 估算為 `10 A／60 W`；XINHUI 依購買頁 `8.4 V／6.2 A` 估算為 `52.08 W`。兩條電源軌電壓不同，電流不能直接相加；伺服端功率可合計為 `112.08 W`。`20 AWG` 線材、LM25116 模組、接頭與配電端子都須實測壓降及溫升，不能只依賣場標示判定容量。
 
-![12 V／20 A 電源參考](images/hardware-redesign-2026-08-22/12v-20a-power-supply.png)
+![12 V／20 A 電源參考](<../record_image/不知道反正都丟進來/12v-20a-power-supply.png>)
 
-![LM25116 模組參考](images/hardware-redesign-2026-08-22/lm25116-module.png)
+![LM25116 模組參考](<../record_image/不知道反正都丟進來/lm25116-module.png>)
 
 ## 位置型 MG996R 分類機構
 
-位置型 MG996R 位於拍攝平台出口正下方，依人工分類結果轉向規格指定的四個出口，且沒有位置回授。第 3 張照片保存後，Gate 1／2 維持 Release，Gate 3 保持 Home 並留住果實；分類器轉向後以開迴路方式等待 `500 ms`，Gate 3 才放行。Gate 3 到達 Release 後分類器保持目標角度 `1000 ms`，再讓三顆 Gate 與分類器同時歸位並等待 `500 ms`。角度與 timing 以 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 為準；供電、共地與機械驗收見 [`hardware_notes/硬體接線與驗收摘要.md`](../hardware_notes/硬體接線與驗收摘要.md)。
+位置型 MG996R 位於拍攝平台出口正下方，依人工分類結果轉向規格指定的四個出口，且沒有位置回授。第 3 張照片保存後，Gate 1／2 維持 Release，Gate 3 保持 Home 並留住果實；分類器轉向後以開迴路方式等待 `500 ms`，Gate 3 才放行。Gate 3 到達 Release 後分類器保持目標角度 `1000 ms`，再讓三顆 Gate 與分類器同時歸位並等待 `500 ms`。角度與 timing 以 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 為準；供電、共地與機械驗收見 [`record_image/硬體接線與驗收摘要.md`](../record_image/硬體接線與驗收摘要.md)。
 
 實測需確認：
 

@@ -1,0 +1,25 @@
+Arduino快速燒錄設定:
+/文件/Arduino中新建資料夾"libraries"，
+之後把相關library三個資料夾拖入後，重新啟動IDE即可。
+
+或者可以不用重新燒錄，直接強迫修改電腦ip:
+1. 讓學校電腦連上你的 iPhone 個人熱點（此時 iPhone 的預設閘道固定為 172.20.10.1）。
+2. 在 Windows 系統按下 Win + R 鍵，輸入 ncpa.cpl 開啟「網路連線」視窗。
+3. 對著 「Wi-Fi」 介面卡點擊滑鼠右鍵，選擇 「內容」。
+4. 在清單中雙擊打開 「網際網路協定第四版 (TCP/IPv4)」。
+5. 將自動取得 IP 改選為 「使用下列的 IP 位址」，並精確填入以下內容：
+ - IP 位址：172.20.10.3 （強制與 Arduino 寫死的後端伺服器 IP 完全一致）
+ - 子網路遮罩：255.255.255.0
+ - 預設閘道：172.20.10.1 （iPhone 熱點的固定內部通訊網關）
+6. 點擊確定儲存。
+
+---
+
+Django快速部署:
+先前已透過pip freeze > requirements.txt來將環境套件整理成一份文件。
+到學校後，建立好虛擬環境(Python=3.10.20)，之後輸入 pip install -r requirements.txt
+即完成安裝。
+
+伺服器啟動: python manage.py runserver 0.0.0.0:8000
+
+---

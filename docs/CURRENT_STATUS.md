@@ -59,7 +59,7 @@ Issue [#14](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/14) 的
 - 分別模擬 ESP32 與 Django 在送料 command／report 邊界重新啟動，確認不會自動重複送料。
 - 建立 Dataset 第二份備份、正式切分、標註與模型驗收。
 
-驗收方法與門檻見 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md)；實體安全檢查見 [`hardware_notes/硬體接線與驗收摘要.md`](../hardware_notes/硬體接線與驗收摘要.md)。
+驗收方法與門檻見 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md)；實體安全檢查見 [`record_image/硬體接線與驗收摘要.md`](../record_image/硬體接線與驗收摘要.md)。
 
 ## 下一個里程碑
 

@@ -37,4 +37,4 @@ API 定義與 request timeout 見 [`docs/DATA_COLLECTION_SPEC.md`](../docs/DATA_
 
 ## 舊資源說明
 
-本機 `Necessary_library/` 可能仍留有舊版 Arduino library、Node.js ZIP、Node-RED flow、SQL、PDF 與編譯產物。這些內容屬於早期實驗資料，不是目前三站拍攝與 MG996R 正式 firmware 的必要依賴，也不會推送到 GitHub。
+本機 `環境部署/Arduino_Library/` 可能仍留有舊版 Arduino library、Node.js ZIP、Node-RED flow、SQL、PDF 與編譯產物。這些內容屬於早期實驗資料，不是目前三站拍攝與 MG996R 正式 firmware 的必要依賴，也不會推送到 GitHub。

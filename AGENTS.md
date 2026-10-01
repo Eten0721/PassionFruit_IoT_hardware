@@ -6,7 +6,7 @@
 2. `docs/DATA_COLLECTION_SPEC.md`：三站流程、API、command、GPIO、角度與 timing。
 3. `docs/CURRENT_STATUS.md`：目前穩定功能、問題、實機驗證與里程碑。
 4. `docs/adr/`：與修改範圍相關的架構決策。
-5. `docs/HARDWARE_DEVELOPMENT_REPORT.md` 與 `hardware_notes/硬體接線與驗收摘要.md`：機構、接線或維修工作。
+5. `docs/HARDWARE_DEVELOPMENT_REPORT.md` 與 `record_image/硬體接線與驗收摘要.md`：機構、接線或維修工作。
 
 未完成工作以 GitHub Issues 為準，不在本文件維護待辦或版本進度。
 

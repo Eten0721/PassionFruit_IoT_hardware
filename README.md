@@ -2,7 +2,7 @@
 
 本專案整合 ESP32、Django、手機相機與伺服機構，建立百香果單顆送料、三站固定角度拍攝、Dataset 管理與四級實體分流。現行軟體已能協調送料、三站拍攝、人工分類與資料生命週期；2026-08-22 已接受新的平台、送料、分類器與供電架構，但機構、複合分類流程及完整實機驗收尚未完成。
 
-![分類器位於拍攝平台出口正下方](docs/images/hardware-redesign-2026-08-22/classifier-below-platform.png)
+![百香果 IoT 系統實際硬體](record_image/實際硬體圖/實際硬體圖.png)
 
 ## 專案目標與目標流程
 
@@ -24,6 +24,8 @@
 
 ## 系統架構
 
+![硬體系統架構圖](record_image/設計圖/硬體系統架構圖.png)
+
 ```mermaid
 flowchart LR
     Dashboard["Dashboard<br/>操作、校正與狀態"] --> Django["Django<br/>中央狀態機"]
@@ -39,7 +41,7 @@ flowchart LR
 
 Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS client 輪詢命令，在本機負責感測、馬達停止與有界硬體流程；手機只處理相機 readiness、單站拍攝與上傳。模型訓練與推論 pipeline 位於獨立 Repository；本 Repository 只以 Git LFS 保存 Django 部署所需的四個正式權重，不追蹤訓練輸出。
 
-硬體使用兩組彼此獨立的 `AC 110 V → DC 12 V／20 A` 電源。電源 A 經 LM25116 降至 `6.0 V`，供三站與分類器共四顆 MG996R；電源 B 經另一顆 LM25116 降至 `8.4 V`，只供 XINHUI 送料馬達。完整接線與市電安全要求見 [硬體接線與驗收摘要](hardware_notes/硬體接線與驗收摘要.md)。
+硬體使用兩組彼此獨立的 `AC 110 V → DC 12 V／20 A` 電源。電源 A 經 LM25116 降至 `6.0 V`，供三站與分類器共四顆 MG996R；電源 B 經另一顆 LM25116 降至 `8.4 V`，只供 XINHUI 送料馬達。完整接線與市電安全要求見 [硬體接線與驗收摘要](record_image/硬體接線與驗收摘要.md)。
 
 ## 我的主要負責項目
 
@@ -89,9 +91,10 @@ Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS clie
 ```text
 PassionFruit_IoT_hardware/
 ├── Django_Server/      # Dashboard、API、狀態機、Dataset 管理與正式部署權重
-├── firmware/           # 正式 ESP32 Firmware 與硬體測試程式
+├── firmware/           # 正式 ESP32 Firmware
 ├── docs/               # 架構、規格、現況、ADR、部署與硬體紀錄
-├── hardware_notes/     # 接線安全、驗收摘要與機構參考圖
+├── record_image/       # 接線安全、驗收摘要、實際硬體與設計圖
+├── 環境部署/           # ESP32 快速燒錄準備與部署筆記
 └── external/           # 被忽略的獨立模型 Repository checkout
 ```
 
@@ -104,7 +107,7 @@ PassionFruit_IoT_hardware/
 - [目前狀態](docs/CURRENT_STATUS.md)
 - [送料、三站資料採集與分類規格](docs/DATA_COLLECTION_SPEC.md)
 - [送料、三閘門與分類器硬體開發紀錄](docs/HARDWARE_DEVELOPMENT_REPORT.md)
-- [硬體接線與驗收摘要](hardware_notes/硬體接線與驗收摘要.md)
+- [硬體接線與驗收摘要](record_image/硬體接線與驗收摘要.md)
 - [ADR-0016：硬體平台、送料與分類器重構](docs/adr/0016-hardware-platform-feeder-sorter-redesign.md)
 - [架構決策索引](docs/adr/README.md)
 - [Django／ESP32 安全與品質稽核](docs/SECURITY_AUDIT_2026-07-11.md)
