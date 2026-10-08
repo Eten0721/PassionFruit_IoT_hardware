@@ -50,7 +50,7 @@ Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS clie
 - 整合手機相機頁、Dashboard、三站拍攝與 Dataset 生命週期。
 - 設計並迭代拍攝平台、一體式送料筒、分槽送料盤與下置式分類器。
 - 規劃雙電源、降壓、共地、感測器電平保護與實機驗收方式。
-- 維護系統規格、架構決策、硬體紀錄與安全稽核文件。
+- 維護系統規格、架構決策與硬體文件。
 
 ## 目前進度
 
@@ -109,7 +109,6 @@ PassionFruit_IoT_hardware/
 - [硬體接線與驗收摘要](record_image/硬體接線與驗收摘要.md)
 - [ADR-0016：硬體平台、送料與分類器重構](docs/adr/0016-hardware-platform-feeder-sorter-redesign.md)
 - [架構決策索引](docs/adr/README.md)
-- [Django／ESP32 安全與品質稽核](docs/SECURITY_AUDIT_2026-07-11.md)
 
 > [!CAUTION]
 > 現行安全模型只適用可信任且隔離的實驗室區網。將系統部署至公開網路前，必須完成 TLS 憑證驗證、API authentication、production settings 與其他安全稽核項目。

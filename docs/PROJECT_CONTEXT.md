@@ -97,4 +97,3 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 - 架構決策：[adr/README.md](adr/README.md)
 - 硬體接線與驗收：[硬體接線與驗收摘要.md](../record_image/硬體接線與驗收摘要.md)
 - AI 決策層：[模型 Repository README](https://github.com/fcu-passionfruit-project/ps-quality-detection-system/blob/main/README.md)
-- 安全稽核：[SECURITY_AUDIT_2026-07-11.md](SECURITY_AUDIT_2026-07-11.md)
