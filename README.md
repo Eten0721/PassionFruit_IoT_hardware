@@ -41,7 +41,7 @@ flowchart LR
 
 Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS client 輪詢命令，在本機負責感測、馬達停止與有界硬體流程；手機只處理相機 readiness、單站拍攝與上傳。模型訓練與推論 pipeline 位於獨立 Repository；本 Repository 只以 Git LFS 保存 Django 部署所需的四個正式權重，不追蹤訓練輸出。
 
-硬體使用兩組彼此獨立的 `AC 110 V → DC 12 V／20 A` 電源。電源 A 經 LM25116 降至 `6.0 V`，供三站與分類器共四顆 MG996R；電源 B 經另一顆 LM25116 降至 `8.4 V`，只供 XINHUI 送料馬達。完整接線與市電安全要求見 [硬體接線與驗收摘要](record_image/硬體接線與驗收摘要.md)。
+硬體使用一顆 `AC 110 V → DC 12 V／20 A` 電源供應器，分別供應兩顆 LM25116 降壓模組。分支 A 輸出 `6.0 V`，供三站與分類器共四顆 MG996R；分支 B 輸出 `8.4 V`，只供 XINHUI 送料馬達。完整接線與市電安全要求見 [硬體接線與驗收摘要](record_image/硬體接線與驗收摘要.md)。
 
 ## 我的主要負責項目
 
@@ -49,7 +49,7 @@ Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS clie
 - 建立 Django 與 ESP32 的 API、command ID、狀態機、互斥與 retry 流程。
 - 整合手機相機頁、Dashboard、三站拍攝與 Dataset 生命週期。
 - 設計並迭代拍攝平台、一體式送料筒、分槽送料盤與下置式分類器。
-- 規劃雙電源、降壓、共地、感測器電平保護與實機驗收方式。
+- 規劃單電源雙降壓分支、共地、感測器電平保護與實機驗收方式。
 - 維護系統規格、架構決策與硬體文件。
 
 ## 目前進度
@@ -72,7 +72,7 @@ Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS clie
 - 上游改用 XINHUI `60KG` 連續旋轉伺服與分槽送料盤，保留 HC-SR04 本機停止契約。
 - 分類器移到平台出口正下方，只保留一顆位置型 MG996R，以落料管與帶坡度的ㄇ型鐵導向四個籃子。
 - 實作 Gate 3 等待分類及複合 `classify_fruit`，並驗證斷電、重新啟動與不確定結果時不自動重放。
-- 驗證兩組電源、LM25116、`20 AWG` 線材、端子、壓降與溫升，再完成混合果形的連續 `20` 顆流程。
+- 驗證共用電源供應器、兩顆 LM25116、`20 AWG` 線材、端子、壓降與溫升，再完成混合果形的連續 `20` 顆流程。
 - 建立 Dataset 第二份備份、正式 train／valid／test 切分、標註與模型驗收；AI 尚未接入正式流程。
 
 ## 技術組成
@@ -82,7 +82,7 @@ Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS clie
 | Backend | Python `3.14.4`、Django `5.2.16` LTS、REST API |
 | Frontend | HTML、CSS、JavaScript、WebRTC |
 | Firmware | ESP32、Arduino C++、ESP32Servo `3.2.1` |
-| Target hardware | HC-SR04、XINHUI `60KG`、4 顆位置型 MG996R、雙 `12 V／20 A` 電源、LM25116 |
+| Target hardware | HC-SR04、XINHUI `60KG`、4 顆位置型 MG996R、1 顆 `12 V／20 A` 電源供應器、2 顆 LM25116 |
 | Data | JPEG、CSV metadata、檔案系統 Dataset |
 | Engineering | Git、GitHub Issues、ADR、模組化狀態機與實機驗收 |
 

@@ -6,7 +6,7 @@
 
 使用硬體的蒐集模式由 Django 中央狀態機、ESP32 以 XINHUI `60KG` 連續旋轉伺服執行上游單顆送料、HC-SR04、手機單站拍攝、三段位置型 MG996R 閘門與一顆位置型 MG996R 下置式分類器組成。每顆百香果在三個固定站點各保存一張照片；第 3 張保存後果實停留在 Gate 3，直到人工分類完成、分類器就位並執行 Gate 3 放行。實體分類完成後才允許送入下一顆。
 
-原始上游送料整合由 GitHub Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 記錄；本文件保存 ADR-0016 接受後的目標契約，實作與實機驗收進度以 [CURRENT_STATUS.md](CURRENT_STATUS.md) 為準。2026-08-22 的平台、分槽盤、下置式分類器與雙電源決策見 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md)。原 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 的額外 SG90 擋臂已取消。
+原始上游送料整合由 GitHub Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 記錄；本文件保存 ADR-0016 接受後的目標契約，實作與實機驗收進度以 [CURRENT_STATUS.md](CURRENT_STATUS.md) 為準。2026-08-22 的平台、分槽盤、下置式分類器與供電決策見 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md)。原 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 的額外 SG90 擋臂已取消。
 
 ## 名詞
 
@@ -61,7 +61,7 @@ XINHUI `60KG` 送料馬達直立於筒底中央並帶動分槽送料盤。送料
 
 Firmware 可接受舊輸入 alias `high_medium` 與 `discard`，分別套用上等與中等的新角度；Django 與新決策層不得再產生 alias。分類器收到目標角度後先以開迴路方式等待 `500 ms`，再將 Gate 3 直接放行至 `90°`；從 Gate 3 到達 Release 後計時，分類器在目標角度保持 `1000 ms`。落果等待完成後，三顆 Gate 同時回 Home `0°`，分類器同時回 Home `85°`，共同歸位等待 `500 ms` 後才可回報完成。MG996R 沒有位置回授，這些等待只代表控制時序完成，不證明實際位置。複合動作 timeout 必須涵蓋分類器轉向、Gate 3 放行、落果保持與四顆馬達歸位，最終值由實作與實機量測決定。
 
-伺服供電使用兩組獨立 `AC 110 V → DC 12 V／20 A` 電源。電源 A 經 LM25116 初始降至 `6.0 V`，供三站與分類器四顆 MG996R，且不得超過 `6.6 V`；電源 B 經另一顆 LM25116 降至 `8.4 V`，只供 XINHUI 送料馬達。兩路正極不得互接，兩路 DC 負極與 ESP32 GND 必須共地。完整配線、安全與負載估算見 [`record_image/硬體接線與驗收摘要.md`](../record_image/硬體接線與驗收摘要.md)。
+伺服供電使用一顆 `AC 110 V → DC 12 V／20 A` 電源供應器，並接供應兩顆 LM25116 的輸入。分支 A 初始降至 `6.0 V`，供三站與分類器四顆 MG996R，且不得超過 `6.6 V`；分支 B 降至 `8.4 V`，只供 XINHUI 送料馬達。兩顆模組的輸出正極不得互接，電源 DC 負極、兩顆模組 GND 與 ESP32 GND 必須共地。完整配線、安全與負載估算見 [`record_image/硬體接線與驗收摘要.md`](../record_image/硬體接線與驗收摘要.md)。
 
 HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔為 `50 ms`。一次有效觸發即可立即停止送料；只有有效距離大於 `8.0 cm` 才可重新待命。`0 cm`／Echo timeout 代表感測器異常或線材問題，送料前必須拒絕命令，送料中必須立即停止。Echo 分壓、伺服供電與機械驗收見 [`record_image/硬體接線與驗收摘要.md`](../record_image/硬體接線與驗收摘要.md)。
 
@@ -195,9 +195,9 @@ ESP32 每次開機產生新的 `boot_id`。Django 若在未完成 `feed_one` 期
 
 Django 重新啟動後，依 ESP32 polling 的 `feeder_state` 與 `last_feed_command_id` 重建「進料未確認」。看到 `awaiting_fruit` 時保持自動運轉關閉、允許 HC-SR04 接手，但不建立新 `feed_one`。重複或舊的 feeder terminal report 回 `200 ignored`，不得推進流程或造成 ESP32 永久 retry。
 
-切斷送料專用電源 B 的 DC 輸出只用於送料機構緊急停止。若 Dashboard 仍可連線，操作員先要求優雅暫停，讓電源 B 保持關閉直到目前 `feed_one` 到達 `feeder_max_run_ms`，並確認 Dashboard 收到 `feeder_max_run_timeout`；清料且手離開送料筒後才可重新開啟電源 B，接著必須執行一次測試送料再恢復正式運轉。
+切斷送料供電分支 B 的 DC 輸出只用於送料機構緊急停止。若 Dashboard 仍可連線，操作員先要求優雅暫停，讓分支 B 保持斷電直到目前 `feed_one` 到達 `feeder_max_run_ms`，並確認 Dashboard 收到 `feeder_max_run_timeout`；清料且手離開送料筒後才可恢復分支 B 供電，接著必須執行一次測試送料再恢復正式運轉。
 
-若緊急斷電後無法連線或看不到 terminal report，送料專用電源 B 必須保持關閉。操作員清料後重新啟動 ESP32，等待 Firmware 完成初始化、先寫入 `feeder_stop_us`，並確認 Dashboard 顯示 ESP32 已重新連線且正式運轉保持停用；手離開送料筒後才可重新開啟電源 B，之後同樣必須執行一次測試送料。
+若緊急斷電後無法連線或看不到 terminal report，送料供電分支 B 必須保持斷電。操作員清料後重新啟動 ESP32，等待 Firmware 完成初始化、先寫入 `feeder_stop_us`，並確認 Dashboard 顯示 ESP32 已重新連線且正式運轉保持停用；手離開送料筒後才可恢復分支 B 供電，之後同樣必須執行一次測試送料。
 
 ### Dashboard 錯誤提示
 
@@ -343,5 +343,5 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 10. 驗收記錄必須包含分槽盤材料、槽數、槽寬、固定方式、直徑、厚度、垂直間隙、筒壁最小間隙、舵盤與螺絲規格，以及連續運轉後是否鬆動、變形或刮傷果實。
 11. 以混合尺寸、形狀與蒂頭方向的果實連續完成 `20` 顆送料與完整分類；每個 `feed_one` 都由一次有效 HC-SR04 讀值正常停止且恰好一顆，無漏送／雙送、無須人工重對送料桿。
 12. 模擬最大運轉逾時、送料中 Echo timeout，以及逾時後果實才抵達；確認馬達先停止、不自動補轉，延遲果實仍完成三站流程且自動送料保持關閉。
-13. 同一個 `20` 顆測試確認送料 XINHUI `60KG`、三站與分類器共四顆 MG996R 均無抖動／異音，ESP32 無 reset，兩組電源、LM25116、配電端子與線材無異常溫升；記錄兩條伺服電源軌的空載電壓、動作中最低電壓、峰值電流與送料馬達未起轉次數。任一項失敗時，校正或修正後重新累計連續 `20` 顆。
+13. 同一個 `20` 顆測試確認送料 XINHUI `60KG`、三站與分類器共四顆 MG996R 均無抖動／異音，ESP32 無 reset，共用電源供應器、兩顆 LM25116、配電端子與線材無異常溫升；記錄共用 `12 V` 輸入與兩條伺服電源軌的空載電壓、動作中最低電壓、峰值電流與送料馬達未起轉次數。任一項失敗時，校正或修正後重新累計連續 `20` 顆。
 14. 模擬 ESP32 與 Django 分別在 `feed_one`、三站拍攝、Gate 3 等待分類及 `classify_fruit` terminal report 前後重新啟動，確認不會自動重播送料、閘門或分類器動作，且 Dashboard 顯示可操作的復原提示。
