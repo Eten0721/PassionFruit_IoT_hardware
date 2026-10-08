@@ -21,7 +21,7 @@
 - 模型訓練與推論 pipeline 採獨立 Repository；四個 Django 正式部署權重固定存於 `Django_Server/models/` 並由 Git LFS 管理，照片快照存於獨立資料目錄。
 - 目前 Dataset 快照包含 `327` 顆果實與 `981` 張照片，尚待建立正式 train／valid／test 切分與第二份備份。
 
-現行協定與數值見 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md)。
+現行協定與數值見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
 
 ## 已接受但尚未完成
 
@@ -59,8 +59,8 @@ Issue [#14](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/14) 的
 - 分別模擬 ESP32 與 Django 在送料 command／report 邊界重新啟動，確認不會自動重複送料。
 - 建立 Dataset 第二份備份、正式切分、標註與模型驗收。
 
-驗收方法與門檻見 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md)；實體安全檢查見 [`record_image/硬體接線與驗收摘要.md`](../record_image/硬體接線與驗收摘要.md)。
+驗收方法與門檻見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)；實體安全檢查見 [`record_image/硬體接線與驗收摘要.md`](../record_image/硬體接線與驗收摘要.md)。
 
 ## 下一個里程碑
 
-依 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 與 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md) 完成 Issue [#15](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/15) 的完整實機驗收，以及 Issue [#16](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/16) 的三站直接控制觀察。
+依 [CAPTURE_SPEC.md](CAPTURE_SPEC.md) 與 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md) 完成 Issue [#15](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/15) 的完整實機驗收，以及 Issue [#16](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/16) 的三站直接控制觀察。

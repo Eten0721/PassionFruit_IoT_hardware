@@ -13,4 +13,4 @@ Dashboard 在 idle 時更新完整 timing profile；Django 原子保存單一 ru
 
 ## Consequences
 
-流程中不混用新版設定。現行值、範圍、步進與 ACK 契約只由 [`DATA_COLLECTION_SPEC.md`](../DATA_COLLECTION_SPEC.md) 定義。
+流程中不混用新版設定。現行值、範圍、步進與 ACK 契約只由 [`CAPTURE_SPEC.md`](../CAPTURE_SPEC.md) 定義。

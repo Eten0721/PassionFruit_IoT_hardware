@@ -4,7 +4,7 @@
 
 本專案建立百香果照片蒐集、資料集管理與後續 AI 分級辨識流程。現階段以穩定取得每顆果實三個固定站點的清晰照片為主，再由人工分類與實體分類器完成資料與果實分流。
 
-目標流程是上游單顆送料後，以三段閘門停止拍攝；舊版滾動連拍不再是開發方向。現行協定、硬體設定與驗收標準以 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md) 為唯一來源，實作進度以 [CURRENT_STATUS.md](CURRENT_STATUS.md) 為準。
+目標流程是上游單顆送料後，以三段閘門停止拍攝；舊版滾動連拍不再是開發方向。現行協定、硬體設定與驗收標準以 [CAPTURE_SPEC.md](CAPTURE_SPEC.md) 為唯一來源，實作進度以 [CURRENT_STATUS.md](CURRENT_STATUS.md) 為準。
 
 ## 系統架構
 
@@ -60,7 +60,7 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 
 ### Dataset
 
-照片快照實體存於獨立資料目錄，模型 Repository 透過 ignored junction 存取。Dataset schema 與資料生命週期見 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md)，目前快照與備份狀態見 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
+照片快照實體存於獨立資料目錄，模型 Repository 透過 ignored junction 存取。Dataset schema 與資料生命週期見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)，目前快照與備份狀態見 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
 
 ## 主要資料流
 
@@ -72,14 +72,14 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 6. 複合分類動作完成且安全條件仍成立時，Django 才建立下一次送料。
 7. 未完成工作與實機驗證由 GitHub Issues 追蹤。
 
-完整事件、API、command 與 timeout 見 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md)。
+完整事件、API、command 與 timeout 見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
 
 ## 不可破壞的原則
 
 - Django 是中央狀態來源；手機與 ESP32 不自行推測流程完成。
 - 當站照片原子保存成功前，不得放行下一閘門。
 - 第 3 張照片保存後不得直接放行 Gate 3；ESP32 回報 `gate3_sorter_v1`，且下置式分類器完成目標角度的 `500 ms` 開迴路就位等待後才能放行。
-- 正式硬體流程不提供通用 manual capture；重拍只重新執行同一顆果實的三站流程，不驅動送料。純拍攝使用獨立受模式限制的入口，全程不建立 motor command，契約見 [DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md)。
+- 正式硬體流程不提供通用 manual capture；重拍只重新執行同一顆果實的三站流程，不驅動送料。純拍攝使用獨立受模式限制的入口，全程不建立 motor command，契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
 - 未分類資料、active capture 或 sorter 動作存在時，不得開始下一顆。
 - 送料馬達正常由 HC-SR04 回授停止，感測異常或最大運轉時間到期時也必須由 ESP32 本機停止；網路 retry 不得重複實體送料。
 - 優雅暫停只禁止後續送料，已承諾送出的果實仍完成既有流程。
@@ -92,9 +92,9 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 
 ## 延伸文件
 
-- 現行規格：[DATA_COLLECTION_SPEC.md](DATA_COLLECTION_SPEC.md)
+- 現行規格：[CAPTURE_SPEC.md](CAPTURE_SPEC.md)
 - 目前狀態：[CURRENT_STATUS.md](CURRENT_STATUS.md)
 - 架構決策：[adr/README.md](adr/README.md)
-- 機構紀錄：[HARDWARE_DEVELOPMENT_REPORT.md](HARDWARE_DEVELOPMENT_REPORT.md)
+- 硬體接線與驗收：[硬體接線與驗收摘要.md](../record_image/硬體接線與驗收摘要.md)
 - AI 決策層：[模型 Repository README](https://github.com/fcu-passionfruit-project/ps-quality-detection-system/blob/main/README.md)
 - 安全稽核：[SECURITY_AUDIT_2026-07-11.md](SECURITY_AUDIT_2026-07-11.md)

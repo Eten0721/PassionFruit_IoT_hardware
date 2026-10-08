@@ -1,14 +1,16 @@
-# 送料、三站資料採集與分類規格
+# 拍攝、檢測與分類規格
 
 ## 目標與範圍
 
-正式流程由 Django 中央狀態機、ESP32 以 XINHUI `60KG` 連續旋轉伺服執行上游單顆送料、HC-SR04、手機單站拍攝、三段位置型 MG996R 閘門與一顆位置型 MG996R 下置式分類器組成。每顆百香果在三個固定站點各保存一張照片；第 3 張保存後果實停留在 Gate 3，直到人工分類完成、分類器就位並執行 Gate 3 放行。實體分類完成後才允許送入下一顆。本文是送料、三站流程、API、command ID、GPIO、角度、timing 與分類契約的唯一來源。
+本文涵蓋使用硬體與純拍攝兩種拍攝方式，以及蒐集模式的人工分類與自動檢測模式的 YOLO 檢測、結果保存。本文是拍攝、檢測、分類流程、API、command ID、GPIO、角度與 timing 的唯一規格來源。
+
+使用硬體的蒐集模式由 Django 中央狀態機、ESP32 以 XINHUI `60KG` 連續旋轉伺服執行上游單顆送料、HC-SR04、手機單站拍攝、三段位置型 MG996R 閘門與一顆位置型 MG996R 下置式分類器組成。每顆百香果在三個固定站點各保存一張照片；第 3 張保存後果實停留在 Gate 3，直到人工分類完成、分類器就位並執行 Gate 3 放行。實體分類完成後才允許送入下一顆。
 
 原始上游送料整合由 GitHub Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 記錄；本文件保存 ADR-0016 接受後的目標契約，實作與實機驗收進度以 [CURRENT_STATUS.md](CURRENT_STATUS.md) 為準。2026-08-22 的平台、分槽盤、下置式分類器與雙電源決策見 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md)。原 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 的額外 SG90 擋臂已取消。
 
 ## 名詞
 
-- Capture session：一顆果實從觸發至三站完成的工作階段。
+- Capture session：一顆果實從觸發至三張照片保存完成的工作階段，包含硬體三站與純拍攝。
 - Station ready：ESP32 宣告果實已在指定站點停穩。
 - Capture request：Django 通知手機拍攝指定站點。
 - Upload complete：Django 驗證並原子保存指定照片。

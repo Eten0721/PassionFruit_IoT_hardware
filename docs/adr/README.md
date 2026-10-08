@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-ADR 記錄長期有效、跨模組或涉及安全與資料一致性的決策。現行操作數值與 wire contract 以 [`DATA_COLLECTION_SPEC.md`](../DATA_COLLECTION_SPEC.md) 為準。
+ADR 記錄長期有效、跨模組或涉及安全與資料一致性的決策。現行操作數值與 wire contract 以 [`CAPTURE_SPEC.md`](../CAPTURE_SPEC.md) 為準。
 
 | ADR | Status | 決策 |
 |---|---|---|

@@ -92,7 +92,7 @@ Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS clie
 PassionFruit_IoT_hardware/
 ├── Django_Server/      # Dashboard、API、狀態機、Dataset 管理與正式部署權重
 ├── firmware/           # 正式 ESP32 Firmware
-├── docs/               # 架構、規格、現況、ADR、部署與硬體紀錄
+├── docs/               # 架構、規格、現況、ADR 與部署
 ├── record_image/       # 接線安全、驗收摘要、實際硬體與設計圖
 ├── 環境部署/           # ESP32 快速燒錄準備與部署筆記
 └── external/           # 被忽略的獨立模型 Repository checkout
@@ -105,8 +105,7 @@ PassionFruit_IoT_hardware/
 - [環境部署說明](docs/環境部署說明文件.md)
 - [專案脈絡與架構](docs/PROJECT_CONTEXT.md)
 - [目前狀態](docs/CURRENT_STATUS.md)
-- [送料、三站資料採集與分類規格](docs/DATA_COLLECTION_SPEC.md)
-- [送料、三閘門與分類器硬體開發紀錄](docs/HARDWARE_DEVELOPMENT_REPORT.md)
+- [拍攝、檢測與分類規格](docs/CAPTURE_SPEC.md)
 - [硬體接線與驗收摘要](record_image/硬體接線與驗收摘要.md)
 - [ADR-0016：硬體平台、送料與分類器重構](docs/adr/0016-hardware-platform-feeder-sorter-redesign.md)
 - [架構決策索引](docs/adr/README.md)

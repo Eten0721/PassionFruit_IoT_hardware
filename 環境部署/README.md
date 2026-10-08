@@ -33,7 +33,7 @@ Copy-Item firmware\Three_Gate_Data_Collection\secrets.example.h firmware\Three_G
 
 `secrets.h` 含有本機 Wi-Fi 密碼，已由 `.gitignore` 排除，不可加入 Git。
 
-API 定義與 request timeout 見 [`docs/DATA_COLLECTION_SPEC.md`](../docs/DATA_COLLECTION_SPEC.md)。
+API 定義與 request timeout 見 [`docs/CAPTURE_SPEC.md`](../docs/CAPTURE_SPEC.md)。
 
 ## 舊資源說明
 

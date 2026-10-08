@@ -14,4 +14,4 @@ Django 作為中央狀態來源；ESP32 控制三段閘門，手機依 Django �
 
 ## Consequences
 
-每站必須等 Django 原子保存照片後才放行。現行事件、API 與硬體契約由 [`DATA_COLLECTION_SPEC.md`](../DATA_COLLECTION_SPEC.md) 定義。
+每站必須等 Django 原子保存照片後才放行。現行事件、API 與硬體契約由 [`CAPTURE_SPEC.md`](../CAPTURE_SPEC.md) 定義。
