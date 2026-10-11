@@ -55,6 +55,11 @@ struct MotorCommand {
 };
 
 struct HttpResult {
+  uint32_t sentAt = 0;
+  uint32_t generation = 0;
+  uint32_t networkRevision = 0;
+  String serverRunId;
+  String bootId;
   int statusCode;
   uint32_t elapsedMS;
   String body;

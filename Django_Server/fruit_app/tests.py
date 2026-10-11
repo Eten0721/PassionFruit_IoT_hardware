@@ -39,8 +39,15 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.hardware_guard_patcher = mock.patch.object(views, '_network_hardware_disabled_reason', return_value=None)
         self.hardware_guard_patcher.start()
         self.addCleanup(self.hardware_guard_patcher.stop)
+        self.device_observer_patcher = mock.patch.object(views, '_observe_device', return_value=None)
+        self.device_observer_patcher.start()
+        self.addCleanup(self.device_observer_patcher.stop)
+        self.safety_monitor_patcher = mock.patch.object(views, '_check_network_safety')
+        self.safety_monitor_patcher.start()
+        self.addCleanup(self.safety_monitor_patcher.stop)
         views.reset_runtime_state_for_tests()
         views._ensure_dataset_structure()
+        views.APP_STATE['camera_last_live_frame_monotonic'] = views.time.monotonic()
         self.client = Client()
 
     def tearDown(self):
@@ -2976,6 +2983,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
 
     def _prepare_auto_run(self, *, camera_ready=False):
+        views.APP_STATE['camera_last_live_frame_monotonic'] = None
         profile = {
             **views.CAPTURE_TIMING_RECOMMENDED,
             'feeder_calibrated': False,

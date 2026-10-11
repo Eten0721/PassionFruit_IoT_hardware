@@ -1391,7 +1391,11 @@ const remoteVideo = document.getElementById('remote-video');
         }
         try {
             if (lastState && lastState.hardware_mode === 'photo_only') {
-                const payload = await postJson('/api/photo_capture/');
+                const recoveryConfirmed = Boolean(lastState.network_recovery) && confirm(
+                    '是否已刪除本輪暫存資料並完成安全清理？確認後將開始新一輪拍攝。',
+                );
+                if (lastState.network_recovery && !recoveryConfirmed) return;
+                const payload = await postJson('/api/photo_capture/', {recovery_confirmed: recoveryConfirmed});
                 lastState = payload;
                 renderState(payload);
                 return;
@@ -1400,10 +1404,13 @@ const remoteVideo = document.getElementById('remote-video');
             let recoveryConfirmed = false;
             if (enabled && lastState && (
                 lastState.sorter_recovery_required
+                || lastState.network_recovery
                 || lastState.auto_run_recovery_reason === 'gate3_manual_removal_required'
             )) {
                 recoveryConfirmed = confirm(
-                    '請先依主畫面提示確認 Gate 3、分類器與果實位置安全；是否已完成檢查並人工復原？',
+                    lastState.network_recovery
+                        ? '是否已刪除或隔離本輪資料，依斷電程序移除果實，確認 Gate 3 與分類器安全且手已離開？確認後會讓馬達歸位。'
+                        : '請先依主畫面提示確認 Gate 3、分類器與果實位置安全；是否已完成檢查並人工復原？',
                 );
                 if (!recoveryConfirmed) {
                     return;
@@ -1415,7 +1422,7 @@ const remoteVideo = document.getElementById('remote-video');
             });
             lastState = payload;
             renderState(payload);
-            setMessage(enabled
+            setMessage(payload.recovery_pending ? '已確認人工復原，等待 ESP32 安全歸位與清鎖交握。' : enabled
                 ? '自動運轉已開始，正在送入第一顆百香果。'
                 : '已要求暫停；目前百香果完成後不會送入下一顆。');
             await refreshState();

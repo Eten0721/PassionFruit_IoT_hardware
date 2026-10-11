@@ -85,12 +85,12 @@
 - 每次啟動、Wi-Fi 重新加入或控制端確認失聯後，先用 mDNS 找 `_pf-iot._tcp`，再查詢網路資訊確認版本／身分與 URL。首輪探索最多 `15000 ms`，期間不啟動動作；找不到才試已存手動 origin，仍持續有界背景探索。多個有效控制端回 `multiple_controllers_found` 而不任選；已選定健康控制端不因背景發現別台而遷移。
 - 指向本次探索或手動驗證的 HTTPS origin 加上既有 command／report routes，移除編譯時固定 Wi-Fi 與完整 API URL 的依賴。本期沿用既有 ESP32 `setInsecure()`，不宣稱驗證 HTTPS 伺服器憑證或抵抗區網偽冒，僅適用可信任、隔離區網；正式裝置驗證另案設計。控制端、網路 revision 或 `boot_id` 改變使舊 lease 與舊動作失效；未完成流程須人工復原，不能將 report 或 command 重送到另一控制端後繼續。
 
-Issue #24 診斷切片沿用以上探索與身分契約，尚未開放 lease／實體控制。`GET /api/network/info/?format=text` 將版本、scheme、selected、身分與 URL 回為逐行 `key=value`；預設 JSON 仍保留。ESP32 核對 TXT 與 info 的身分及 origin，再用同一 origin 的既有 routes：
+探索診斷沿用以上身分契約。`GET /api/network/info/?format=text` 將版本、scheme、selected、身分與 URL 回為逐行 `key=value`；預設 JSON 仍保留。ESP32 核對 TXT 與 info 的身分及 origin，再用同一 origin 的既有 routes；診斷模式不領取實體命令：
 
 - `GET /api/esp32/command/?diagnostic=1` 攜帶 `boot_id`、`server_run_id`、`network_revision`、`discovery_source=mdns|manual` 與 `discovery_reason`；回逐行文字、`diagnostic_id`、`command=none`、`control_allowed=0`，不領取 motor command 或刷新正式硬體 readiness。
 - `POST /api/esp32/report/` 的 `event=network_probe` 回傳相同身分與 `diagnostic_id`；相符往返完成才顯示診斷連線，最後成功 report 超過 `6000 ms` 則顯示離線。診斷 HTTP 除既有階段 timeout 外，各有 `7000 ms` 總等待上限；首輪 info 驗證另受共同的 `15000 ms` 絕對截止限制，晚到結果無效。
 - 多控制端時不選定 origin、不試手動備援；只向已驗證的前兩個候選各回報 `event=network_discovery_status`、身分與 `discovery_reason=multiple_controllers_found`，供 Dashboard 顯示衝突，且不標記已連線。後續探索確認衝突消失後才重新選擇。
-- 此切片的手動 origin 僅由 ignored `network.local.h` 或 host adapter 提供；正式配網頁由後續切片提供。Wi-Fi 暫時沿用 ignored `secrets.h`，移除編譯時 Wi-Fi 設定的完整目標仍由配網切片完成。首輪探索與 HTTP 都在既有網路 worker；診斷 Firmware 不宣告 `local_network_v1`，不接受實體命令。
+- 手動 origin 僅由 ignored `network.local.h` 或 host adapter 提供；正式配網頁由後續切片提供。Wi-Fi 暫時沿用 ignored `secrets.h`，移除編譯時 Wi-Fi 設定的完整目標仍由配網切片完成。首輪探索與 HTTP 都在既有網路 worker；診斷模式不宣告 `local_network_v1`，正式控制模式依下列安全交握接受命令。
 
 #### 失聯門檻與安全交握
 
@@ -104,13 +104,13 @@ Issue #24 診斷切片沿用以上探索與身分契約，尚未開放 lease／�
 | 相機確認失聯 | `10000 ms` | 曾加入且正在使用的相機持續無 ready，鎖定人工復原；未加入不產生本輪失聯事件 |
 | Django 監測／ESP32 停止反應 | `1000 ms`／`100 ms` | Django 最遲下一監測週期鎖定；ESP32 在本機門檻到期後至停止輸出之延遲目標，均待實測 |
 
-- ESP32 在既有 command／report 攜帶 `network_capability=local_network_v1`，另以 `GET /api/esp32/heartbeat/` 在動作中取得狀態，heartbeat 不領取／建立 motor command。缺少 `local_network_v1` 時，Django 回 `network_capability_missing` 並禁止硬體運轉，不因既有 feeder／sorter capability 而放行。Django 控制回應含 `server_run_id`、`network_revision`、`recovery_generation`、`control_allowed` 與 `control_lease_ms`；裝置同時回報本機安全鎖、當前動作及可否配網。Django 只對相符裝置／版本的有效回應續期；`control_allowed=false` 立即鎖定。優雅暫停允許目前果實完成，不以它關閉目前動作 lease；未選網路、確認失聯與復原鎖則關閉。
+- ESP32 在既有 command／report 攜帶 `network_capability=local_network_v1`，另以 `GET /api/esp32/heartbeat/` 在動作中取得狀態，heartbeat 不領取／建立 motor command。缺少 `local_network_v1` 時，Django 回 `network_capability_missing` 並禁止硬體運轉，不因既有 feeder／sorter capability 而放行。Django 控制回應含 `server_run_id`、`network_revision`、`boot_id`、`recovery_generation`、`control_allowed` 與 `control_lease_ms`；裝置同時回報本機安全鎖、當前動作及可否配網。Django 只對相符裝置／版本的有效回應續期；`control_allowed=false` 立即鎖定。優雅暫停允許目前果實完成，不以它關閉目前動作 lease；未選網路、確認失聯與復原鎖則關閉。
 - HTTP `2xx`、mDNS 回應或 Wi-Fi 有 IP 均不能單獨續 lease，須驗證回應身分與控制欄位。請求送出時間、裝置身分與 generation 一併鎖存；較早請求的延遲回應、舊 revision、舊 generation 或鎖定前回應不得解除鎖或延長期限。Django 先判斷舊 heartbeat 是否已超門檻再更新，避免第一筆重連請求掩蓋中間失聯。只有本輪操作或自動運轉曾成立才產生操作中斷鎖；啟動等待連線與安全閒置可配網須獨立表示。
 - 不沿用會阻塞控制 `tick()` 的同步 HTTPS 路徑：由單一有界網路 worker 處理 HTTPS／探索，以一筆 in-flight request 與結果回交；控制迴圈唯一持有 GPIO／servo／安全狀態，網路 worker 不驅動馬達。keepalive 優先於一般 retry，每次 HTTP connect／read 使用有界 timeout；網路 worker 卡住也不能阻止控制迴圈判斷 lease、HC-SR04 或最大送料時間。實作須量測最壞 loop 間隔，確認上述停止反應目標。
 - Django 獨立監測即使 Dashboard 關閉仍執行，並在開始、trigger、command、report、照片保存及分類等既有入口共同以 `STATE_LOCK` 檢查安全狀態。純拍攝只依相機與所選網路判斷，不因 ESP32 缺席鎖定；WebRTC 預覽狀態不刷新／撤銷拍攝 readiness。
 - 確認失聯時：關閉 auto run／auto trigger、取消未執行命令與後續 phase、撤銷 capture token，保持已保存暫存照片供人工刪除；ESP32 先寫校正停止脈波，再取消分類器／閘門 phase，禁止 timeout 的 HomeAll。中斷命令只能回報 aborted，不回 completed，不因重連重新執行；舊 report 可被冪等確認但不能建立新拍攝、放行或送料。
 - 沿用既有原子 recovery marker 的寫入方式，保存網路失聯的 fruit／command／boot／控制端身分、reason 與 recovery generation；Django 重啟恢復鎖，ESP32 在確認失聯時以 NVS 保存 interlock 與當次校正停止脈波，重啟先恢復鎖及停止值，不能自行解除或自動歸位。保存失敗保持記憶體鎖與動作停用並回 `recovery_persist_failed`，不得宣稱復原完成；實體重新啟動的保持位置／初始化限制仍須驗收。
-- 人工先刪除／隔離本輪暫存資料，再依斷電程序移除果實、確認手已離開，最後於既有主操作區明確確認復原。沿用 `recovery_confirmed=true`，新增同一 command slot 的 `recover_network` 安全歸位交握，附當前 recovery generation；ESP32 只接受人工授權後的新交握，保持送料停止，依既有停穩時序歸位並回 `network_recovery_completed`。Django 收到相符 ACK 且完成雙端清鎖提交後，才在全部開始條件成立時允許新的 `feed_one`；復原失敗／再次失聯／舊 ACK 維持鎖。ESP32 保留相同 generation／command 的完成結果並只重送 ACK，不因 timeout 重複歸位；Django 在 ACK 的回應確認提交後，ESP32 才清除本機 interlock，清除保存失敗仍不得送料。純拍攝以既有拍攝開始入口的明確復原確認解除相機／網路鎖，不建立此 motor command。
+- 人工先刪除／隔離本輪暫存資料，再依斷電程序移除果實、確認手已離開，最後於既有主操作區明確確認復原。沿用 `recovery_confirmed=true`，新增同一 command slot 的 `recover_network` 安全歸位交握，附當前 recovery generation；ESP32 只接受人工授權後的新交握，保持送料停止，依既有停穩時序歸位並回 `network_recovery_completed`。Django 在歸位／提交階段回 `recovery_allowed=true`，僅授權復原且 `control_allowed=false`。收到相符完成 ACK 後，Django 原子保存提交階段並回 `recovery_commit=true`；ESP32 先保存本機提交狀態且維持鎖，再回 `network_recovery_committed`。Django 原子保存清鎖與 generation／完成 receipt，回 `recovery_committed=true`；ESP32 收到此回應且清鎖保存成功後才可送料，Django 也只在全部開始條件成立時建立新的 `feed_one`。重複 ACK 只重送結果、不重做歸位；失敗／再次失聯／舊 ACK 維持鎖，撤銷交握後可接受新的人工授權。純拍攝以既有拍攝開始入口的明確復原確認解除相機／網路鎖，不建立此 motor command。
 - 無 active fruit 不代表沒有待移除實體果實；中斷分類時已提交資料維持不回滾，仍須人工移除。檔案刪除失敗沿用既有隔離／deferred cleanup，阻擋原因顯示清楚。鎖定期間拒絕重拍、分類與切換模式等可繞過處理的入口；清理、連線診斷與相符復原 ACK 仍可用。
 - 所有門檻先於本輪下一個實體輸出檢查。分類正常時序短於失聯門檻，確認失聯前已完成的動作不能倒轉或宣稱被阻止；本期保證的是確認失聯後不再下達後續動作，須在各 phase 分別驗收。
 

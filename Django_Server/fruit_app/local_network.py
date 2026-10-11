@@ -172,15 +172,19 @@ class LocalNetwork:
         self._checked_at = time.monotonic()
         if reason:
             if self.selection:
+                self._close_discovery()
                 self.revision += 1
             self.selection = None
             self._reason = reason
             self._invalidate_diagnostics()
             return
         if self.selection and self.selection not in rows:
-            self.selection = None
+            replacements = [row for row in rows
+                            if row['interface_id'] == self.selection['interface_id']]
+            self._close_discovery()
+            self.selection = replacements[0].copy() if len(replacements) == 1 else None
             self.revision += 1
-            self._reason = 'network_selection_stale'
+            self._reason = None if self.selection else 'network_selection_stale'
             self._invalidate_diagnostics()
         if not rows:
             self._reason = 'no_connected_network'
@@ -188,14 +192,19 @@ class LocalNetwork:
             self._reason = 'network_selection_required'
 
     def _monitor(self):
+        from . import views
         while not self._stop.is_set():
             started = time.monotonic()
             with self._lock:
                 revision = self.revision
             rows, reason = self._read_inventory()
-            with self._lock:
-                if revision == self.revision:
-                    self._apply_inventory(rows, reason)
+            with views.STATE_LOCK:
+                with self._lock:
+                    if revision == self.revision:
+                        if self.selection and (reason or self.selection not in rows):
+                            views._lock_network('network_changed')
+                        self._apply_inventory(rows, reason)
+                views._check_network_safety()
             self._sync_discovery()
             self._stop.wait(max(0, 1 - (time.monotonic() - started)))
 
@@ -217,6 +226,7 @@ class LocalNetwork:
                 raise NetworkError('network_selection_stale')
             if self.port is None:
                 raise NetworkError('network_server_not_serving')
+            self._close_discovery()
             self.selection = candidate.copy()
             self.revision += 1
             self._reason = None
@@ -328,6 +338,14 @@ def network_required(view=None, *, cleanup=False):
         return partial(network_required, cleanup=cleanup)
     @wraps(view)
     def guarded(request, *args, **kwargs):
+        from . import views
+        views._ensure_dataset_structure()
+        with views.STATE_LOCK:
+            views._check_network_safety()
+            if (not cleanup and request.path != '/api/photo_capture/'
+                    and not request.path.startswith('/api/esp32')
+                    and views.APP_STATE.get('network_recovery')):
+                return network_error(views._network_recovery_reason())
         reason = NETWORK.request_reason(request, cleanup=cleanup)
         if reason:
             return network_error(reason)

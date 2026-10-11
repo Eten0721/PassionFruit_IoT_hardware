@@ -23,7 +23,7 @@ struct FakeMDNS {
     if (name == "scheme") return "https";
     if (name == "info_path") return "/api/network/info/";
     if (name == "server_run_id") return "12345678-1234-1234-1234-123456789abc";
-    if (name == "network_revision") return "1";
+    if (name == "network_revision") return String(Fake::infoRevision);
     return "";
   }
 };

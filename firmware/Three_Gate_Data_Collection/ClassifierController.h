@@ -31,7 +31,9 @@ class ClassifierController {
           reason("") {}
   };
 
-  void begin(uint32_t currentTime, GateController& gates);
+  void begin(uint32_t currentTime, GateController& gates, bool home = true);
+  void abort();
+  void home(uint32_t currentTime);
   void tick(uint32_t currentTime);
   bool start(
       int commandId,

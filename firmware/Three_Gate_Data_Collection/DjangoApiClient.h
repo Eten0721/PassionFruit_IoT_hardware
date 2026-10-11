@@ -21,6 +21,9 @@ class DjangoApiClient {
   void begin();
   bool wifiConnected() const;
   bool takeResult(HttpResult& result);
+  void setControlState(uint32_t generation, bool interlocked, const String& motion, bool setupAllowed);
+  bool heartbeat();
+  static String controlValue(const String& body, const String& key);
 
   // Submit once, then takeResult before submitting again; false means not queued.
   bool pollCommand(
@@ -62,6 +65,9 @@ class DjangoApiClient {
     String body;
     uint32_t timeoutMS = 0;
     bool post = false;
+    uint32_t sentAt = 0;
+    uint32_t generation = 0;
+    String controlState;
   };
 
   // Release/acquire transfers ownership of the String payloads between tasks.
@@ -77,6 +83,7 @@ class DjangoApiClient {
   HTTPClient http_;
   bool wifiAttemptInProgress_;
   bool wifiWasConnected_;
+  String wifiAddress_;
   uint32_t wifiAttemptStartedAt_;
   uint32_t nextWiFiAttemptAt_;
   String activeOrigin_;
@@ -94,6 +101,8 @@ class DjangoApiClient {
   bool initialDiscoveryComplete_ = false;
   bool conflictDetected_ = false;
   bool manualAttempted_ = false;
+  uint32_t controlGeneration_ = 0;
+  String controlState_;
 
   bool ensureController(uint32_t currentTime);
   bool tryManualController();

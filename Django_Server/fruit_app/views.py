@@ -7,7 +7,7 @@ import shutil
 import threading
 import time
 from datetime import datetime
-from functools import cache
+from functools import cache, wraps
 from pathlib import Path
 
 from django.conf import settings
@@ -101,7 +101,7 @@ CAPTURE_TIMING_FIELD_UNITS = {
     'feeder_stop_us': 'us',
     'feeder_drive_us': 'us',
 }
-ESP32_ONLINE_WINDOW_SECONDS = 20
+ESP32_ONLINE_WINDOW_SECONDS = 6
 ESP32_START_TIMEOUT_SECONDS = 10
 HARDWARE_STEP_TIMEOUT_SECONDS = 20
 CAMERA_UPLOAD_TIMEOUT_SECONDS = 45
@@ -283,8 +283,11 @@ def network_api(request):
         return local_network.network_error('network_selection_invalid', status=400)
     _ensure_dataset_structure()
     with STATE_LOCK:
+        _check_network_safety()
         _sync_active_state_with_filesystem()
         reason = _options_disabled_reason()
+        if APP_STATE.get('network_recovery') and not _network_operation_active():
+            reason = None
         if reason:
             return local_network.network_error(reason)
         try:
@@ -293,6 +296,9 @@ def network_api(request):
             return local_network.network_error(exc.reason)
         APP_STATE['camera_last_live_frame_at'] = None
         APP_STATE['camera_last_live_frame_monotonic'] = None
+        APP_STATE['network_identity'] = (payload['server_run_id'], payload['network_revision'])
+        APP_STATE['esp32_network_capable'] = False
+        APP_STATE['last_esp32_poll_monotonic'] = None
         return _no_store_response(JsonResponse(payload))
 
 
@@ -335,11 +341,303 @@ def network_qr_api(request):
 
 
 def _network_hardware_disabled_reason():
-    # shortcut: hardware stays disabled until the lease/interlock slice is complete.
-    return 'network_capability_missing'
+    if not APP_STATE.get('esp32_network_capable'):
+        return 'network_capability_missing'
+    return None
 
 
+def _network_recovery_path():
+    return Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).with_name('network_recovery.json')
+
+
+def _network_recovery_reason():
+    if APP_STATE.get('network_persist_failed'):
+        return 'recovery_persist_failed'
+    recovery = APP_STATE.get('network_recovery') or {}
+    return recovery.get('reason', 'network_recovery_required')
+
+
+def _network_operation_active():
+    return bool(APP_STATE.get('active_fruit_id') or APP_STATE.get('motor_command')
+                or APP_STATE.get('auto_run_enabled') or APP_STATE.get('auto_run_finishing')
+                or _sorter_busy())
+
+
+def _persist_network_recovery():
+    try:
+        _write_recovery_payload(_network_recovery_path(), APP_STATE['network_recovery'])
+        APP_STATE['network_persist_failed'] = False
+        return True
+    except OSError:
+        APP_STATE['network_persist_failed'] = True
+        APP_STATE['last_error_reason'] = 'recovery_persist_failed'
+        return False
+
+
+def _lock_network(reason, *, force=False):
+    if not force and not _network_operation_active():
+        return
+    recovery = APP_STATE.get('network_recovery')
+    if recovery and recovery.get('phase') == 'locked':
+        if reason == 'recovery_persist_failed':
+            recovery['reason'] = reason
+            APP_STATE['last_error_reason'] = reason
+            _persist_network_recovery()
+        return
+    network = local_network.NETWORK.snapshot()
+    command = APP_STATE.get('motor_command') or {}
+    APP_STATE['recovery_generation'] = APP_STATE.get('recovery_generation', 0) + 1
+    APP_STATE['network_recovery'] = {
+        'generation': APP_STATE['recovery_generation'], 'phase': 'locked', 'reason': reason,
+        'fruit_id': APP_STATE.get('active_fruit_id') or APP_STATE.get('sorter_fruit_id'),
+        'hardware_mode': APP_STATE.get('session_hardware_mode') if APP_STATE.get('active_fruit_id')
+        else APP_STATE.get('hardware_mode'),
+        'boot_id': APP_STATE.get('esp32_boot_id'),
+        'server_run_id': network['server_run_id'], 'network_revision': network['network_revision'],
+        'command_id': command.get('command_id'), 'command': command.get('command'),
+    }
+    _disable_auto_run()
+    APP_STATE['auto_run_finishing'] = False
+    APP_STATE['pending_capture'] = False
+    APP_STATE['capture_token'] = secrets.randbits(48)
+    APP_STATE['motor_command'] = None
+    APP_STATE['gate3_waiting_boot_id'] = None
+    APP_STATE['auto_run_recovery_reason'] = reason
+    APP_STATE['last_error_reason'] = reason
+    APP_STATE['status'] = 'error'
+    if _sorter_busy():
+        APP_STATE['sorter_status'] = 'failed'
+        APP_STATE['sorter_deadline_monotonic'] = None
+    _clear_wait_timer()
+    APP_STATE['message'] = ('失聯安全鎖已啟用。請刪除或隔離本輪暫存資料，依斷電程序移除果實，'
+                            '確認手已離開並重新加入網路後，再明確確認復原。')
+    _persist_network_recovery()
+    _record_transition('network_interlocked', details={'reason': reason})
+
+
+def _check_network_safety():
+    network = local_network.NETWORK.snapshot()
+    identity = (network['server_run_id'], network['network_revision'])
+    previous = APP_STATE.get('network_identity')
+    if previous is not None and identity != previous:
+        _lock_network('network_changed')
+        APP_STATE['camera_last_live_frame_monotonic'] = None
+        APP_STATE['camera_last_live_frame_at'] = None
+        APP_STATE['last_esp32_poll_monotonic'] = None
+        APP_STATE['esp32_network_capable'] = False
+    APP_STATE['network_identity'] = identity
+    if not network['selected']:
+        _lock_network('network_selection_required')
+    if not _network_operation_active() and not APP_STATE.get('network_recovery'):
+        return
+    now = time.monotonic()
+    last_camera = APP_STATE.get('camera_last_live_frame_monotonic')
+    if last_camera is not None and now - last_camera >= 10:
+        _lock_network('camera_connection_lost', force=True)
+    if APP_STATE.get('hardware_mode') != 'photo_only':
+        last_device = APP_STATE.get('last_esp32_poll_monotonic')
+        if last_device is not None and now - last_device >= 6:
+            _lock_network('esp32_connection_lost', force=True)
+    recovery = APP_STATE.get('network_recovery') or {}
+    deadline = recovery.get('deadline')
+    if deadline is not None and now >= deadline:
+        _lock_network('network_recovery_ack_timeout', force=True)
+
+
+def monitor_network_safety(stop):
+    _ensure_dataset_structure()
+    while not stop.is_set():
+        with STATE_LOCK:
+            _check_network_safety()
+        stop.wait(1)
+
+
+def _control_fields(data=None):
+    network = local_network.NETWORK.snapshot()
+    allowed = network['selected'] and not APP_STATE.get('network_recovery')
+    if data is not None:
+        allowed = allowed and _device_identity_matches(data)
+    return {
+        'server_run_id': network['server_run_id'], 'network_revision': network['network_revision'],
+        'recovery_generation': APP_STATE.get('recovery_generation', 0),
+        'boot_id': data.get('boot_id', '') if data is not None else APP_STATE.get('esp32_boot_id', ''),
+        'control_allowed': bool(allowed), 'control_lease_ms': 6000 if allowed else 0,
+        'recovery_allowed': bool(APP_STATE.get('network_recovery')
+                                 and APP_STATE['network_recovery'].get('phase') in ('homing', 'committing')
+                                 and data is not None and _device_identity_matches(data)),
+    }
+
+
+def _device_identity_matches(data):
+    network = local_network.NETWORK.snapshot()
+    return (data.get('network_capability') == 'local_network_v1'
+            and isinstance(data.get('boot_id'), str) and 1 <= len(data['boot_id']) <= 96
+            and data.get('server_run_id') == network['server_run_id']
+            and str(data.get('network_revision')) == str(network['network_revision'])
+            and str(data.get('recovery_generation')) == str(APP_STATE.get('recovery_generation', 0)))
+
+
+def control_response(view):
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        response = view(request, *args, **kwargs)
+        if request.GET.get('diagnostic') == '1':
+            return response
+        data = request.GET if request.method == 'GET' else _request_data(request)
+        if data.get('event') in ('network_probe', 'network_discovery_status'):
+            return response
+        with STATE_LOCK:
+            fields = _control_fields(data)
+            if response.status_code >= 400:
+                fields.update(control_allowed=False, control_lease_ms=0)
+            if response.get('Content-Type', '').startswith('text/plain'):
+                response.content += ('\n' + '\n'.join(f'{key}={int(value) if isinstance(value, bool) else value}'
+                                                      for key, value in fields.items()) + '\n').encode()
+            else:
+                payload = json.loads(response.content)
+                payload.update(fields)
+                response = JsonResponse(payload, status=response.status_code)
+        return _no_store_response(response)
+    return wrapped
+
+
+def _observe_device(data):
+    _check_network_safety()  # Reconnection cannot erase the expired heartbeat.
+    if data.get('network_capability') != 'local_network_v1':
+        return 'network_capability_missing'
+    reported_generation = _safe_int(data.get('recovery_generation'))
+    current_generation = APP_STATE.get('recovery_generation', 0)
+    if (reported_generation is not None and reported_generation > current_generation
+            and _safe_bool(data.get('network_interlocked')) is True
+            and _device_identity_matches({**dict(data.items()), 'recovery_generation': current_generation})):
+        # Recover a lost server marker conservatively; this never grants motion.
+        _lock_network('esp32_network_interlocked', force=True)
+        APP_STATE['recovery_generation'] = reported_generation
+        APP_STATE['network_recovery']['generation'] = reported_generation
+        _persist_network_recovery()
+    if not _device_identity_matches(data):
+        return 'network_identity_mismatch'
+    previous_boot = APP_STATE.get('esp32_boot_id')
+    if previous_boot and previous_boot != data['boot_id'] and _network_operation_active():
+        _lock_network('esp32_restarted', force=True)
+        return 'network_recovery_required'
+    APP_STATE['esp32_boot_id'] = data['boot_id']
+    APP_STATE['esp32_network_capable'] = True
+    APP_STATE['last_esp32_poll_monotonic'] = time.monotonic()
+    APP_STATE['last_esp32_poll_at'] = _now_string()
+    APP_STATE['esp32_interlocked'] = _safe_bool(data.get('network_interlocked')) is True
+    APP_STATE['esp32_motion'] = data.get('motion', 'unknown')
+    APP_STATE['esp32_setup_allowed'] = _safe_bool(data.get('setup_allowed')) is True
+    receipt = APP_STATE.get('network_recovery_receipt') or {}
+    completing_receipt = (
+        data.get('event') in ('network_recovery_completed', 'network_recovery_committed')
+        and receipt == {'generation': _safe_int(data.get('recovery_generation')),
+                        'command_id': _safe_int(data.get('command_id')), 'boot_id': data.get('boot_id')}
+    )
+    if APP_STATE['esp32_interlocked'] and not APP_STATE.get('network_recovery') and not completing_receipt:
+        _lock_network('esp32_network_interlocked', force=True)
+    return None
+
+
+@require_GET
+@control_response
 @network_required
+def esp32_heartbeat_api(request):
+    with STATE_LOCK:
+        reason = _observe_device(request.GET)
+        if reason:
+            return local_network.network_error(reason)
+        return JsonResponse({'ok': True, 'command': 'none', 'command_id': 0})
+
+
+def _recovery_can_confirm():
+    return (not APP_STATE.get('active_fruit_id') and not APP_STATE.get('dataset_operation')
+            and not _has_unclassified_temp_fruit() and not APP_STATE.get('motor_command')
+            and local_network.NETWORK.snapshot()['selected'] and _camera_is_ready()
+            and (APP_STATE.get('hardware_mode') == 'photo_only'
+                 or (_esp32_is_online() and APP_STATE.get('esp32_network_capable'))))
+
+
+def _confirm_network_recovery(data):
+    recovery = APP_STATE['network_recovery']
+    if data.get('recovery_confirmed') is not True:
+        return _json_error('請完成資料清理與人工安全復原後明確確認。', status=409,
+                           reason='network_recovery_confirmation_required')
+    if not _recovery_can_confirm():
+        return _json_error('請先清理本輪資料並重新連接相機與 ESP32。', status=409,
+                           reason='network_recovery_not_ready')
+    if APP_STATE.get('network_persist_failed') and not _persist_network_recovery():
+        return local_network.network_error('recovery_persist_failed', status=503)
+    if APP_STATE.get('hardware_mode') == 'photo_only':
+        response = _finish_network_recovery()
+        return response
+    try:
+        command = _set_motor_command('recover_network')
+    except CaptureCommandError as exc:
+        return _json_error(exc.message, status=exc.status, reason=exc.reason)
+    recovery.update(phase='homing', recovery_command_id=command['command_id'],
+                    recovery_boot_id=APP_STATE['esp32_boot_id'], deadline=time.monotonic() + 15)
+    if not _persist_network_recovery():
+        APP_STATE['motor_command'] = None
+        recovery['phase'] = 'locked'
+        return local_network.network_error('recovery_persist_failed', status=503)
+    return JsonResponse(_state_payload(extra={'ok': True, 'recovery_pending': True}))
+
+
+def _finish_network_recovery(receipt=None):
+    try:
+        _clear_sorter_recovery_marker()
+        _clear_gate3_recovery_marker()
+        _write_recovery_payload(_network_recovery_path(), {
+            'phase': 'clear', 'generation': APP_STATE.get('recovery_generation', 0), 'receipt': receipt,
+        })
+    except OSError:
+        APP_STATE['network_persist_failed'] = True
+        APP_STATE['last_error_reason'] = 'recovery_persist_failed'
+        return local_network.network_error('recovery_persist_failed', status=503)
+    APP_STATE['network_recovery'] = None
+    APP_STATE['network_recovery_receipt'] = receipt
+    APP_STATE['network_persist_failed'] = False
+    APP_STATE['motor_command'] = None
+    APP_STATE['auto_run_recovery_reason'] = None
+    APP_STATE['last_error_reason'] = None
+    APP_STATE['status'] = 'idle'
+    APP_STATE['esp32_feeder_state'] = 'idle'
+    _reset_sorter_state()
+    return None
+
+
+def _network_recovery_report(data):
+    recovery = APP_STATE.get('network_recovery') or {}
+    event = data.get('event')
+    receipt = APP_STATE.get('network_recovery_receipt') or {}
+    if not recovery and receipt == {'generation': _safe_int(data.get('recovery_generation')),
+                                    'command_id': _safe_int(data.get('command_id')),
+                                    'boot_id': data.get('boot_id')}:
+        return JsonResponse({'ok': True, 'duplicate': True, 'recovery_committed': True, 'recovery_commit': True})
+    if (not recovery or recovery.get('phase') not in ('homing', 'committing')
+            or recovery.get('recovery_command_id') != _safe_int(data.get('command_id'))
+            or recovery.get('recovery_boot_id') != data.get('boot_id')):
+        return local_network.network_error('network_recovery_ack_mismatch')
+    if event == 'network_recovery_completed':
+        recovery['phase'] = 'committing'
+        if not _persist_network_recovery():
+            return local_network.network_error('recovery_persist_failed', status=503)
+        return JsonResponse({'ok': True, 'recovery_commit': True})
+    if event != 'network_recovery_committed' or recovery.get('phase') != 'committing':
+        return local_network.network_error('network_recovery_ack_mismatch')
+    receipt = {'generation': recovery['generation'], 'command_id': recovery['recovery_command_id'],
+               'boot_id': data['boot_id']}
+    response = _finish_network_recovery(receipt)
+    if response is not None:
+        return response
+    if _auto_run_disabled_reason() is None:
+        APP_STATE['auto_run_enabled'] = True
+        _queue_production_feed()
+    return JsonResponse({'ok': True, 'recovery_committed': True})
+
+
+@network_required(cleanup=True)
 def camera_view(request):
     _ensure_dataset_structure()
     return _no_store_response(render(request, 'camera.html'))
@@ -355,6 +653,7 @@ def state_api(request):
     _ensure_dataset_structure()
     _retry_deferred_discards_if_due()
     with STATE_LOCK:
+        _check_network_safety()
         _sync_active_state_with_filesystem()
         payload = _state_payload()
     return _no_store_response(JsonResponse(payload))
@@ -365,6 +664,7 @@ def camera_state_api(request):
     """Return only the fields needed by the high-frequency camera poller."""
     _ensure_dataset_structure()
     with STATE_LOCK:
+        _check_network_safety()
         reason = local_network.NETWORK.request_reason(request)
         if reason and request.GET.get('camera_ready') == '1':
             return local_network.network_error(reason)
@@ -636,6 +936,8 @@ def _photo_only_session():
 
 
 def _options_disabled_reason():
+    if APP_STATE.get('network_recovery'):
+        return _network_recovery_reason()
     if APP_STATE.get('detection_status') in ('pending', 'running'):
         return 'detection_in_progress'
     if APP_STATE.get('dataset_operation'):
@@ -725,10 +1027,16 @@ def _request_photo_capture(station_index):
 def photo_capture_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
+        if APP_STATE.get('hardware_mode') != 'photo_only':
+            return _json_error('目前無法開始純拍攝。', status=409, reason='photo_only_required')
         reason = local_network.NETWORK.request_reason(request)
         if reason:
             return local_network.network_error(reason)
         _sync_active_state_with_filesystem()
+        if APP_STATE.get('network_recovery'):
+            response = _confirm_network_recovery(_request_data(request))
+            if response is not None:
+                return response
         reason = _photo_capture_disabled_reason()
         if reason:
             return _json_error('目前無法開始純拍攝。', status=409, reason=reason)
@@ -775,6 +1083,7 @@ def auto_run_api(request):
         )
 
     with STATE_LOCK:
+        _check_network_safety()
         reason = local_network.NETWORK.request_reason(request, cleanup=True)
         if reason:
             return local_network.network_error(reason)
@@ -785,6 +1094,8 @@ def auto_run_api(request):
         _sync_active_state_with_filesystem()
         if enabled and APP_STATE.get('hardware_mode') == 'photo_only':
             return _json_error('純拍攝不啟用自動送料。', status=409, reason='hardware_mode_required')
+        if enabled and APP_STATE.get('network_recovery'):
+            return _confirm_network_recovery(data)
         if not enabled:
             waiting_without_fruit = (
                 APP_STATE.get('status') == 'waiting_fruit'
@@ -871,6 +1182,7 @@ def auto_run_api(request):
 
 @csrf_exempt
 @require_POST
+@control_response
 @network_required
 def esp32_trigger_api(request):
     _ensure_dataset_structure()
@@ -878,9 +1190,11 @@ def esp32_trigger_api(request):
         reason = local_network.NETWORK.request_reason(request)
         if reason:
             return local_network.network_error(reason)
-        reason = _network_hardware_disabled_reason()
+        reason = _observe_device(_request_data(request))
         if reason:
             return local_network.network_error(reason)
+        if APP_STATE.get('network_recovery'):
+            return local_network.network_error(_network_recovery_reason())
         APP_STATE['last_esp32_report_at'] = _now_string()
         try:
             payload = _create_capture_session(source='esp32')
@@ -899,6 +1213,7 @@ def esp32_trigger_api(request):
 
 
 @require_GET
+@control_response
 @network_required
 def esp32_command_api(request):
     if request.GET.get('diagnostic') == '1':
@@ -908,9 +1223,14 @@ def esp32_command_api(request):
         reason = local_network.NETWORK.request_reason(request)
         if reason:
             return local_network.network_error(reason)
-        reason = _network_hardware_disabled_reason()
+        reason = _observe_device(request.GET)
         if reason:
             return local_network.network_error(reason)
+        if APP_STATE.get('network_recovery'):
+            command = APP_STATE.get('motor_command') or {}
+            payload = (command if command.get('command') == 'recover_network'
+                       else {'command': 'none', 'command_id': 0})
+            return _network_text_response(payload) if request.GET.get('format') == 'text' else JsonResponse(payload)
         APP_STATE['last_esp32_poll_at'] = _now_string()
         APP_STATE['last_esp32_poll_monotonic'] = time.monotonic()
         previous_boot_id = APP_STATE.get('esp32_boot_id')
@@ -1084,6 +1404,7 @@ def esp32_command_api(request):
 
 @csrf_exempt
 @require_POST
+@control_response
 @network_required
 def esp32_report_api(request):
     data = _request_data(request)
@@ -1099,9 +1420,15 @@ def esp32_report_api(request):
         reason = local_network.NETWORK.request_reason(request)
         if reason:
             return local_network.network_error(reason)
-        reason = _network_hardware_disabled_reason()
+        reason = _observe_device(data)
         if reason:
             return local_network.network_error(reason)
+        if event in ('network_recovery_completed', 'network_recovery_committed'):
+            return _network_recovery_report(data)
+        if APP_STATE.get('network_recovery'):
+            if event == 'network_recovery_persist_failed':
+                _lock_network('recovery_persist_failed', force=True)
+            return JsonResponse({'ok': True, 'ignored': True, 'reason': _network_recovery_reason()})
         APP_STATE['last_esp32_report_at'] = _now_string()
         if APP_STATE.get('hardware_mode') == 'photo_only':
             return JsonResponse(_compact_esp32_payload({
@@ -2051,6 +2378,10 @@ def webrtc_state_api(request):
 
 def reset_runtime_state_for_tests():
     with STATE_LOCK:
+        for key in ('network_recovery', 'network_identity', 'network_persist_failed',
+                    'esp32_network_capable', 'esp32_interlocked', 'esp32_motion',
+                    'esp32_setup_allowed', 'recovery_generation', 'network_recovery_receipt'):
+            APP_STATE.pop(key, None)
         APP_STATE.update({
             'work_mode': 'collection',
             'session_work_mode': 'collection',
@@ -2201,6 +2532,25 @@ def _initialise_dataset_structure(root):
     _ensure_metadata_header()
     _restore_gate3_recovery_marker()
     _restore_sorter_recovery_marker()
+    path = _network_recovery_path()
+    if path.exists() and not APP_STATE.get('network_recovery'):
+        try:
+            payload = json.loads(path.read_text(encoding='utf-8'))
+            if not isinstance(payload, dict) or not isinstance(payload.get('generation'), int) or payload['generation'] < 1:
+                raise ValueError('invalid network recovery marker')
+        except (OSError, ValueError):
+            payload = {'generation': 1, 'reason': 'recovery_persist_failed', 'hardware_mode': 'hardware'}
+        if payload.get('phase') == 'clear':
+            APP_STATE['recovery_generation'] = payload['generation']
+            APP_STATE['network_recovery_receipt'] = payload.get('receipt')
+            return
+        APP_STATE['network_recovery'] = {**payload, 'phase': 'locked', 'deadline': None}
+        APP_STATE['recovery_generation'] = payload['generation']
+        APP_STATE['hardware_mode'] = payload.get('hardware_mode', 'hardware')
+        APP_STATE['session_hardware_mode'] = APP_STATE['hardware_mode']
+        APP_STATE['auto_run_recovery_reason'] = payload.get('reason', 'network_recovery_required')
+        APP_STATE['status'] = 'error'
+        APP_STATE['message'] = '已恢復失聯安全鎖。請清理本輪資料、人工移除果實並明確確認復原。'
 
 
 def _write_recovery_payload(path, payload):
@@ -2614,6 +2964,8 @@ def _append_metadata(fruit_id, label, capture_time, relative_path, note, fruit_d
 
 
 def _create_capture_session(source):
+    if not _camera_is_ready():
+        raise CaptureCommandError('相機尚未就緒。', reason='camera_not_ready')
     if APP_STATE.get('hardware_mode') == 'photo_only':
         raise CaptureCommandError('純拍攝不接受硬體觸發。', reason='hardware_mode_required')
     _sync_active_state_with_filesystem()
@@ -3159,6 +3511,9 @@ def _set_motor_command(
     classification_code=None,
     feed_context=None,
 ):
+    _check_network_safety()
+    if APP_STATE.get('network_recovery') and command != 'recover_network':
+        raise CaptureCommandError('網路安全鎖尚未解除。', reason=_network_recovery_reason())
     if APP_STATE.get('hardware_mode') == 'photo_only':
         raise CaptureCommandError('純拍攝禁止馬達命令。', reason='hardware_mode_required')
     if APP_STATE.get('motor_command'):
@@ -3344,6 +3699,9 @@ def _esp32_command_payload():
         'server_status': APP_STATE['status'],
     }
     command = None if APP_STATE.get('dataset_operation') else APP_STATE.get('motor_command')
+    if command and command['command'] in ('start_sequence', 'feed_one') and not _camera_is_ready():
+        if command.get('feed_context') != 'calibration':
+            command = None
     if command:
         if command['command'] == 'classify_fruit':
             return {
@@ -3949,6 +4307,8 @@ def _operator_alert_payload():
 
 
 def _classification_disabled_reason(active_fruit_id, image_total):
+    if APP_STATE.get('network_recovery'):
+        return _network_recovery_reason()
     if APP_STATE.get('session_work_mode') == 'detection':
         return 'detection_mode'
     if APP_STATE.get('dataset_operation'):
@@ -4107,6 +4467,18 @@ def _state_payload(extra=None):
     if not _esp32_is_online():
         network['setup'] = {'status': 'unknown', 'reason': 'esp32_offline'}
     payload['network'] = network
+    recovery = APP_STATE.get('network_recovery')
+    payload['network_recovery'] = recovery
+    payload['recovery_generation'] = APP_STATE.get('recovery_generation', 0)
+    if recovery:
+        payload.update(can_recapture=False, can_classify=False, pending_capture=False,
+                       capture_requested=False,
+                       can_start_auto_run=_recovery_can_confirm() and APP_STATE['hardware_mode'] == 'hardware',
+                       can_start_photo_capture=_recovery_can_confirm() and APP_STATE['hardware_mode'] == 'photo_only')
+        network['selection_allowed'] = not _network_operation_active() and not APP_STATE.get('motor_command')
+    if _esp32_is_online():
+        network['setup'] = {'status': 'available' if APP_STATE.get('esp32_setup_allowed') else 'blocked',
+                            'reason': None if APP_STATE.get('esp32_setup_allowed') else 'network_recovery_required'}
     if not network['selected']:
         payload['camera_ready'] = False
         for key in ('can_change_options', 'can_start_photo_capture', 'can_classify',
@@ -4183,6 +4555,19 @@ def _restore_capture_options(fruit_dir):
 
 
 def _sync_active_state_with_filesystem():
+    if APP_STATE.get('network_recovery'):
+        fruit_id = APP_STATE.get('active_fruit_id')
+        if fruit_id and not (_temp_dir() / fruit_id).exists():
+            APP_STATE['active_fruit_id'] = None
+        if not APP_STATE.get('active_fruit_id'):
+            pending = sorted(path for path in _temp_dir().glob('fruit_*')
+                             if path.is_dir() and FRUIT_ID_PATTERN.match(path.name)
+                             and not _is_deferred_discard_path(path))
+            if pending:
+                APP_STATE['active_fruit_id'] = pending[0].name
+        APP_STATE['pending_capture'] = False
+        APP_STATE['status'] = 'error'
+        return
     _apply_session_timeouts()
     if APP_STATE.get('dataset_operation'):
         return

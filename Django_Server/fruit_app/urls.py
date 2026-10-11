@@ -25,6 +25,7 @@ urlpatterns = [
     ),
     path('api/esp32_trigger/', views.esp32_trigger_api, name='esp32_trigger_api'),
     path('api/esp32/command/', views.esp32_command_api, name='esp32_command_api'),
+    path('api/esp32/heartbeat/', views.esp32_heartbeat_api, name='esp32_heartbeat_api'),
     path('api/esp32/report/', views.esp32_report_api, name='esp32_report_api'),
     path('api/recapture/', views.recapture_api, name='recapture_api'),
     path('api/capture_started/', views.capture_started_api, name='capture_started_api'),

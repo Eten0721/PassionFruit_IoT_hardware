@@ -92,9 +92,23 @@ void DjangoApiClient::runWorker() {
     }
     if (requestState_.load(std::memory_order_acquire) == RequestState::kQueued) {
       requestState_.store(RequestState::kRunning, std::memory_order_relaxed);
+      const String identity = networkIdentity() + "&network_capability=local_network_v1&" + request_.controlState;
+      const String run = serverRunId_;
+      const uint32_t revision = networkRevision_;
       result_ = request_.post
-          ? executePost((controllerOrigin_ + request_.url).c_str(), request_.body, request_.timeoutMS)
-          : executeGet((controllerOrigin_ + request_.url).c_str(), request_.timeoutMS);
+          ? executePost((controllerOrigin_ + request_.url).c_str(), request_.body + "&" + identity, request_.timeoutMS)
+          : executeGet((controllerOrigin_ + request_.url + "&" + identity).c_str(), request_.timeoutMS);
+      result_.sentAt = request_.sentAt;
+      result_.generation = request_.generation;
+      result_.serverRunId = run;
+      result_.networkRevision = revision;
+      result_.bootId = bootId_;
+      if (result_.isSuccess() && controlValue(result_.body, "server_run_id") == run
+          && controlValue(result_.body, "network_revision") == String(revision)) {
+        lastProbeSuccessAt_ = millis();
+      } else if (millis() - lastProbeSuccessAt_ >= 6000UL) {
+        resetController(millis());
+      }
       requestState_.store(RequestState::kCompleted, std::memory_order_release);
     }
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -336,6 +350,9 @@ bool DjangoApiClient::submit(
   request_.body = body;
   request_.timeoutMS = timeoutMS;
   request_.post = post;
+  request_.sentAt = millis();
+  request_.generation = controlGeneration_;
+  request_.controlState = controlState_;
   requestState_.store(RequestState::kQueued, std::memory_order_release);
   return true;
 }
@@ -349,15 +366,37 @@ bool DjangoApiClient::takeResult(HttpResult& result) {
   return true;
 }
 
+void DjangoApiClient::setControlState(uint32_t generation, bool interlocked, const String& motion, bool setupAllowed) {
+  controlGeneration_ = generation;
+  controlState_ = "recovery_generation=" + String(generation) + "&network_interlocked=" + String(interlocked ? 1 : 0)
+      + "&motion=" + encodeFormValue(motion) + "&setup_allowed=" + String(setupAllowed ? 1 : 0);
+}
+
+bool DjangoApiClient::heartbeat() {
+  return submit("/api/esp32/heartbeat/?format=text", "", FirmwareConfig::kCommandHttpTimeoutMS, false);
+}
+
+String DjangoApiClient::controlValue(const String& body, const String& key) {
+  if (!body.startsWith("{")) return readTextValue(body, key);
+  const String value = readJsonString(body, key);
+  if (value.length() > 0) return value;
+  const int number = readJsonInt(body, key, -1);
+  if (number >= 0) return String(number);
+  if (body.indexOf("\"" + key + "\"") >= 0) return readJsonBool(body, key, false) ? "1" : "0";
+  return "";
+}
+
 bool DjangoApiClient::ensureWiFi(uint32_t currentTime) {
   if (WiFi.status() == WL_CONNECTED) {
-    if (!wifiWasConnected_) {
+    const String address = WiFi.localIP().toString();
+    if (!wifiWasConnected_ || address != wifiAddress_) {
       resetController(currentTime);
       Serial.print("Wi-Fi connected. IP: ");
       Serial.println(WiFi.localIP());
     }
     wifiAttemptInProgress_ = false;
     wifiWasConnected_ = true;
+    wifiAddress_ = address;
     wifiReady_.store(true, std::memory_order_release);
     return true;
   }
@@ -672,8 +711,9 @@ String DjangoApiClient::readJsonString(const String& body, const String& key) {
     return "";
   }
 
-  const int valueStart = body.indexOf('"', colonIndex + 1);
-  if (valueStart < 0) {
+  int valueStart = colonIndex + 1;
+  while (valueStart < body.length() && isspace(static_cast<unsigned char>(body.charAt(valueStart)))) ++valueStart;
+  if (valueStart >= body.length() || body.charAt(valueStart) != '"') {
     return "";
   }
   const int valueEnd = body.indexOf('"', valueStart + 1);
@@ -743,7 +783,7 @@ void DjangoApiClient::startWiFiAttempt(uint32_t currentTime) {
 HttpResult DjangoApiClient::executeGet(const char* url, uint32_t timeoutMS) {
   HttpResult result;
   const uint32_t startedAt = millis();
-  if (FirmwareConfig::kNetworkDiagnosticsOnly) secureClient_.boundRequest(timeoutMS * 4 + 1000UL);
+  secureClient_.boundRequest(timeoutMS * 4 + 1000UL);
   if (!wifiConnected()) {
     secureClient_.clearDiscoveryDeadline();
     result.statusCode = -4;
@@ -775,7 +815,7 @@ HttpResult DjangoApiClient::executePost(
     uint32_t timeoutMS) {
   HttpResult result;
   const uint32_t startedAt = millis();
-  if (FirmwareConfig::kNetworkDiagnosticsOnly) secureClient_.boundRequest(timeoutMS * 4 + 1000UL);
+  secureClient_.boundRequest(timeoutMS * 4 + 1000UL);
   if (!wifiConnected()) {
     secureClient_.clearDiscoveryDeadline();
     result.statusCode = -4;

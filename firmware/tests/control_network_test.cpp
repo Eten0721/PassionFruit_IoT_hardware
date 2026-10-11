@@ -61,6 +61,7 @@ static void holdWorker() {
 }
 
 static void delayedCommandKeepsReadingSensor() {
+  Fake::nvs.clear();
   Fake::reset();
   Fake::enqueue({200, "command=none\nauto_trigger_enabled=0\n", "", true});
   CaptureController controller;
@@ -76,6 +77,7 @@ static void delayedCommandKeepsReadingSensor() {
 
 static void stalledWorkerCannotDelayFeederStop(const std::string& reason, uint32_t initialTime = 100) {
   std::cout << "  " << reason << " start=" << initialTime << '\n';
+  Fake::nvs.clear();
   Fake::reset(initialTime);
   CaptureController controller;
   const uint32_t started = startFeed(controller);
@@ -105,6 +107,7 @@ static void stalledWorkerCannotDelayFeederStop(const std::string& reason, uint32
 }
 
 static void terminalReportRetryDoesNotRepeatFeed() {
+  Fake::nvs.clear();
   Fake::reset();
   CaptureController controller;
   const uint32_t started = startFeed(controller);
@@ -131,6 +134,7 @@ static void terminalReportRetryDoesNotRepeatFeed() {
 
 static void triggerRetriesRetainId(bool legacy) {
   std::cout << "  trigger legacy=" << legacy << '\n';
+  Fake::nvs.clear();
   Fake::reset();
   CaptureController controller;
   Fake::enqueue({200, "command=none\nauto_trigger_enabled=1\n"});
@@ -160,6 +164,7 @@ static void triggerRetriesRetainId(bool legacy) {
 }
 
 static void lateFruitWhileTerminalReportIsHeld() {
+  Fake::nvs.clear();
   Fake::reset();
   CaptureController controller;
   const uint32_t started = startFeed(controller, "production");
@@ -176,6 +181,7 @@ static void lateFruitWhileTerminalReportIsHeld() {
 }
 
 static void unavailableWorkerDoesNotStartMotion() {
+  Fake::nvs.clear();
   Fake::reset();
   Fake::failTaskCreation = true;
   CaptureController controller;
@@ -187,6 +193,7 @@ static void unavailableWorkerDoesNotStartMotion() {
 }
 
 static void captureAndSorterKeepExistingPhases() {
+  Fake::nvs.clear();
   Fake::reset();
   Fake::enqueue({200, command("start_sequence", 1)});
   Fake::enqueue({200, "{}", "", true});
@@ -228,6 +235,7 @@ static void captureAndSorterKeepExistingPhases() {
 }
 
 static void sensorLatencyCannotExpireNewLegacyWait(bool timeout) {
+  Fake::nvs.clear();
   Fake::reset();
   Fake::enqueue({200, "command=none\nauto_trigger_enabled=1\n"});
   Fake::enqueue({400, "{\"reason\":\"unknown_event\"}", "", false, "POST"});
@@ -268,6 +276,7 @@ int main() {
   captureAndSorterKeepExistingPhases();
   sensorLatencyCannotExpireNewLegacyWait(false);
   sensorLatencyCannotExpireNewLegacyWait(true);
+  Fake::nvs.clear();
   Fake::reset();
   std::cout << "PASS: 14 control/network scenarios; sensor latency, exact max-run, rollover, retries, gate/sorter phases and actuator ownership\n";
 }

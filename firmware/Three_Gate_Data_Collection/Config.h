@@ -47,8 +47,7 @@ constexpr uint32_t kReportHttpTimeoutMS = 5000UL;
 constexpr uint32_t kDiscoveryWindowMS = 15000UL;
 constexpr uint32_t kDiscoveryRetryMS = 5000UL;
 constexpr uint32_t kNetworkProbeIntervalMS = 1000UL;
-// shortcut: diagnostics only, enable control after the lease/interlock slice is complete.
-constexpr bool kNetworkDiagnosticsOnly = true;
+constexpr bool kNetworkDiagnosticsOnly = false;
 
 constexpr uint32_t kCommandFailureBackoffMinMS = 1500UL;
 constexpr uint32_t kCommandFailureBackoffMaxMS = 10000UL;

@@ -67,6 +67,7 @@ class PhotoOnlyFlowTests(SimpleTestCase):
     def test_mode_and_camera_guards_do_not_create_partial_sessions(self):
         self.assertEqual(self._post_json('/api/photo_capture/').json()['reason'], 'photo_only_required')
         self.select_photo_only()
+        existing.views.APP_STATE['camera_last_live_frame_monotonic'] = None
         self.assertEqual(self._post_json('/api/photo_capture/').json()['reason'], 'camera_not_ready')
         self.assertEqual(list((self.dataset_root / 'temp').iterdir()), [])
         self.assertEqual(self._post_json('/api/auto_run/', {'enabled': True}).status_code, 409)

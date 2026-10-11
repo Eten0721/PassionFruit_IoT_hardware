@@ -9,14 +9,29 @@ void CaptureController::begin() {
 
   sensor_.begin();
   gates_.begin();
-  gates_.moveAll(FirmwareConfig::kHomeAngle);
+  preferencesReady_ = preferences_.begin("pf-control", false);
+  const size_t storedSize = preferencesReady_ ? preferences_.getBytesLength("interlock") : 0;
+  if (storedSize > 0) {
+    if (storedSize != sizeof(interlockRecord_) ||
+        preferences_.getBytes("interlock", &interlockRecord_, sizeof(interlockRecord_)) != sizeof(interlockRecord_) ||
+        interlockRecord_.schema != 1 || interlockRecord_.phase > 3 ||
+        interlockRecord_.stopUS < 1400 || interlockRecord_.stopUS > 1600 || interlockRecord_.stopUS % 5 != 0) {
+      interlockRecord_ = InterlockRecord();
+      persistFailed_ = true;
+    }
+  }
+  persistFailed_ = persistFailed_ || !preferencesReady_;
+  networkInterlocked_ = !preferencesReady_ || persistFailed_ || interlockRecord_.phase != 0;
+  generation_ = interlockRecord_.generation;
+  if (!networkInterlocked_) gates_.moveAll(FirmwareConfig::kHomeAngle);
   feeder_.attach(FirmwareConfig::kFeederPin, 1000, 2000);
-  feeder_.writeMicroseconds(FirmwareConfig::kFeederStopUS);
+  feeder_.writeMicroseconds(interlockRecord_.stopUS);
 
   const uint32_t currentTime = millis();
-  classifier_.begin(currentTime, gates_);
+  classifier_.begin(currentTime, gates_, !networkInterlocked_);
   appliedTiming_ = defaultTimingConfig();
-  motionPhase_ = MotionPhase::kBootHomeSettling;
+  appliedTiming_.feederStopUS = interlockRecord_.stopUS;
+  motionPhase_ = networkInterlocked_ ? MotionPhase::kIdle : MotionPhase::kBootHomeSettling;
   phaseDeadlineAt_ = currentTime + appliedTiming_.servoSettleMS;
   lastCommandPollAt_ = currentTime - FirmwareConfig::kIdleCommandPollIntervalMS;
 
@@ -31,25 +46,41 @@ void CaptureController::begin() {
       FirmwareConfig::kEnableAutoStation1FastPath ? "enabled" : "disabled");
 
   api_.begin();
+  if (persistFailed_) queueReport("network_recovery_persist_failed", 0, 0, "recovery_persist_failed");
 }
 
 void CaptureController::tick() {
   uint32_t currentTime = millis();
 
-  classifier_.tick(currentTime);
-  collectClassifierResult();
-  advanceMotion(currentTime);
+  checkControlSafety(currentTime);
+  if (!networkInterlocked_ || recoveryRunning_) {
+    classifier_.tick(currentTime);
+    collectClassifierResult();
+    advanceMotion(currentTime);
+  }
   if (applyPendingTimingConfig(currentTime)) {
     return;
   }
   handleSensor(currentTime);
+  checkControlSafety(millis());
   collectNetworkResult(millis());
+  api_.setControlState(generation_, networkInterlocked_,
+      recoveryRunning_ ? "recover_network" : motionPhase_ == MotionPhase::kFeederDriving ? "feed_one"
+      : classifierCommandActive_ ? "classify_fruit" : sequenceActive_ ? "capture" : "idle",
+      !networkInterlocked_ && !operationStarted_ && !sequenceActive_ && !pendingReport_.active);
   currentTime = millis();
   checkStartSequenceWaitTimeout(currentTime);
   if (networkRequest_ != NetworkRequest::kNone) {
     return;
   }
 
+  if (!yieldAfterHeartbeat_ && (operationStarted_ || recoveryRunning_) && currentTime - lastHeartbeatAt_ >= 1000UL &&
+      api_.heartbeat()) {
+    lastHeartbeatAt_ = currentTime;
+    networkRequest_ = NetworkRequest::kHeartbeat;
+    return;
+  }
+  yieldAfterHeartbeat_ = false;
   if (flushPendingReport(currentTime)) {
     return;
   }
@@ -66,7 +97,11 @@ void CaptureController::collectNetworkResult(uint32_t currentTime) {
   }
   const NetworkRequest request = networkRequest_;
   networkRequest_ = NetworkRequest::kNone;
+  if (!FirmwareConfig::kNetworkDiagnosticsOnly && !acceptControlResult(result, currentTime)) return;
   switch (request) {
+    case NetworkRequest::kHeartbeat:
+      yieldAfterHeartbeat_ = true;
+      return;
     case NetworkRequest::kCommand:
       handleCommandResult(result, currentTime);
       return;
@@ -82,6 +117,142 @@ void CaptureController::collectNetworkResult(uint32_t currentTime) {
     case NetworkRequest::kNone:
       return;
   }
+}
+
+bool CaptureController::saveInterlock(uint8_t phase) {
+  interlockRecord_.phase = phase;
+  interlockRecord_.generation = generation_;
+  interlockRecord_.stopUS = hasActiveTiming_ ? activeTiming_.feederStopUS : appliedTiming_.feederStopUS;
+  const bool saved = preferencesReady_ &&
+      preferences_.putBytes("interlock", &interlockRecord_, sizeof(interlockRecord_)) == sizeof(interlockRecord_);
+  persistFailed_ = !saved;
+  return saved;
+}
+
+void CaptureController::lockNetwork(const String& reason) {
+  // The calibrated stop must precede cancellation and flash I/O.
+  feeder_.writeMicroseconds(hasActiveTiming_ ? activeTiming_.feederStopUS : appliedTiming_.feederStopUS);
+  classifier_.abort();
+  networkInterlocked_ = true;
+  recoveryRunning_ = false;
+  operationStarted_ = false;
+  sequenceActive_ = false;
+  classifierCommandActive_ = false;
+  autoTriggerEnabled_ = false;
+  autoTrigger_ = AutoTrigger();
+  hasPendingTiming_ = false;
+  resetCommandFailures();
+  lastCommandPollAt_ = millis() - FirmwareConfig::kIdleCommandPollIntervalMS;
+  awaitingFruitAfterTimeout_ = false;
+  motionPhase_ = MotionPhase::kIdle;
+  leaseDeadline_ = 0;
+  lastAcceptedSentAt_ = millis();
+  hasAcceptedSentAt_ = true;
+  recoveryPermission_ = false;
+  const int abortedId = activeCommand_.commandId;
+  saveInterlock(1);
+  pendingReport_ = PendingReport();
+  queueReport(persistFailed_ ? "network_recovery_persist_failed" : "network_aborted",
+      0, abortedId, persistFailed_ ? "recovery_persist_failed" : reason);
+}
+
+void CaptureController::checkControlSafety(uint32_t currentTime) {
+  const bool active = operationStarted_ || autoTriggerEnabled_ || recoveryRunning_;
+  const String ip = WiFi.localIP().toString();
+  if (active && localIP_.length() > 0 && ip != localIP_) lockNetwork("local_ip_changed");
+  localIP_ = ip;
+  if (WiFi.status() != WL_CONNECTED) {
+    if (linkLostAt_ == 0) linkLostAt_ = currentTime;
+  } else {
+    linkLostAt_ = 0;
+  }
+  if (!active) return;
+  if ((linkLostAt_ != 0 && currentTime - linkLostAt_ >= 1000UL) ||
+      leaseDeadline_ == 0 || timeReached(currentTime, leaseDeadline_)) {
+    lockNetwork(linkLostAt_ != 0 ? "wifi_link_lost" : "control_lease_expired");
+  }
+}
+
+bool CaptureController::acceptControlResult(const HttpResult& result, uint32_t currentTime) {
+  const String run = DjangoApiClient::controlValue(result.body, "server_run_id");
+  const String revision = DjangoApiClient::controlValue(result.body, "network_revision");
+  const String boot = DjangoApiClient::controlValue(result.body, "boot_id");
+  const String generation = DjangoApiClient::controlValue(result.body, "recovery_generation");
+  const String allowed = DjangoApiClient::controlValue(result.body, "control_allowed");
+  if (run.length() == 0 || generation.length() == 0 || run != result.serverRunId ||
+      revision != String(result.networkRevision) || boot != result.bootId ||
+      (hasAcceptedSentAt_ && static_cast<int32_t>(result.sentAt - lastAcceptedSentAt_) < 0)) return false;
+  const uint32_t returnedGeneration = generation.toInt();
+  if (generation != String(returnedGeneration)) return false;
+  if (allowed == "0") {
+    if (returnedGeneration >= generation_) {
+      const bool active = operationStarted_ || autoTriggerEnabled_ || recoveryRunning_;
+      if (returnedGeneration != generation_ || (active &&
+          DjangoApiClient::controlValue(result.body, "recovery_allowed") != "1")) {
+        lockNetwork("control_not_allowed");
+      }
+      if ((pendingReport_.event == "network_recovery_completed" || pendingReport_.event == "network_recovery_committed") &&
+          (returnedGeneration != generation_ || DjangoApiClient::controlValue(result.body, "recovery_allowed") != "1")) {
+        lockNetwork("network_recovery_revoked");
+      }
+      if (returnedGeneration != generation_) {
+        generation_ = returnedGeneration;
+        if (networkInterlocked_) saveInterlock(1);
+      }
+    }
+    if (result.generation != generation_) return false;
+    if (networkInterlocked_ && (networkRequest_ == NetworkRequest::kNone)) {
+      // Recovery and diagnostic responses carry no permission for ordinary motion.
+      recoveryPermission_ = result.isSuccess() &&
+          DjangoApiClient::controlValue(result.body, "recovery_allowed") == "1" &&
+          !timeReached(currentTime, result.sentAt + 6000UL);
+      if (recoveryPermission_) leaseDeadline_ = result.sentAt + 6000UL;
+      return true;
+    }
+    return false;
+  }
+  if (allowed != "1" || !result.isSuccess() || result.generation != generation_ ||
+      returnedGeneration != generation_ ||
+      DjangoApiClient::controlValue(result.body, "control_lease_ms") != "6000" ||
+      timeReached(currentTime, result.sentAt + 6000UL)) return false;
+  if (networkInterlocked_ && interlockRecord_.phase != 3) return false;
+  if (operationStarted_ && (leasedRunId_ != run || leasedRevision_ != result.networkRevision)) {
+    lockNetwork("network_identity_changed");
+    return false;
+  }
+  leasedRunId_ = run;
+  leasedRevision_ = result.networkRevision;
+  leaseDeadline_ = result.sentAt + 6000UL;
+  lastAcceptedSentAt_ = result.sentAt;
+  hasAcceptedSentAt_ = true;
+  return true;
+}
+
+void CaptureController::recoverNetwork(const MotorCommand& command, uint32_t currentTime) {
+  if (!networkInterlocked_ || !recoveryPermission_ || command.commandId <= 0 ||
+      leaseDeadline_ == 0 || timeReached(currentTime, leaseDeadline_)) return;
+  if (interlockRecord_.commandId == command.commandId && interlockRecord_.generation == generation_) {
+    if (interlockRecord_.phase == 2 || interlockRecord_.phase == 3) {
+      pendingReport_ = PendingReport();
+      queueReport(interlockRecord_.phase == 2 ? "network_recovery_completed" : "network_recovery_committed",
+          0, command.commandId, "network_recovery_retry");
+      return;
+    }
+    if (recoveryRunning_) return;
+  }
+  interlockRecord_.commandId = command.commandId;
+  if (!preferencesReady_) preferencesReady_ = preferences_.begin("pf-control", false);
+  if (!saveInterlock(1)) {
+    lockNetwork("recovery_persist_failed");
+    return;
+  }
+  feeder_.writeMicroseconds(appliedTiming_.feederStopUS);
+  gates_.moveAll(FirmwareConfig::kHomeAngle);
+  classifier_.home(currentTime);
+  recoveryRunning_ = true;
+  motionPhase_ = MotionPhase::kRecoverySettling;
+  phaseDeadlineAt_ = currentTime + ClassificationSequence::kJointHomeSettleMS;
+  pendingReport_ = PendingReport();
 }
 
 void CaptureController::advanceMotion(uint32_t currentTime) {
@@ -162,6 +333,17 @@ void CaptureController::advanceMotion(uint32_t currentTime) {
           "sequence_finished");
       return;
 
+    case MotionPhase::kRecoverySettling:
+      recoveryRunning_ = false;
+      motionPhase_ = MotionPhase::kIdle;
+      if (!saveInterlock(2)) {
+        lockNetwork("recovery_persist_failed");
+        return;
+      }
+      pendingReport_ = PendingReport();
+      queueReport("network_recovery_completed", 0, interlockRecord_.commandId, "network_recovery_completed");
+      return;
+
     case MotionPhase::kIdle:
     case MotionPhase::kWaitingForReport:
     case MotionPhase::kWaitingForCommand:
@@ -216,6 +398,7 @@ void CaptureController::handleSensor(uint32_t currentTime) {
     return;
   }
 
+  if (networkInterlocked_) return;
   if (
       awaitingFruitAfterTimeout_ &&
       !autoTrigger_.active() &&
@@ -596,6 +779,40 @@ bool CaptureController::flushPendingReport(uint32_t currentTime) {
 
 void CaptureController::handleReportResult(const HttpResult& result) {
   printReportSummary(pendingReport_.event, result);
+  if (pendingReport_.event == "network_recovery_completed") {
+    if (result.isSuccess() && DjangoApiClient::controlValue(result.body, "recovery_commit") == "1") {
+      if (!saveInterlock(3)) {
+        pendingReport_ = PendingReport();
+        queueReport("network_recovery_persist_failed", 0, interlockRecord_.commandId, "recovery_persist_failed");
+        return;
+      }
+      pendingReport_ = PendingReport();
+      queueReport("network_recovery_committed", 0, interlockRecord_.commandId, "network_recovery_committed");
+    }
+    return;
+  }
+  if (pendingReport_.event == "network_recovery_committed") {
+    if (result.isSuccess() && DjangoApiClient::controlValue(result.body, "recovery_committed") == "1") {
+      if (!saveInterlock(0)) {
+        lockNetwork("recovery_persist_failed");
+        return;
+      }
+      networkInterlocked_ = false;
+      persistFailed_ = false;
+      operationStarted_ = false;
+      awaitingFruitAfterTimeout_ = false;
+      pendingReport_ = PendingReport();
+      activeCommand_ = MotorCommand();
+      executingCommandId_ = 0;
+      sequenceActive_ = false;
+      clearActiveTiming();
+    }
+    return;
+  }
+  if (networkInterlocked_) {
+    if (result.isSuccess()) pendingReport_ = PendingReport();
+    return;
+  }
 
   if (!result.isSuccess()) {
     Serial.println("ESP32 report failed. It will be retried without repeating motion.");
@@ -612,7 +829,14 @@ void CaptureController::handleReportResult(const HttpResult& result) {
     }
   }
   printTiming(event + String("_report_success"));
+  const bool calibration = activeCommand_.feedContext == "calibration";
   handlePendingReportSuccess(event);
+  if (event == "classification_sorter_completed" ||
+      (event.startsWith("feeder_") && calibration) ||
+      (event == "feed_cycle_completed" && calibration)) {
+    operationStarted_ = false;
+    if (!saveInterlock(0)) lockNetwork("recovery_persist_failed");
+  }
 }
 
 void CaptureController::queueReport(
@@ -762,7 +986,7 @@ void CaptureController::stageTimingConfig(const MotorCommand& command) {
 }
 
 bool CaptureController::applyPendingTimingConfig(uint32_t currentTime) {
-  if (!hasPendingTiming_ || !timingConfigCanApply()) {
+  if (networkInterlocked_ || !hasPendingTiming_ || !timingConfigCanApply()) {
     return false;
   }
 
@@ -773,6 +997,10 @@ bool CaptureController::applyPendingTimingConfig(uint32_t currentTime) {
 
   appliedTiming_ = pendingTiming_;
   hasPendingTiming_ = false;
+  if (!saveInterlock(networkInterlocked_ ? 1 : 0)) {
+    lockNetwork("recovery_persist_failed");
+    return true;
+  }
   Serial.print("Timing configuration applied. revision=");
   Serial.print(appliedTiming_.revision);
   Serial.print(" first=");
@@ -854,6 +1082,10 @@ void CaptureController::handleCommandResult(
 
   resetCommandFailures();
   const MotorCommand command = api_.parseCommandText(result.body);
+  if (networkInterlocked_) {
+    if (command.command == "recover_network") recoverNetwork(command, currentTime);
+    return;
+  }
   if (command.hasAutoTriggerEnabled) {
     setAutoTriggerEnabled(command.autoTriggerEnabled, command.serverStatus);
   }
@@ -881,6 +1113,12 @@ uint32_t CaptureController::currentCommandPollInterval() const {
 void CaptureController::handleCommand(
     const MotorCommand& command,
     uint32_t currentTime) {
+  if (command.command == "recover_network") {
+    recoverNetwork(command, currentTime);
+    return;
+  }
+  checkControlSafety(currentTime);
+  if (networkInterlocked_ || leaseDeadline_ == 0 || timeReached(currentTime, leaseDeadline_)) return;
   stageTimingConfig(command);
   if (command.commandId == lastConfirmedCommandId_ ||
       command.commandId == executingCommandId_) {
@@ -894,6 +1132,11 @@ void CaptureController::handleCommand(
   Serial.print(" station ");
   Serial.println(command.stationIndex);
 
+  if (!saveInterlock(1)) {
+    lockNetwork("recovery_persist_failed");
+    return;
+  }
+  operationStarted_ = true;
   if (classifierCommandActive_ && command.command != "classify_fruit") {
     logCommandRejected(command, "classifier_busy");
     return;
@@ -955,6 +1198,8 @@ void CaptureController::startFeeder(const MotorCommand& command) {
   snapshotActiveTiming();
   activeCommand_ = command;
   const float distanceCM = sensor_.readCentimeters();
+  checkControlSafety(millis());
+  if (networkInterlocked_) return;
   lastSensorReadAt_ = millis();
   feederSensorState_ = distanceCM <= 0.0F
       ? "unavailable"

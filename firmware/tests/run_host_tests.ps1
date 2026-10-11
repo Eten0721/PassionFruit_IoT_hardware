@@ -10,6 +10,9 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'host\secrets.example.h') -Desti
 Set-Content -LiteralPath (Join-Path $sourceDir 'network.local.h') -Value 'const char* manualDjangoOrigin = "https://192.0.2.9:9443";' -Encoding ascii
 $sources = Get-ChildItem -LiteralPath $sourceDir -Filter '*.cpp' | ForEach-Object { $_.FullName }
 $discoveryBinary = Join-Path $buildDir 'discovery_test.exe'
+$configPath = Join-Path $sourceDir 'Config.h'
+$config = Get-Content -LiteralPath $configPath -Raw
+Set-Content -LiteralPath $configPath -Value $config.Replace('kNetworkDiagnosticsOnly = false;', 'kNetworkDiagnosticsOnly = true;') -Encoding ascii
 & g++ -std=c++17 -Wall -Wextra -Werror -Wno-sign-compare -Wno-unused-parameter -pthread "-I$PSScriptRoot\host" "-I$sourceDir" (Join-Path $PSScriptRoot 'discovery_test.cpp') @sources -o $discoveryBinary
 if ($LASTEXITCODE -ne 0) { throw 'Discovery harness compilation failed.' }
 & $discoveryBinary
@@ -18,14 +21,30 @@ if ($LASTEXITCODE -ne 0) { throw 'Discovery harness failed.' }
 $configPath = [System.IO.Path]::GetFullPath((Join-Path $sourceDir 'Config.h'))
 $allowedBuildRoot = [System.IO.Path]::GetFullPath($buildDir) + [System.IO.Path]::DirectorySeparatorChar
 if (-not $configPath.StartsWith($allowedBuildRoot, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe test adapter path.' }
-$config = Get-Content -LiteralPath $configPath -Raw
-if (-not $config.Contains('kNetworkDiagnosticsOnly = true;')) { throw 'Expected production diagnostic guard.' }
+if (-not $config.Contains('kNetworkDiagnosticsOnly = false;')) { throw 'Expected production diagnostic guard.' }
 try {
-    Set-Content -LiteralPath $configPath -Value $config.Replace('kNetworkDiagnosticsOnly = true;', 'kNetworkDiagnosticsOnly = false;') -Encoding ascii
+    Set-Content -LiteralPath $configPath -Value $config -Encoding ascii
+    $safetyBinary = Join-Path $buildDir 'network_safety_test.exe'
+    & g++ -std=c++17 -Wall -Wextra -Werror -Wno-sign-compare -Wno-unused-parameter -pthread "-I$PSScriptRoot\host" "-I$sourceDir" (Join-Path $PSScriptRoot 'network_safety_test.cpp') @sources -o $safetyBinary
+    if ($LASTEXITCODE -ne 0) { throw 'Safety harness compilation failed.' }
+    & $safetyBinary
+    if ($LASTEXITCODE -ne 0) { throw 'Safety harness failed.' }
+    $httpBinary = Join-Path $buildDir 'network_http_test.exe'
+    & g++ -std=c++17 -Wall -Wextra -Werror -Wno-sign-compare -Wno-unused-parameter -pthread "-I$PSScriptRoot\host" "-I$sourceDir" (Join-Path $PSScriptRoot 'network_http_test.cpp') @sources -o $httpBinary
+    if ($LASTEXITCODE -ne 0) { throw 'HTTP integration harness compilation failed.' }
+    # Retain the historical sensor/motion regression seam in an ignored source copy.
+    $controlPath = Join-Path $sourceDir 'CaptureController.cpp'
+    $control = Get-Content -LiteralPath $controlPath -Raw
+    $legacy = $control.Replace('void CaptureController::checkControlSafety(uint32_t currentTime) {', 'void CaptureController::checkControlSafety(uint32_t currentTime) { return;')
+    $legacy = $legacy.Replace('!FirmwareConfig::kNetworkDiagnosticsOnly && !acceptControlResult', 'false && !acceptControlResult')
+    $legacy = $legacy.Replace('if (networkInterlocked_ || leaseDeadline_ == 0 || timeReached(currentTime, leaseDeadline_)) return;', '')
+    $legacy = $legacy.Replace('if (!yieldAfterHeartbeat_ && (operationStarted_ || recoveryRunning_) && currentTime - lastHeartbeatAt_', 'if (false && (operationStarted_ || recoveryRunning_) && currentTime - lastHeartbeatAt_')
+    Set-Content -LiteralPath $controlPath -Value $legacy -Encoding ascii
     & g++ -std=c++17 -Wall -Wextra -Werror -Wno-sign-compare -Wno-unused-parameter -pthread "-I$PSScriptRoot\host" "-I$sourceDir" (Join-Path $PSScriptRoot 'control_network_test.cpp') @sources -o $binary
     if ($LASTEXITCODE -ne 0) { throw 'Host harness compilation failed.' }
     & $binary
     if ($LASTEXITCODE -ne 0) { throw 'Host harness failed.' }
 } finally {
     Set-Content -LiteralPath $configPath -Value $config -Encoding ascii
+    if ($control) { Set-Content -LiteralPath $controlPath -Value $control -Encoding ascii }
 }

@@ -2,7 +2,7 @@
 
 #include "Config.h"
 
-void ClassifierController::begin(uint32_t currentTime, GateController& gates) {
+void ClassifierController::begin(uint32_t currentTime, GateController& gates, bool home) {
   gates_ = &gates;
   state_ = State::kUninitialized;
   servo_.attach(FirmwareConfig::kClassifierPin);
@@ -12,10 +12,28 @@ void ClassifierController::begin(uint32_t currentTime, GateController& gates) {
     return;
   }
 
+  if (!home) {
+    state_ = State::kIdleHome;
+    return;
+  }
   servo_.write(ClassificationSequence::kSorterHomeAngle);
   state_ = State::kBootHomeSettling;
   bootHomeStartedAt_ = currentTime;
   Serial.println("Classifier returning to HOME 85 degrees.");
+}
+
+void ClassifierController::abort() {
+  sequence_ = ClassificationSequence();
+  result_ = Result();
+  if (servo_.attached()) state_ = State::kIdleHome;
+}
+
+void ClassifierController::home(uint32_t currentTime) {
+  if (!servo_.attached()) return;
+  abort();
+  servo_.write(ClassificationSequence::kSorterHomeAngle);
+  state_ = State::kBootHomeSettling;
+  bootHomeStartedAt_ = currentTime;
 }
 
 void ClassifierController::tick(uint32_t currentTime) {

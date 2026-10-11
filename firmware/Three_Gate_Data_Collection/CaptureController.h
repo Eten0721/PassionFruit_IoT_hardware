@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <ESP32Servo.h>
+#include <Preferences.h>
 
 #include "Config.h"
 #include "ClassifierController.h"
@@ -29,6 +30,7 @@ class CaptureController {
     kFinalHomeSettling,
     kWaitingForReport,
     kWaitingForCommand,
+    kRecoverySettling,
   };
 
   enum class AutoTriggerPhase : uint8_t {
@@ -106,7 +108,7 @@ class CaptureController {
   bool hasPendingTiming_ = false;
   bool hasActiveTiming_ = false;
 
-  enum class NetworkRequest : uint8_t { kNone, kCommand, kFastTrigger, kLegacyTrigger, kReport };
+  enum class NetworkRequest : uint8_t { kNone, kCommand, kFastTrigger, kLegacyTrigger, kReport, kHeartbeat };
   NetworkRequest networkRequest_ = NetworkRequest::kNone;
   void collectNetworkResult(uint32_t currentTime);
   void handleCommandResult(const HttpResult& result, uint32_t currentTime);
@@ -134,6 +136,35 @@ class CaptureController {
   bool triggerArmed_ = true;
   bool autoTriggerEnabled_ = false;
   String lastServerStatus_;
+  struct InterlockRecord {
+    uint32_t schema = 1;
+    uint32_t generation = 0;
+    int commandId = 0;
+    uint32_t stopUS = FirmwareConfig::kFeederStopUS;
+    uint8_t phase = 0;  // 0 idle, 1 locked/unfinished, 2 homed, 3 locally committed.
+  } interlockRecord_;
+  Preferences preferences_;
+  bool preferencesReady_ = false;
+  bool networkInterlocked_ = false;
+  bool persistFailed_ = false;
+  bool operationStarted_ = false;
+  uint32_t generation_ = 0;
+  uint32_t leaseDeadline_ = 0;
+  uint32_t lastHeartbeatAt_ = 0;
+  bool yieldAfterHeartbeat_ = false;
+  uint32_t linkLostAt_ = 0;
+  String leasedRunId_;
+  uint32_t leasedRevision_ = 0;
+  uint32_t lastAcceptedSentAt_ = 0;
+  bool hasAcceptedSentAt_ = false;
+  bool recoveryPermission_ = false;
+  String localIP_;
+  bool recoveryRunning_ = false;
+  bool saveInterlock(uint8_t phase);
+  void lockNetwork(const String& reason);
+  void checkControlSafety(uint32_t currentTime);
+  bool acceptControlResult(const HttpResult& result, uint32_t currentTime);
+  void recoverNetwork(const MotorCommand& command, uint32_t currentTime);
 
   void advanceMotion(uint32_t currentTime);
   void handleSensor(uint32_t currentTime);

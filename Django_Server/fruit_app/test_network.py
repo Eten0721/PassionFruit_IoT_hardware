@@ -14,6 +14,9 @@ class NetworkOnboardingTests(SimpleTestCase):
     def setUp(self):
         existing.DataCollectionFlowTests.setUp(self)
         self.hardware_guard_patcher.stop()
+        self.device_observer_patcher.stop()
+        self.safety_monitor_patcher.stop()
+        existing.views.APP_STATE['camera_last_live_frame_monotonic'] = None
         self.interfaces = [{
             'interface_id': '7', 'name': 'Wi-Fi', 'ipv4': '192.168.50.10', 'prefix': 24,
         }]
@@ -104,7 +107,7 @@ class NetworkOnboardingTests(SimpleTestCase):
         self.select()
         for route in ('/api/esp32/report/', '/api/esp32_trigger/', '/api/feeder/test/'):
             self.assertEqual(self.post(route).json()['reason'], 'network_capability_missing')
-        self.assertEqual(self.client.get('/api/esp32/command/?network_capability=local_network_v1').json()['reason'], 'network_capability_missing')
+        self.assertEqual(self.client.get('/api/esp32/command/?network_capability=local_network_v1').json()['reason'], 'network_identity_mismatch')
 
     def test_interface_expiry_requires_confirmation_and_allows_discard(self):
         self.select()
@@ -115,10 +118,10 @@ class NetworkOnboardingTests(SimpleTestCase):
         self.interfaces = [{**self.interfaces[0], 'ipv4': '192.168.50.11'}]
         with mock.patch('fruit_app.local_network.time.monotonic', return_value=existing.views.time.monotonic() + 2):
             info = self.client.get('/api/network/').json()
-            self.assertFalse(info['selected'])
-            self.assertEqual(info['reason'], 'network_selection_stale')
-            self.assertIsNone(info['qr_url'])
-            self.assertEqual(self.post('/api/photo_capture/').json()['reason'], 'network_selection_stale')
+            self.assertTrue(info['selected'])
+            self.assertIsNone(info['reason'])
+            self.assertEqual(info['camera_url'], 'https://192.168.50.11:8443/camera/')
+            self.assertEqual(self.post('/api/photo_capture/').json()['reason'], 'network_recovery_confirmation_required')
         result = self.post('/api/network/', {'interface_id': '7', 'ipv4': '192.168.50.11'})
         self.assertEqual(result.status_code, 409)
         self.assertTrue((self.dataset_root / 'temp' / 'fruit_001' / 'img_01.jpg').exists())

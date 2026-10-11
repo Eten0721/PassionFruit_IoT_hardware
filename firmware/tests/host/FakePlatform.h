@@ -10,6 +10,7 @@
 #include <thread>
 #include <vector>
 #include <iostream>
+#include <functional>
 
 #undef assert
 #define assert(condition) ((condition) ? static_cast<void>(0) : Fake::fail(#condition, __LINE__))
@@ -58,6 +59,24 @@ inline int tlsWriteChunk = 4096;
 inline std::vector<std::string> mdnsAddresses = {"192.0.2.1"};
 inline std::vector<Request> infoRequests;
 inline std::vector<std::thread> workers;
+inline bool wireControl = false;
+inline bool controlAllowed = true;
+inline bool recoveryAllowed = false;
+inline uint32_t serverGeneration = 0;
+inline uint32_t infoRevision = 1;
+inline std::function<Reply(const Request&)> bridge;
+inline std::string field(const std::string& data, const std::string& key) {
+  const auto begin = data.find(key + "=");
+  if (begin == std::string::npos) return "";
+  const auto start = begin + key.size() + 1;
+  const auto end = data.find('&', start);
+  std::string value = data.substr(start, end - start);
+  for (const auto& escape : {std::pair<std::string, std::string>{"%3A", ":"}, {"%2D", "-"}}) {
+    size_t at;
+    while ((at = value.find(escape.first)) != std::string::npos) value.replace(at, 3, escape.second);
+  }
+  return value;
+}
 
 inline void assertControlThread() { assert(std::this_thread::get_id() == controlThread); }
 inline Reply http(const std::string& method, const std::string& url, const std::string& body, uint32_t timeout) {
@@ -68,7 +87,7 @@ inline Reply http(const std::string& method, const std::string& url, const std::
     const auto end = url.find('/', 8);
     const auto origin = url.substr(0, end);
     return {infoFailure ? -11 : 200, std::string("api_version=") + (badInfo ? "2" : "1") +
-        "\nscheme=https\nselected=1\nserver_run_id=12345678-1234-1234-1234-123456789abc\nnetwork_revision=" + std::string(wrongIdentity ? "2" : "1") + "\nserver_url=" + origin +
+        "\nscheme=https\nselected=1\nserver_run_id=12345678-1234-1234-1234-123456789abc\nnetwork_revision=" + (wrongIdentity ? "2" : std::to_string(infoRevision)) + "\nserver_url=" + origin +
         "\ncamera_url=" + origin + "/camera/\n"};
   }
   requests.push_back({method, url, body, now.load(), timeout});
@@ -78,6 +97,11 @@ inline Reply http(const std::string& method, const std::string& url, const std::
         std::string("ok=1\ndiagnostic=1\ncontrol_allowed=0\ncommand=") + (maliciousCommand ? "feed_one" : "none") +
         "\ncommand_id=99\nauto_trigger_enabled=1\ndiagnostic_id=87654321-1234-1234-1234-123456789abc\n"
         "server_run_id=12345678-1234-1234-1234-123456789abc\nnetwork_revision=1\n"};
+  }
+  if (bridge) {
+    const Request request{method, url, body, now.load(), timeout};
+    lock.unlock();
+    return bridge(request);
   }
   Reply reply;
   if (!replies.empty() && (replies.front().method.empty() || replies.front().method == method)) {
@@ -89,11 +113,28 @@ inline Reply http(const std::string& method, const std::string& url, const std::
     if (std::this_thread::get_id() == controlThread) now += 5000;
     else changed.wait(lock, [] { return releaseHttp; });
   }
+  if (wireControl && reply.body.find("server_run_id") == std::string::npos) {
+    const std::string boot = field(method == "POST" ? body : url, "boot_id");
+    if (!reply.body.empty() && reply.body.front() == '{') {
+      const auto end = reply.body.rfind('}');
+      const std::string prefix = end > 1 ? "," : "";
+      reply.body.insert(end, prefix + "\"boot_id\":\"" + boot +
+          "\",\"server_run_id\":\"12345678-1234-1234-1234-123456789abc\",\"network_revision\":1,\"recovery_generation\":" +
+          std::to_string(serverGeneration) + ",\"control_allowed\":" + (controlAllowed ? "true" : "false") +
+          ",\"recovery_allowed\":" + (recoveryAllowed ? "true" : "false") + ",\"control_lease_ms\":" +
+          (controlAllowed ? "6000" : "0"));
+    } else {
+      reply.body += "\nboot_id=" + boot + "\nserver_run_id=12345678-1234-1234-1234-123456789abc\nnetwork_revision=1\nrecovery_generation=" +
+          std::to_string(serverGeneration) + "\ncontrol_allowed=" + (controlAllowed ? "1" : "0") +
+          "\nrecovery_allowed=" + (recoveryAllowed ? "1" : "0") + "\ncontrol_lease_ms=" + (controlAllowed ? "6000" : "0") + "\n";
+    }
+  }
   return reply;
 }
 inline void reset(uint32_t start = 100) {
   for (auto& worker : workers) worker.join();
   workers.clear();
+  wireControl = false; controlAllowed = true; recoveryAllowed = false; serverGeneration = 0; infoRevision = 1; bridge = nullptr;
   now = start; echoUS = 5800; sensorReads = 0; sensorLatencyMS = 0; outputs.clear();
   std::lock_guard<std::mutex> lock(mutex);
   replies.clear(); requests.clear(); releaseHttp = false; holdWiFi = false;
