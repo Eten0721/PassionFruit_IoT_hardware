@@ -106,6 +106,14 @@ class CaptureController {
   bool hasPendingTiming_ = false;
   bool hasActiveTiming_ = false;
 
+  enum class NetworkRequest : uint8_t { kNone, kCommand, kFastTrigger, kLegacyTrigger, kReport };
+  NetworkRequest networkRequest_ = NetworkRequest::kNone;
+  void collectNetworkResult(uint32_t currentTime);
+  void handleCommandResult(const HttpResult& result, uint32_t currentTime);
+  void handleFastPathResult(const HttpResult& result, uint32_t currentTime);
+  void handleLegacyTriggerResult(const HttpResult& result, uint32_t currentTime);
+  void handleReportResult(const HttpResult& result);
+
   PendingReport pendingReport_;
   AutoTrigger autoTrigger_;
 

@@ -34,8 +34,7 @@ void CaptureController::begin() {
 }
 
 void CaptureController::tick() {
-  api_.ensureWiFi(millis());
-  const uint32_t currentTime = millis();
+  uint32_t currentTime = millis();
 
   classifier_.tick(currentTime);
   collectClassifierResult();
@@ -44,7 +43,12 @@ void CaptureController::tick() {
     return;
   }
   handleSensor(currentTime);
+  collectNetworkResult(millis());
+  currentTime = millis();
   checkStartSequenceWaitTimeout(currentTime);
+  if (networkRequest_ != NetworkRequest::kNone) {
+    return;
+  }
 
   if (flushPendingReport(currentTime)) {
     return;
@@ -53,6 +57,31 @@ void CaptureController::tick() {
     return;
   }
   pollCommand(currentTime);
+}
+
+void CaptureController::collectNetworkResult(uint32_t currentTime) {
+  HttpResult result;
+  if (!api_.takeResult(result)) {
+    return;
+  }
+  const NetworkRequest request = networkRequest_;
+  networkRequest_ = NetworkRequest::kNone;
+  switch (request) {
+    case NetworkRequest::kCommand:
+      handleCommandResult(result, currentTime);
+      return;
+    case NetworkRequest::kFastTrigger:
+      handleFastPathResult(result, currentTime);
+      return;
+    case NetworkRequest::kLegacyTrigger:
+      handleLegacyTriggerResult(result, currentTime);
+      return;
+    case NetworkRequest::kReport:
+      handleReportResult(result);
+      return;
+    case NetworkRequest::kNone:
+      return;
+  }
 }
 
 void CaptureController::advanceMotion(uint32_t currentTime) {
@@ -333,7 +362,7 @@ void CaptureController::sendFastPathReport(uint32_t currentTime) {
     return;
   }
 
-  const HttpResult result = api_.postReport(
+  if (!api_.postReport(
       "hcsr04_station_1_ready",
       1,
       0,
@@ -343,9 +372,15 @@ void CaptureController::sendFastPathReport(uint32_t currentTime) {
       true,
       true,
       true,
-      appliedTiming_.revision);
+      appliedTiming_.revision)) {
+    return;
+  }
+  networkRequest_ = NetworkRequest::kFastTrigger;
+}
+
+void CaptureController::handleFastPathResult(
+    const HttpResult& result, uint32_t afterRequestTime) {
   printReportSummary("hcsr04_station_1_ready", result);
-  const uint32_t afterRequestTime = millis();
 
   if (DjangoApiClient::isExplicitFastPathRejection(result)) {
     startLegacyFallback(afterRequestTime, "server_rejected_fast_path");
@@ -390,7 +425,7 @@ void CaptureController::sendFastPathReport(uint32_t currentTime) {
 }
 
 void CaptureController::sendLegacyTriggerReport(uint32_t currentTime) {
-  const HttpResult result = api_.postReport(
+  if (!api_.postReport(
       "hcsr04_trigger",
       0,
       0,
@@ -400,9 +435,15 @@ void CaptureController::sendLegacyTriggerReport(uint32_t currentTime) {
       false,
       false,
       false,
-      appliedTiming_.revision);
+      appliedTiming_.revision)) {
+    return;
+  }
+  networkRequest_ = NetworkRequest::kLegacyTrigger;
+}
+
+void CaptureController::handleLegacyTriggerResult(
+    const HttpResult& result, uint32_t afterRequestTime) {
   printReportSummary("hcsr04_trigger", result);
-  const uint32_t afterRequestTime = millis();
 
   if (!result.isSuccess()) {
     autoTrigger_.phase = AutoTriggerPhase::kLegacyReportPending;
@@ -530,8 +571,7 @@ bool CaptureController::flushPendingReport(uint32_t currentTime) {
     return true;
   }
 
-  pendingReport_.lastAttemptAt = currentTime;
-  const HttpResult result = api_.postReport(
+  if (!api_.postReport(
       pendingReport_.event,
       pendingReport_.stationIndex,
       pendingReport_.commandId,
@@ -546,12 +586,20 @@ bool CaptureController::flushPendingReport(uint32_t currentTime) {
       pendingReport_.includeStationIndex,
       pendingReport_.feederElapsedMS,
       pendingReport_.feederMaxRunMS,
-      pendingReport_.feederStopReason);
+      pendingReport_.feederStopReason)) {
+    return true;
+  }
+  pendingReport_.lastAttemptAt = currentTime;
+  networkRequest_ = NetworkRequest::kReport;
+  return true;
+}
+
+void CaptureController::handleReportResult(const HttpResult& result) {
   printReportSummary(pendingReport_.event, result);
 
   if (!result.isSuccess()) {
     Serial.println("ESP32 report failed. It will be retried without repeating motion.");
-    return true;
+    return;
   }
 
   const String event = pendingReport_.event;
@@ -565,7 +613,6 @@ bool CaptureController::flushPendingReport(uint32_t currentTime) {
   }
   printTiming(event + String("_report_success"));
   handlePendingReportSuccess(event);
-  return true;
 }
 
 void CaptureController::queueReport(
@@ -781,13 +828,19 @@ void CaptureController::pollCommand(uint32_t currentTime) {
   if (currentTime - lastCommandPollAt_ < interval) {
     return;
   }
-  lastCommandPollAt_ = currentTime;
-
-  const HttpResult result = api_.pollCommand(
+  if (!api_.pollCommand(
       awaitingFruitAfterTimeout_ ? "awaiting_fruit" : "idle",
       feederSensorState_,
       lastFeedCommandId_,
-      classifier_.available());
+      classifier_.available())) {
+    return;
+  }
+  lastCommandPollAt_ = currentTime;
+  networkRequest_ = NetworkRequest::kCommand;
+}
+
+void CaptureController::handleCommandResult(
+    const HttpResult& result, uint32_t currentTime) {
   if (!result.isSuccess()) {
     Serial.print("Command GET failed: ");
     Serial.print(result.statusCode);

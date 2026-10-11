@@ -20,6 +20,31 @@ DjangoApiClient::DjangoApiClient()
       activeOrigin_("") {}
 
 void DjangoApiClient::begin() {
+  if (workerTask_ != nullptr) {
+    return;
+  }
+  if (xTaskCreate(workerEntry, "django-network", 8192, this, 1, &workerTask_) != pdPASS) {
+    workerTask_ = nullptr;
+    Serial.println("Network worker initialization failed: network_worker_unavailable");
+  }
+}
+
+DjangoApiClient::~DjangoApiClient() {
+  if (workerTask_ == nullptr) {
+    return;
+  }
+  stopping_.store(true, std::memory_order_release);
+  while (!stopped_.load(std::memory_order_acquire)) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+void DjangoApiClient::workerEntry(void* context) {
+  static_cast<DjangoApiClient*>(context)->runWorker();
+  vTaskDelete(nullptr);
+}
+
+void DjangoApiClient::runWorker() {
   WiFi.mode(WIFI_STA);
   WiFi.persistent(false);
   WiFi.setSleep(false);
@@ -28,6 +53,43 @@ void DjangoApiClient::begin() {
   secureClient_.setInsecure();
   bootId_ = WiFi.macAddress() + "-" + String(esp_random(), HEX);
   startWiFiAttempt(millis());
+
+  while (!stopping_.load(std::memory_order_acquire)) {
+    ensureWiFi(millis());
+    if (requestState_.load(std::memory_order_acquire) == RequestState::kQueued) {
+      requestState_.store(RequestState::kRunning, std::memory_order_relaxed);
+      result_ = request_.post
+          ? executePost(request_.url.c_str(), request_.body, request_.timeoutMS)
+          : executeGet(request_.url.c_str(), request_.timeoutMS);
+      requestState_.store(RequestState::kCompleted, std::memory_order_release);
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  closeConnection();
+  stopped_.store(true, std::memory_order_release);
+}
+
+bool DjangoApiClient::submit(
+    const String& url, const String& body, uint32_t timeoutMS, bool post) {
+  if (workerTask_ == nullptr ||
+      requestState_.load(std::memory_order_acquire) != RequestState::kIdle) {
+    return false;
+  }
+  request_.url = url;
+  request_.body = body;
+  request_.timeoutMS = timeoutMS;
+  request_.post = post;
+  requestState_.store(RequestState::kQueued, std::memory_order_release);
+  return true;
+}
+
+bool DjangoApiClient::takeResult(HttpResult& result) {
+  if (requestState_.load(std::memory_order_acquire) != RequestState::kCompleted) {
+    return false;
+  }
+  result = result_;
+  requestState_.store(RequestState::kIdle, std::memory_order_release);
+  return true;
 }
 
 bool DjangoApiClient::ensureWiFi(uint32_t currentTime) {
@@ -38,6 +100,7 @@ bool DjangoApiClient::ensureWiFi(uint32_t currentTime) {
     }
     wifiAttemptInProgress_ = false;
     wifiWasConnected_ = true;
+    wifiReady_.store(true, std::memory_order_release);
     return true;
   }
 
@@ -46,6 +109,7 @@ bool DjangoApiClient::ensureWiFi(uint32_t currentTime) {
     closeConnection();
   }
   wifiWasConnected_ = false;
+  wifiReady_.store(false, std::memory_order_release);
 
   if (
       wifiAttemptInProgress_ &&
@@ -71,7 +135,7 @@ bool DjangoApiClient::ensureWiFi(uint32_t currentTime) {
 }
 
 bool DjangoApiClient::wifiConnected() const {
-  return WiFi.status() == WL_CONNECTED;
+  return wifiReady_.load(std::memory_order_acquire);
 }
 
 void DjangoApiClient::closeConnection() {
@@ -79,11 +143,14 @@ void DjangoApiClient::closeConnection() {
   activeOrigin_ = "";
 }
 
-HttpResult DjangoApiClient::pollCommand(
+bool DjangoApiClient::pollCommand(
     const String& feederState,
     const String& feederSensorState,
     int lastFeedCommandId,
     bool sorterCapable) {
+  if (!wifiConnected()) {
+    return false;
+  }
   String url(commandUrl);
   url += url.indexOf('?') >= 0 ? "&" : "?";
   url += "boot_id=" + encodeFormValue(bootId_);
@@ -94,10 +161,10 @@ HttpResult DjangoApiClient::pollCommand(
   url += "&feeder_state=" + encodeFormValue(feederState);
   url += "&feeder_sensor_state=" + encodeFormValue(feederSensorState);
   url += "&last_feed_command_id=" + String(lastFeedCommandId);
-  return executeGet(url.c_str(), FirmwareConfig::kCommandHttpTimeoutMS);
+  return submit(url, "", FirmwareConfig::kCommandHttpTimeoutMS, false);
 }
 
-HttpResult DjangoApiClient::postReport(
+bool DjangoApiClient::postReport(
     const String& event,
     int stationIndex,
     int commandId,
@@ -142,7 +209,7 @@ HttpResult DjangoApiClient::postReport(
     body += "&feeder_stop_reason=" + encodeFormValue(feederStopReason);
   }
 
-  return executePost(reportUrl, body, timeoutMS);
+  return submit(reportUrl, body, timeoutMS, true);
 }
 
 MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
