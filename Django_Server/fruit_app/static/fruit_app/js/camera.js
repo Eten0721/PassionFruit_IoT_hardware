@@ -506,6 +506,29 @@ const localVideo = document.getElementById('local-video');
         }
     }
 
+    function updateAcceptanceDiagnostics() {
+        const snapshot = {
+            recordedAt: new Date().toISOString(),
+            page: window.location.origin + window.location.pathname,
+            userAgent: navigator.userAgent,
+            isSecureContext: window.isSecureContext,
+            getUserMediaAvailable: Boolean(navigator.mediaDevices?.getUserMedia),
+            browserOnline: navigator.onLine,
+            videoSize: [localVideo.videoWidth, localVideo.videoHeight],
+            videoTracks: (localStream?.getVideoTracks() || []).map((track) => ({
+                readyState: track.readyState, enabled: track.enabled, muted: track.muted,
+            })),
+            lastLiveFrameAgeMs: lastLiveFrameAtMs === null
+                ? null : Math.round(performance.now() - lastLiveFrameAtMs),
+            captureStatus: statusEl.textContent,
+            rtcConnectionState: peerConnection?.connectionState ?? null,
+            rtcIceConnectionState: peerConnection?.iceConnectionState ?? null,
+            rtcStatus: rtcStatusEl.textContent,
+        };
+        document.getElementById('camera-diagnostics-output').value = JSON.stringify(snapshot, null, 2);
+    }
+
+    document.getElementById('btn-camera-diagnostics').addEventListener('click', updateAcceptanceDiagnostics);
     updateDiagnostic();
     startButton.addEventListener('click', startCamera);
     restartWebrtcPolling(0);

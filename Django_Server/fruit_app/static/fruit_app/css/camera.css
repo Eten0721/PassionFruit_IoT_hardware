@@ -89,3 +89,31 @@
     bottom: auto;
     pointer-events: none;
 }
+
+.camera-diagnostics {
+    position: absolute;
+    top: calc(max(12px, env(safe-area-inset-top)) + 72px);
+    right: max(12px, env(safe-area-inset-right));
+    width: min(90vw, 360px);
+    max-height: 60vh;
+    overflow: auto;
+    padding: 12px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.85);
+    font-size: 14px;
+}
+
+.camera-diagnostics summary {
+    cursor: pointer;
+    min-height: 24px;
+}
+
+.camera-diagnostics button,
+.camera-diagnostics textarea {
+    width: 100%;
+    margin: 8px 0;
+}
+
+.camera-diagnostics textarea {
+    font-size: 16px;
+}

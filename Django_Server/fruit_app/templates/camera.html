@@ -21,6 +21,13 @@
 
     <div id="status" class="status">等待開啟相機。</div>
     <div id="rtc-status" class="rtc-status" role="status" aria-live="polite">RTC 預覽等待連線；不影響正式照片上傳。</div>
+    <details class="camera-diagnostics">
+        <summary>驗收資訊</summary>
+        <p>更新後可長按複製紀錄。此資訊不代表照片已保存或外網已切斷。</p>
+        <button id="btn-camera-diagnostics" type="button">更新驗收資訊</button>
+        <label for="camera-diagnostics-output">本次相機診斷紀錄</label>
+        <textarea id="camera-diagnostics-output" readonly rows="9" spellcheck="false"></textarea>
+    </details>
 </main>
 
 <script src="{% static 'fruit_app/js/camera.js' %}"></script>

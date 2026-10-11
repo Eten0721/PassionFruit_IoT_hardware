@@ -70,6 +70,7 @@ Necessary_library/*
 *.engine
 
 # Arduino / embedded build artifacts
+/firmware/Five_Servo_Power_Test/
 build/
 .arduino/
 .cache/
