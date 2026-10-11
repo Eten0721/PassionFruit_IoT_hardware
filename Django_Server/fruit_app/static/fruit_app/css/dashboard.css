@@ -43,7 +43,8 @@ body {
 }
 
 input,
-textarea {
+textarea,
+select {
     width: 100%;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-small);
@@ -844,7 +845,8 @@ button:disabled {
 }
 
 input,
-textarea {
+textarea,
+select {
     border-color: var(--border-strong);
     border-radius: var(--radius-small);
     background: var(--surface);
@@ -1423,3 +1425,10 @@ textarea {
     color: #20362b;
     font: inherit;
 }
+
+#btn-recapture + #btn-discard { margin-top: 8px; }
+
+.network-panel { margin-bottom: 16px; }
+.network-panel .controls { flex-wrap: wrap; }
+#camera-qr { display: block; max-width: 100%; background: #fff; }
+#camera-qr[hidden] { display: none; }

@@ -125,10 +125,84 @@ const remoteVideo = document.getElementById('remote-video');
     const stateActivePollMs = 500;
     const webrtcPollMs = 1000;
     const RTC_CONFIG = {
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+        iceServers: [],
     };
 
-    document.getElementById('camera-url').textContent = `${window.location.origin}/camera/`;
+    let networkChoiceSignature = '';
+    let previewNetworkIdentity = '';
+    let networkSelectionInFlight = false;
+    const networkSelect = document.getElementById('network-interface');
+    const selectNetworkButton = document.getElementById('btn-select-network');
+
+    function renderNetwork(network) {
+        const interfaces = network.interfaces || [];
+        const signature = JSON.stringify(interfaces);
+        if (networkChoiceSignature !== signature) {
+            const previous = networkSelect.value;
+            networkSelect.replaceChildren(new Option('請選擇網路', ''));
+            interfaces.forEach((row) => networkSelect.add(new Option(
+                `${row.name}：${row.ipv4}/${row.prefix}`,
+                `${row.interface_id}|${row.ipv4}`,
+            )));
+            networkSelect.value = previous;
+            networkChoiceSignature = signature;
+        }
+        const selected = Boolean(network.selected);
+        const summaryStatus = document.getElementById('network-summary-status');
+        setTextIfChanged(summaryStatus, selected ? `${network.selection.name}：${network.selection.ipv4}` : '尚未確認');
+        summaryStatus.dataset.state = selected ? 'ready' : 'pending';
+        networkSelect.disabled = networkSelectionInFlight || !network.selection_allowed;
+        selectNetworkButton.disabled = networkSelectionInFlight || !network.selection_allowed || !interfaces.length;
+        setTextIfChanged(document.getElementById('network-status'), selected
+            ? `網路已選擇：${network.selection.name}，${network.selection.ipv4}`
+            : `尚未確認網路：${network.reason || 'network_selection_required'}`);
+        setTextIfChanged(document.getElementById('server-url'), network.server_url || '尚未確認');
+        setTextIfChanged(document.getElementById('camera-url'), network.camera_url || '確認網路後顯示');
+        setTextIfChanged(document.getElementById('network-discovery-status'),
+            `裝置探索尚未啟用：${network.discovery?.reason || 'unknown'}。正式硬體運轉維持停用。`);
+        setTextIfChanged(document.getElementById('network-setup-status'),
+            `配網狀態無法確認：${network.setup?.reason || 'unknown'}`);
+        const qr = document.getElementById('camera-qr');
+        qr.hidden = !selected;
+        if (selected) {
+            const url = `${network.qr_url}?run=${network.server_run_id}&revision=${network.network_revision}`;
+            if (qr.getAttribute('src') !== url) qr.src = url;
+        } else {
+            qr.removeAttribute('src');
+        }
+        const identity = selected ? `${network.server_run_id}:${network.network_revision}` : '';
+        if (identity !== previewNetworkIdentity) {
+            previewNetworkIdentity = identity;
+            if (selected) {
+                startWebRTC().catch((error) => {
+                    setStreamStatus(`RTC 預覽無法建立：${error.message}；仍可正式拍攝。`);
+                    setPreviewState('error', '預覽連線失敗');
+                });
+            } else {
+                if (peerConnection) peerConnection.close();
+                peerConnection = null;
+                remoteVideo.srcObject = null;
+                setRemoteVideoVisible(false);
+            }
+        }
+    }
+
+    document.getElementById('network-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const [interfaceId, ipv4] = networkSelect.value.split('|');
+        if (!interfaceId || !ipv4 || networkSelectionInFlight) return;
+        networkSelectionInFlight = true;
+        selectNetworkButton.disabled = true;
+        try {
+            await postJson('/api/network/', { interface_id: interfaceId, ipv4 });
+            await refreshState();
+        } catch (error) {
+            setMessage(`確認網路失敗：${error.message}`);
+        } finally {
+            networkSelectionInFlight = false;
+            await refreshState();
+        }
+    });
 
     function setTextIfChanged(element, value) {
         const nextValue = value == null ? '' : String(value);
@@ -195,6 +269,7 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     async function startWebRTC() {
+        if (!lastState?.network?.selected) return;
         if (peerConnection) {
             peerConnection.close();
         }
@@ -378,6 +453,7 @@ const remoteVideo = document.getElementById('remote-video');
     });
 
     function renderState(data) {
+        renderNetwork(data.network || {});
         const images = data.latest_images || [];
         const status = data.status || 'idle';
         const photoOnly = data.hardware_mode === 'photo_only';
@@ -1589,9 +1665,5 @@ const remoteVideo = document.getElementById('remote-video');
         button.addEventListener('click', () => classify(button.dataset.label));
     });
 
-    startWebRTC().catch((error) => {
-        setStreamStatus(`WebRTC 初始化失敗：${error.message}`);
-        setPreviewState('error', '預覽連線失敗');
-    });
     restartStatePolling(0);
     restartWebRTCPolling(0);

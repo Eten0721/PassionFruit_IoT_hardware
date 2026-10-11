@@ -28,6 +28,91 @@
 - Motor command：`feed_one`、`start_sequence`、`release_gate` 或 `classify_fruit`；`release_gate` 以 `station_index` 區分第 1、2 站。
 - Command slot：送料、Capture 與 sorter 共用的單一命令槽。
 
+## 裝置網路連線目標
+
+本節為 2026-10-10 討論已接受的目標，尚未完成實作與實機驗收；架構取捨見 [ADR-0018](adr/0018-local-network-onboarding.md)。以下要求不代表目前程式已具備此行為。
+
+### 部署與日常啟動
+
+- 新電腦首次部署要求可連上網際網路，並自動下載、安裝所需套件；安裝工具與套件封裝另行設計。
+- 部署完成後，日常啟動、ESP32 控制、手機拍攝與更換 Wi-Fi 的設定都須能在沒有網際網路的區域網路完成。
+- 電腦、ESP32 與相機手機使用網路自動分配的 IP；不要求修改 Windows 固定 IPv4，也不以更換網路或電腦為由重新燒錄 ESP32。現有裝置須先更新一次支援配網的韌體。
+- 電腦先由 Windows 連上 Wi-Fi 或有線網路。Django 每次啟動在 Dashboard 頂部先展開可摺疊的網路選擇區，要求操作員確認使用的已連線網路介面，即使只有一個候選；選定後才開放設備操作、開始該網路的裝置探索並顯示相機 QR Code。
+- 第一版以 Demo 同一網路只有一台 Django 為範圍，ESP32 每次啟動均優先自動探索控制端；找不到時，Django 顯示目前伺服器網址，ESP32 設定頁允許手動填入作為備援。曾手動填入網址不改變下次啟動的探索優先順序；服務探索採下述本期技術基線；多主機配對不在本期範圍，發現多個有效控制端時停止自動選擇並顯示衝突。
+
+### ESP32 配網
+
+- ESP32 設定熱點使用使用者指定、符合至少 `8` 字元要求的密碼，與目標 Wi-Fi 密碼分開；實際值僅存於不納入 Git 的私密設定，不寫入規格。密碼已於討論定案，韌體仍須驗證設定值並明確回報熱點啟動失敗。
+
+- 採不接 USB 的設定熱點方式；無已存 Wi-Fi 設定時自動開啟，已有設定時由正常開機後長按板上 BOOT 進入。BOOT 腳位須依實際板型核對；長按約 `3 s` 為操作目標，不在按住 BOOT 上電或重置時配網。
+- 使用電腦或相機手機連入設定熱點，由 ESP32 本機提供獨立設定頁，選擇目標 Wi-Fi 並輸入密碼；不依賴 Django Dashboard 可連線。短暫斷線先重試既有設定，不自動清除設定。
+- 成功加入目標 Wi-Fi 並取得 IP 後保存設定，短暫顯示成功結果後自動關閉設定熱點，保留對目標 Wi-Fi 的連線；不要求再次按 BOOT，也不等待 Django 上線或網際網路可用。
+- 密碼錯誤或連線逾時時保留設定熱點，允許修改、重試。設定端在熱點關閉後切回目標 Wi-Fi；不保證手機或電腦會自動切回。
+- 只允許安全閒置時進入配網；送料、拍攝或分類途中長按 BOOT 不切換網路，須等本輪完成或人工安全復原後再操作。Dashboard 底部在停穩設定與送料校正之後，以獨立的「ESP32 網路設定」摺疊區（`dashboard.html` 的 `network-setup`）顯示配網狀態、阻擋原因與長按 BOOT 的操作指引；ESP32 離線時顯示無法確認，不宣稱可安全配網。
+
+### 手機加入與斷線恢復
+
+- 相機的操作目標為：Django 顯示依所選介面目前位址產生的相機 QR Code → iPhone 使用 Chrome 開啟 → 允許相機 → 傳送影像。維持 HTTPS 與既有相機頁；不把安裝手機信任憑證預設為必要步驟。
+- 電腦所選介面的 IP 改變後，Django 更新相機 QR Code，ESP32 重新探索控制端；手機由操作員重新掃碼加入，不要求跨位址自動遷移。若已觸發失聯復原鎖，仍須處理本輪並人工重新開始。
+- 接受首次使用新位址可能出現憑證警告並需額外確認，以實機結果為準；目前 Chrome 成功經驗不代表新 IP、新電腦或新手機均可用。憑證策略與 Safari 支援尚未定案。
+- 短暫請求失敗沿用既有有界、冪等重試；一次 HTTPS timeout 不直接判定裝置失聯。只有連續失敗超過失聯門檻後，才鎖定人工復原並跳過未完成的本輪；各裝置採下述本期門檻，仍須依實機量測驗證，不能將測試通過視為實體停止已驗收。
+- 確認失聯後採安全停止、自動重連、人工確認重新開始；送料馬達由 ESP32 在本機送出已校正的停止脈波，閘門與分類器維持最後已下達的目標角度，不再下達後續放行、分類或歸位命令。位置型伺服沒有回授，此行為不保證立即停在失聯當刻的實體位置；安全鎖須阻止重連後續跑原動作。
+- 人工復原沿用 Django 既有介面；重連本身不得自動恢復實體流程。停止策略不能取代既有本機感測與最大運轉時間保護，確切偵測及停止時序仍須實機驗證。
+- 拍攝中斷的當前果實採跳過：由操作員刪除本輪暫存資料並依既有安全程序移除實體果實，不自動續拍剩餘站點，也不重拍此顆。資料刪除不代表果實已移除，清理與人工復原完成後才可重新開始；已提交的資料沿用本文既有不回滾契約。
+- WebRTC 僅為預覽，手機 readiness 與正式照片上傳沿用本文既有契約；預覽中斷不能直接等同手機拍攝服務失聯。優雅暫停與斷線安全停止也須分開處理。
+
+### 本期技術基線
+
+本節為待實作的工程方案；上述已接受操作需求優先，以下數值與相容性均尚未實機驗收。行為與協定只在本文維護，GitHub 規格 Issue 引用本文並追蹤交付。
+
+#### Django 網路選擇與探索
+
+- 維持 Windows、單一 Django 程序與 `runsslserver 0.0.0.0:8000`；從本機 Dashboard 完成選擇。優先以 `--noreload` 執行 Demo；若保留 autoreload，只有實際 serving process 可以持有探索／監測資源，reload 後必須重新確認。測試、migration、import 不啟動網路執行緒。
+- 用標準函式庫以有界 subprocess 讀取 Windows PowerShell 網路介面 JSON，列出 Up、具有效 IPv4 的 Wi-Fi／Ethernet 介面名稱、介面 ID、位址與 prefix；排除 loopback、未連線與不可用位址。保留介面 ID 與所選位址，不猜測固定熱點或以連外 DNS 判定網路。讀取失敗回 `network_inventory_failed`，無候選回 `no_connected_network`，不能偷偷使用預設介面。
+- `GET /api/network/` 回候選介面、選擇狀態、`server_run_id`、`network_revision`、`server_url`、`camera_url`、`qr_url`、探索狀態與配網可用原因；`POST /api/network/` 只接受已列出的介面 ID／IPv4，重讀並確認仍可用。未選定時，設備／拍攝操作回 `409 network_selection_required`，允許狀態讀取、網路設定、既有資料檢查與必要清理；UI disabled 不取代後端檢查。
+- 選定後以 `python-zeroconf` 僅在所選 IPv4 註冊 `_pf-iot._tcp.local.`，SRV port 使用實際 HTTPS port，A record 為所選位址；TXT 含 `api_version=1`、`scheme=https`、`server_run_id`、`network_revision`、`info_path=/api/network/info/`。`GET /api/network/info/` 回同一份身分、選擇狀態與目前 URL，供 ESP32 確認目標；mDNS 結果只是探索線索，不能授權實體動作。設備請求須使用所選 origin 且來源在所選 IPv4 subnet；本機 Dashboard 可由 loopback 操作。這是網路範圍限制，不是裝置身分驗證。
+- 新增 `zeroconf` 與支援 SVG 的 `qrcode` 兩項必要套件，實作時核對並固定 PF／Python 相容版本。`GET /api/network/qr.svg` 的 QR Code 在 Django 本機產生且禁止快取，內容為所選 IPv4／HTTPS port 的 `/camera/`，不使用 localhost、Dashboard request host、外部 QR API 或要求手機能解析 `.local`。
+- Django 每秒監測所選介面。相同介面只換 IP 時先關閉舊探索、使舊工作與網址失效，再更新 revision、URL、QR 並重新註冊；運轉中套用失聯復原鎖。介面消失或操作員選擇另一介面時，回到待確認且不接受新動作；人工切換只允許安全閒置。解除舊註冊、socket、thread 與暫時資源須有 cleanup；資源建立失敗顯示具體 reason，不偽裝成功。
+- 服務探索失敗不等於 HTTPS 不可用：保留手動網址備援並明示探索不可用。Windows 須允許 Django HTTPS TCP port 與 mDNS UDP `5353`；不自動關閉防火牆。要求裝置彼此可達的 `2.4 GHz` Wi-Fi，手動網址也無法繞過 AP client isolation；企業登入入口、僅 `5 GHz` 與阻擋裝置互通的訪客網路不在支援範圍。
+
+#### ESP32 配網與控制端識別
+
+- 沿用 Arduino core 的 `WiFi`、`WebServer`、`Preferences`、`ESPmDNS`，不為配網另引入 WiFiManager。目標網路使用 DHCP；固定的 ESP32 設定熱點網址只用於自身配網，不是 Django 位址。設定熱點名稱帶裝置識別尾碼，頁面資源全在 Firmware，使用 `http://192.168.4.1/` 並顯示切回目標 Wi-Fi 的指引，不依賴 captive portal 自動彈出。
+- BOOT 以 active-low、去抖與 `3000 ms` 長按判定；本期 `esp32:esp32:esp32` 的 GPIO `0` 為實作候選，須核對實際主板後才宣稱可用。只在無送料、Capture、Gate 3 待處理、sorter、命令或未清理果實的安全閒置開 AP；無已存設定且正常初始化完成時自動開 AP。已發生帶果實的安全鎖不能用 BOOT 繞過；從未進入實體流程、僅舊 Wi-Fi 不可達的閒置裝置仍可重新配網。
+- 進入設定模式先停用自動 trigger／新命令，使用 AP+STA 非阻塞嘗試新 Wi-Fi。頁面提供非阻塞 SSID 掃描、SSID／密碼、可選手動 Django HTTPS origin 與連線結果；允許直接輸入 SSID。POST 驗證 SSID 長度與 Wi-Fi 密碼格式，密碼不用 query string、回應、log 或 QR；手動 origin 只接受有效 IPv4、HTTPS 與合法 port，不接受 userinfo、任意 API path 或外網位址。
+- 候選設定先留 RAM，取得目標 Wi-Fi 的有效 IP 後才以一筆帶 schema version 的 Preferences 設定記錄保存；檢查寫入結果，失敗不覆蓋上一份可用設定、不關 AP。Wi-Fi 嘗試 `15000 ms` 逾時，成功且保存完成後顯示結果 `3000 ms`，自動只關 AP、保留 STA。錯誤回 `wifi_connect_timeout`、`wifi_configuration_invalid`、`wifi_config_save_failed` 或 `setup_ap_failed`，允許修正再試；保存不以 Django／Internet 上線為條件。
+- 設定熱點密碼由 ignored 私密設定提供；不把實際值放進 Firmware example、文件、Issue 或 log。目標 Wi-Fi 密碼保存在裝置 NVS，第一版不聲稱具備抵抗實體 Flash 讀取的加密保護。一般重試不清空 NVS；更換網路不需重新燒錄。
+- 每次啟動、Wi-Fi 重新加入或控制端確認失聯後，先用 mDNS 找 `_pf-iot._tcp`，再查詢網路資訊確認版本／身分與 URL。首輪探索最多 `15000 ms`，期間不啟動動作；找不到才試已存手動 origin，仍持續有界背景探索。多個有效控制端回 `multiple_controllers_found` 而不任選；已選定健康控制端不因背景發現別台而遷移。
+- 指向本次探索或手動驗證的 HTTPS origin 加上既有 command／report routes，移除編譯時固定 Wi-Fi 與完整 API URL 的依賴。本期沿用既有 ESP32 `setInsecure()`，不宣稱驗證 HTTPS 伺服器憑證或抵抗區網偽冒，僅適用可信任、隔離區網；正式裝置驗證另案設計。控制端、網路 revision 或 `boot_id` 改變使舊 lease 與舊動作失效；未完成流程須人工復原，不能將 report 或 command 重送到另一控制端後繼續。
+
+#### 失聯門檻與安全交握
+
+| 項目 | 本期基線 | 判定 |
+|---|---:|---|
+| Django／ESP32 keepalive | `1000 ms` | 動作中也持續，不以 command polling 是否閒置判定健康 |
+| ESP32 控制 lease | `6000 ms` | 自最近有效請求的送出時間起算；逾期鎖定，不以單次 timeout 判定 |
+| ESP32 Wi-Fi link 持續中斷 | `1000 ms` | 本機確認後立即安全停止，不等待重新探索或 Django |
+| Django ESP32 失聯 | `6000 ms` | 自最後有效 keepalive／command／report 接收時間起算；取代本期控制路徑的舊 online window |
+| 相機 readiness | `5000 ms` | 沿用目前契約，過期立即禁止開始新送料／拍攝 |
+| 相機確認失聯 | `10000 ms` | 曾加入且正在使用的相機持續無 ready，鎖定人工復原；未加入不產生本輪失聯事件 |
+| Django 監測／ESP32 停止反應 | `1000 ms`／`100 ms` | Django 最遲下一監測週期鎖定；ESP32 在本機門檻到期後至停止輸出之延遲目標，均待實測 |
+
+- ESP32 在既有 command／report 攜帶 `network_capability=local_network_v1`，另以 `GET /api/esp32/heartbeat/` 在動作中取得狀態，heartbeat 不領取／建立 motor command。缺少 `local_network_v1` 時，Django 回 `network_capability_missing` 並禁止硬體運轉，不因既有 feeder／sorter capability 而放行。Django 控制回應含 `server_run_id`、`network_revision`、`recovery_generation`、`control_allowed` 與 `control_lease_ms`；裝置同時回報本機安全鎖、當前動作及可否配網。Django 只對相符裝置／版本的有效回應續期；`control_allowed=false` 立即鎖定。優雅暫停允許目前果實完成，不以它關閉目前動作 lease；未選網路、確認失聯與復原鎖則關閉。
+- HTTP `2xx`、mDNS 回應或 Wi-Fi 有 IP 均不能單獨續 lease，須驗證回應身分與控制欄位。請求送出時間、裝置身分與 generation 一併鎖存；較早請求的延遲回應、舊 revision、舊 generation 或鎖定前回應不得解除鎖或延長期限。Django 先判斷舊 heartbeat 是否已超門檻再更新，避免第一筆重連請求掩蓋中間失聯。只有本輪操作或自動運轉曾成立才產生操作中斷鎖；啟動等待連線與安全閒置可配網須獨立表示。
+- 不沿用會阻塞控制 `tick()` 的同步 HTTPS 路徑：由單一有界網路 worker 處理 HTTPS／探索，以一筆 in-flight request 與結果回交；控制迴圈唯一持有 GPIO／servo／安全狀態，網路 worker 不驅動馬達。keepalive 優先於一般 retry，每次 HTTP connect／read 使用有界 timeout；網路 worker 卡住也不能阻止控制迴圈判斷 lease、HC-SR04 或最大送料時間。實作須量測最壞 loop 間隔，確認上述停止反應目標。
+- Django 獨立監測即使 Dashboard 關閉仍執行，並在開始、trigger、command、report、照片保存及分類等既有入口共同以 `STATE_LOCK` 檢查安全狀態。純拍攝只依相機與所選網路判斷，不因 ESP32 缺席鎖定；WebRTC 預覽狀態不刷新／撤銷拍攝 readiness。
+- 確認失聯時：關閉 auto run／auto trigger、取消未執行命令與後續 phase、撤銷 capture token，保持已保存暫存照片供人工刪除；ESP32 先寫校正停止脈波，再取消分類器／閘門 phase，禁止 timeout 的 HomeAll。中斷命令只能回報 aborted，不回 completed，不因重連重新執行；舊 report 可被冪等確認但不能建立新拍攝、放行或送料。
+- 沿用既有原子 recovery marker 的寫入方式，保存網路失聯的 fruit／command／boot／控制端身分、reason 與 recovery generation；Django 重啟恢復鎖，ESP32 在確認失聯時以 NVS 保存 interlock 與當次校正停止脈波，重啟先恢復鎖及停止值，不能自行解除或自動歸位。保存失敗保持記憶體鎖與動作停用並回 `recovery_persist_failed`，不得宣稱復原完成；實體重新啟動的保持位置／初始化限制仍須驗收。
+- 人工先刪除／隔離本輪暫存資料，再依斷電程序移除果實、確認手已離開，最後於既有主操作區明確確認復原。沿用 `recovery_confirmed=true`，新增同一 command slot 的 `recover_network` 安全歸位交握，附當前 recovery generation；ESP32 只接受人工授權後的新交握，保持送料停止，依既有停穩時序歸位並回 `network_recovery_completed`。Django 收到相符 ACK 且完成雙端清鎖提交後，才在全部開始條件成立時允許新的 `feed_one`；復原失敗／再次失聯／舊 ACK 維持鎖。ESP32 保留相同 generation／command 的完成結果並只重送 ACK，不因 timeout 重複歸位；Django 在 ACK 的回應確認提交後，ESP32 才清除本機 interlock，清除保存失敗仍不得送料。純拍攝以既有拍攝開始入口的明確復原確認解除相機／網路鎖，不建立此 motor command。
+- 無 active fruit 不代表沒有待移除實體果實；中斷分類時已提交資料維持不回滾，仍須人工移除。檔案刪除失敗沿用既有隔離／deferred cleanup，阻擋原因顯示清楚。鎖定期間拒絕重拍、分類與切換模式等可繞過處理的入口；清理、連線診斷與相符復原 ACK 仍可用。
+- 所有門檻先於本輪下一個實體輸出檢查。分類正常時序短於失聯門檻，確認失聯前已完成的動作不能倒轉或宣稱被阻止；本期保證的是確認失聯後不再下達後續動作，須在各 phase 分別驗收。
+
+#### 手機與離線驗收前提
+
+- 沿用 HTTPS／Chrome／相機啟動按鈕與權限流程。先驗證既有憑證在新電腦／IP 的 `isSecureContext`、`getUserMedia` 及照片上傳；若只接受警告仍無法使用，回 `camera_secure_context_required` 並記錄阻礙，不能以換 Chrome 宣稱解決憑證信任，也不擅自加入手機安裝憑證流程。
+- Dashboard 與相機兩端 WebRTC 使用一致的本機 ICE 設定，不依賴外部 STUN／TURN；靜態檔、QR、探索與 signaling 都由區域網路提供。區網 ICE／瀏覽器 host candidate 仍須實測，預覽失敗必須獨立顯示並允許正式照片採集。
+- 畫面分開顯示網路已選擇、ESP32 已連線、相機可拍攝與 RTC 預覽，避免用單一「已連線」判斷可運轉。
+
 ## 硬體設定
 
 正式 Firmware：`firmware/Three_Gate_Data_Collection/Three_Gate_Data_Collection.ino`
@@ -167,7 +252,7 @@ ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、送料能力
 
 ### 下一顆果實
 
-目前由人工分類按鈕提供四級分類結果，未來 AI 只可取代結果來源並進入相同分類邊界。Django 確認 `gate3_sorter_v1` 後，仍先提交 Dataset，再建立 `classify_fruit`。只有相符的 `classification_sorter_completed` 已清除 command slot，且自動運轉、相機 readiness 與全部開始條件仍成立時，Django 才建立下一個 `feed_one`。Sorter failed／timeout、Capture timeout、相機 stale 或任何 blocking error 都不得建立下一次送料；相機恢復時可自動繼續，其他錯誤由操作員優雅暫停並排除。
+目前由人工分類按鈕提供四級分類結果，未來 AI 只可取代結果來源並進入相同分類邊界。Django 確認 `gate3_sorter_v1` 後，仍先提交 Dataset，再建立 `classify_fruit`。只有相符的 `classification_sorter_completed` 已清除 command slot，且自動運轉、相機 readiness 與全部開始條件仍成立時，Django 才建立下一個 `feed_one`。Sorter failed／timeout、Capture timeout、相機 stale 或任何 blocking error 都不得建立下一次送料。現行程式在等待下一顆且相機恢復時仍可自動繼續，其他錯誤由操作員優雅暫停並排除；此相機自動恢復行為與上述「裝置網路連線目標」有差異，尚未完成遷移。
 
 ### 安全逾時、感測異常與延遲抵達
 

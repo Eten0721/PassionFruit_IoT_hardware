@@ -21,5 +21,6 @@ ADR 記錄長期有效、跨模組或涉及安全與資料一致性的決策。�
 | [0015](0015-integrated-radial-paddle-feeder.md) | Superseded | 一體式徑向撥料送料筒；徑向撥片、送料馬達與供電由 ADR-0016 取代 |
 | [0016](0016-hardware-platform-feeder-sorter-redesign.md) | Accepted | 拍攝平台、分槽盤送料、下置式分類器與單電源雙降壓分支 |
 | [0017](0017-fixed-django-model-assets.md) | Accepted | Django 固定四模型部署權重與 Git LFS 管理 |
+| [0018](0018-local-network-onboarding.md) | Accepted（目標） | 區域網路獨立運作與裝置配網；尚未實作驗收 |
 
 完成項目的實作過程、版本進度與 commit 歷史不另建 ADR，由 Git、tag 與 release 保存。

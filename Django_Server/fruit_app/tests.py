@@ -10,6 +10,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, SimpleTestCase, override_settings
 
 from . import views
+from . import local_network
 
 
 class DataCollectionFlowTests(SimpleTestCase):
@@ -26,6 +27,18 @@ class DataCollectionFlowTests(SimpleTestCase):
             MOTOR_COMMAND_SEQUENCE_PATH=self.motor_command_sequence_path,
         )
         self.settings_override.enable()
+        # Existing flow tests isolate their contracts from the new onboarding gate.
+        test_network = local_network.LocalNetwork(lambda: [{
+            'interface_id': '7', 'name': 'Wi-Fi', 'ipv4': '192.168.50.10', 'prefix': 24,
+        }])
+        test_network.start_run(port=8000)
+        test_network.select('7', '192.168.50.10')
+        self.network_patcher = mock.patch.object(local_network, 'NETWORK', test_network)
+        self.network_patcher.start()
+        self.addCleanup(self.network_patcher.stop)
+        self.hardware_guard_patcher = mock.patch.object(views, '_network_hardware_disabled_reason', return_value=None)
+        self.hardware_guard_patcher.start()
+        self.addCleanup(self.hardware_guard_patcher.stop)
         views.reset_runtime_state_for_tests()
         views._ensure_dataset_structure()
         self.client = Client()

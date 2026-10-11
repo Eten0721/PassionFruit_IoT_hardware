@@ -27,6 +27,8 @@ from . import (
     webrtc_signaling,
 )
 from .runtime_state import RuntimeState
+from . import local_network
+from .local_network import network_required
 
 
 LABELS = ['上等', '中等', '下等', '加工']
@@ -267,6 +269,55 @@ def home_view(request):
     return render(request, 'home.html')
 
 
+@csrf_exempt
+def network_api(request):
+    if request.method == 'GET':
+        return _no_store_response(JsonResponse(local_network.NETWORK.snapshot()))
+    if request.method != 'POST':
+        return local_network.network_error('network_method_not_allowed', status=405)
+    reason = local_network.NETWORK.request_reason(request, local_only=True)
+    if reason:
+        return local_network.network_error(reason)
+    data = _request_data(request)
+    if not isinstance(data.get('interface_id'), str) or not isinstance(data.get('ipv4'), str):
+        return local_network.network_error('network_selection_invalid', status=400)
+    _ensure_dataset_structure()
+    with STATE_LOCK:
+        _sync_active_state_with_filesystem()
+        reason = _options_disabled_reason()
+        if reason:
+            return local_network.network_error(reason)
+        try:
+            payload = local_network.NETWORK.select(data['interface_id'], data['ipv4'])
+        except local_network.NetworkError as exc:
+            return local_network.network_error(exc.reason)
+        APP_STATE['camera_last_live_frame_at'] = None
+        APP_STATE['camera_last_live_frame_monotonic'] = None
+        return _no_store_response(JsonResponse(payload))
+
+
+@require_GET
+def network_info_api(request):
+    return _no_store_response(JsonResponse(local_network.NETWORK.snapshot()))
+
+
+@require_GET
+def network_qr_api(request):
+    payload = local_network.NETWORK.snapshot()
+    if not payload['selected']:
+        return local_network.network_error(payload['reason'])
+    import qrcode
+    from qrcode.image.svg import SvgPathFillImage
+    image = qrcode.make(payload['camera_url'], image_factory=SvgPathFillImage)
+    return _no_store_response(HttpResponse(image.to_string(), content_type='image/svg+xml'))
+
+
+def _network_hardware_disabled_reason():
+    # shortcut: hardware stays disabled until the lease/interlock slice is complete.
+    return 'network_capability_missing'
+
+
+@network_required
 def camera_view(request):
     _ensure_dataset_structure()
     return _no_store_response(render(request, 'camera.html'))
@@ -292,6 +343,16 @@ def camera_state_api(request):
     """Return only the fields needed by the high-frequency camera poller."""
     _ensure_dataset_structure()
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason and request.GET.get('camera_ready') == '1':
+            return local_network.network_error(reason)
+        if reason:
+            payload = _camera_state_payload()
+            payload['capture_requested'] = False
+            payload['pending_capture'] = False
+            payload['capture']['requested'] = False
+            payload['reason'] = reason
+            return _no_store_response(JsonResponse(payload))
         if request.GET.get('camera_ready') == '1':
             APP_STATE['camera_last_live_frame_at'] = _now_string()
             APP_STATE['camera_last_live_frame_monotonic'] = time.monotonic()
@@ -303,6 +364,7 @@ def camera_state_api(request):
 
 @csrf_exempt
 @require_POST
+@network_required(cleanup=True)
 def set_counter_api(request):
     _ensure_dataset_structure()
     data = _request_data(request)
@@ -315,6 +377,9 @@ def set_counter_api(request):
         return _json_error('起始 ID 必須大於 0。', status=400)
 
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request, cleanup=True)
+        if reason:
+            return local_network.network_error(reason)
         fruit_id = _format_fruit_id(next_id)
         if _fruit_id_exists(fruit_id):
             return _json_error(f'{fruit_id} 已有有效資料，請先重置 dataset 或改用其他起始 ID。', status=409)
@@ -325,11 +390,15 @@ def set_counter_api(request):
 
 @csrf_exempt
 @require_POST
+@network_required(cleanup=True)
 def capture_timing_api(request):
     """Persist a complete next-fruit timing profile while the controller is idle."""
     _ensure_dataset_structure()
     data = _request_data(request)
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request, cleanup=True)
+        if reason:
+            return local_network.network_error(reason)
         _sync_active_state_with_filesystem()
         if (
             APP_STATE.get('auto_run_enabled')
@@ -422,9 +491,16 @@ def capture_timing_api(request):
 
 @csrf_exempt
 @require_POST
+@network_required
 def feeder_test_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
+        reason = _network_hardware_disabled_reason()
+        if reason:
+            return local_network.network_error(reason)
         _sync_active_state_with_filesystem()
         reason = _feeder_test_disabled_reason()
         if reason:
@@ -471,6 +547,7 @@ def feeder_test_api(request):
 
 @csrf_exempt
 @require_POST
+@network_required
 def feeder_calibration_confirm_api(request):
     """Persist operator confirmation for one successful test at the current revision."""
     _ensure_dataset_structure()
@@ -484,6 +561,12 @@ def feeder_calibration_confirm_api(request):
         )
 
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
+        reason = _network_hardware_disabled_reason()
+        if reason:
+            return local_network.network_error(reason)
         _sync_active_state_with_filesystem()
         current_revision = APP_STATE['capture_timing_revision']
         if revision != current_revision:
@@ -570,6 +653,7 @@ def _photo_capture_disabled_reason():
 
 @csrf_exempt
 @require_POST
+@network_required
 def collection_options_api(request):
     _ensure_dataset_structure()
     data = _request_data(request)
@@ -578,6 +662,9 @@ def collection_options_api(request):
     if data.get('hardware_mode') not in ('hardware', 'photo_only'):
         return _json_error('硬體選項無效。', reason='invalid_hardware_mode')
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
         reason = _options_disabled_reason()
         if reason:
             return _json_error('目前流程尚未結束，無法切換選項。', status=409, reason=reason)
@@ -612,9 +699,13 @@ def _request_photo_capture(station_index):
 
 @csrf_exempt
 @require_POST
+@network_required
 def photo_capture_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
         _sync_active_state_with_filesystem()
         reason = _photo_capture_disabled_reason()
         if reason:
@@ -649,6 +740,7 @@ def photo_capture_api(request):
 
 @csrf_exempt
 @require_POST
+@network_required(cleanup=True)
 def auto_run_api(request):
     _ensure_dataset_structure()
     data = _request_data(request)
@@ -661,6 +753,13 @@ def auto_run_api(request):
         )
 
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request, cleanup=True)
+        if reason:
+            return local_network.network_error(reason)
+        if enabled:
+            reason = local_network.NETWORK.request_reason(request) or _network_hardware_disabled_reason()
+            if reason:
+                return local_network.network_error(reason)
         _sync_active_state_with_filesystem()
         if enabled and APP_STATE.get('hardware_mode') == 'photo_only':
             return _json_error('純拍攝不啟用自動送料。', status=409, reason='hardware_mode_required')
@@ -750,9 +849,16 @@ def auto_run_api(request):
 
 @csrf_exempt
 @require_POST
+@network_required
 def esp32_trigger_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
+        reason = _network_hardware_disabled_reason()
+        if reason:
+            return local_network.network_error(reason)
         APP_STATE['last_esp32_report_at'] = _now_string()
         try:
             payload = _create_capture_session(source='esp32')
@@ -771,9 +877,16 @@ def esp32_trigger_api(request):
 
 
 @require_GET
+@network_required
 def esp32_command_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
+        reason = _network_hardware_disabled_reason()
+        if reason:
+            return local_network.network_error(reason)
         APP_STATE['last_esp32_poll_at'] = _now_string()
         APP_STATE['last_esp32_poll_monotonic'] = time.monotonic()
         previous_boot_id = APP_STATE.get('esp32_boot_id')
@@ -947,6 +1060,7 @@ def esp32_command_api(request):
 
 @csrf_exempt
 @require_POST
+@network_required
 def esp32_report_api(request):
     _ensure_dataset_structure()
     data = _request_data(request)
@@ -954,6 +1068,12 @@ def esp32_report_api(request):
     command_id = _safe_int(data.get('command_id'))
 
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
+        reason = _network_hardware_disabled_reason()
+        if reason:
+            return local_network.network_error(reason)
         APP_STATE['last_esp32_report_at'] = _now_string()
         if APP_STATE.get('hardware_mode') == 'photo_only':
             return JsonResponse(_compact_esp32_payload({
@@ -1044,9 +1164,15 @@ def esp32_report_api(request):
 
 @csrf_exempt
 @require_POST
+@network_required
 def recapture_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
+        if not _photo_only_session() and _network_hardware_disabled_reason():
+            return local_network.network_error(_network_hardware_disabled_reason())
         _sync_active_state_with_filesystem()
         if _sorter_busy():
             return _json_error(
@@ -1105,10 +1231,16 @@ def recapture_api(request):
 
 @csrf_exempt
 @require_POST
+@network_required
 def capture_started_api(request):
     _ensure_dataset_structure()
     data = _request_data(request)
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
+        if not _photo_only_session() and _network_hardware_disabled_reason():
+            return local_network.network_error(_network_hardware_disabled_reason())
         fruit_id = data.get('fruit_id')
         capture_token = _safe_int(data.get('capture_token'))
         station_index = _safe_int(data.get('station_index'))
@@ -1269,6 +1401,7 @@ def _start_detection_job(fruit_id, fruit_dir):
 
 @csrf_exempt
 @require_POST
+@network_required
 def upload_images_api(request):
     _ensure_dataset_structure()
     image_file = request.FILES.get('image')
@@ -1279,6 +1412,11 @@ def upload_images_api(request):
         return _json_error('每次只能上傳當站的單張照片，欄位名稱請使用 image。', status=400, reason='missing_image')
 
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
+        if not _photo_only_session() and _network_hardware_disabled_reason():
+            return local_network.network_error(_network_hardware_disabled_reason())
         active_fruit_id = APP_STATE['active_fruit_id']
         if not active_fruit_id:
             return _json_error('目前沒有等待上傳的 fruit 資料夾。', status=409)
@@ -1426,6 +1564,7 @@ def upload_images_api(request):
 
 @csrf_exempt
 @require_POST
+@network_required
 def classify_api(request):
     _ensure_dataset_structure()
     data = _request_data(request)
@@ -1439,6 +1578,11 @@ def classify_api(request):
         )
 
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
+        if not _photo_only_session() and _network_hardware_disabled_reason():
+            return local_network.network_error(_network_hardware_disabled_reason())
         _sync_active_state_with_filesystem()
         if APP_STATE.get('dataset_operation'):
             return _json_error('已有 dataset 檔案操作進行中，請稍後再試。', status=409, reason='dataset_busy')
@@ -1593,9 +1737,13 @@ def classify_api(request):
 
 @csrf_exempt
 @require_POST
+@network_required(cleanup=True)
 def discard_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request, cleanup=True)
+        if reason:
+            return local_network.network_error(reason)
         _sync_active_state_with_filesystem()
         if APP_STATE.get('dataset_operation'):
             return _json_error('已有 dataset 檔案操作進行中，請稍後再試。', status=409, reason='dataset_busy')
@@ -1681,9 +1829,13 @@ def discard_api(request):
 
 @csrf_exempt
 @require_POST
+@network_required(cleanup=True)
 def reset_dataset_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request, cleanup=True)
+        if reason:
+            return local_network.network_error(reason)
         _sync_active_state_with_filesystem()
         if APP_STATE.get('dataset_operation'):
             return _json_error('已有 dataset 檔案操作進行中，請稍後再試。', status=409, reason='dataset_busy')
@@ -1789,6 +1941,7 @@ def open_dataset_folder_api(request):
 
 @csrf_exempt
 @require_POST
+@network_required
 def webrtc_offer_api(request):
     data = _request_data(request)
     offer = data.get('offer') or data.get('description') or data
@@ -1796,12 +1949,16 @@ def webrtc_offer_api(request):
         return _json_error('WebRTC offer 格式不正確。', status=400)
 
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
         offer_id = webrtc_signaling.accept_offer(WEBRTC_STATE, offer, _now_string)
     return JsonResponse({'status': 'success', 'offer_id': offer_id})
 
 
 @csrf_exempt
 @require_POST
+@network_required
 def webrtc_answer_api(request):
     data = _request_data(request)
     answer = data.get('answer') or data.get('description') or data
@@ -1809,12 +1966,16 @@ def webrtc_answer_api(request):
         return _json_error('WebRTC answer 格式不正確。', status=400)
 
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
         answer_id = webrtc_signaling.accept_answer(WEBRTC_STATE, answer, _now_string)
     return JsonResponse({'status': 'success', 'answer_id': answer_id})
 
 
 @csrf_exempt
 @require_POST
+@network_required
 def webrtc_ice_api(request):
     data = _request_data(request)
     role = data.get('role')
@@ -1825,6 +1986,9 @@ def webrtc_ice_api(request):
         return JsonResponse({'status': 'success', 'ignored': True})
 
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
         webrtc_signaling.add_ice_candidate(
             WEBRTC_STATE,
             role=role,
@@ -1835,8 +1999,12 @@ def webrtc_ice_api(request):
 
 
 @require_GET
+@network_required
 def webrtc_state_api(request):
     with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
         dashboard_ice = WEBRTC_STATE['dashboard_ice']
         camera_ice = WEBRTC_STATE['camera_ice']
         dashboard_from = _ice_from_index(request.GET.get('dashboard_ice_from'), len(dashboard_ice))
@@ -3476,6 +3644,9 @@ def _feeder_calibration_confirm_disabled_reason():
 
 
 def _feeder_hardware_disabled_reason(*, allow_recovery=False):
+    reason = _network_hardware_disabled_reason()
+    if reason:
+        return reason
     if APP_STATE.get('hardware_mode') == 'photo_only':
         return 'hardware_mode_required'
     recovery = bool(APP_STATE.get('auto_run_recovery_reason'))
@@ -3677,6 +3848,7 @@ def _operator_alert_payload():
     ):
         feeder_result = {}
     location = {
+        'network_capability_missing': 'ESP32 / local network',
         'feed_arrival_unconfirmed': 'upstream_feeder / HC-SR04',
         'esp32_restarted_during_feed': 'ESP32 / upstream_feeder',
         'esp32_restarted_during_capture': 'ESP32 / SG90 gates',
@@ -3712,6 +3884,7 @@ def _operator_alert_payload():
         'system_not_idle': 'Django state machine',
     }.get(reason, APP_STATE.get('status') or 'unknown')
     instruction = {
+        'network_capability_missing': 'ESP32 尚未支援目前的網路協定。請先選擇純拍攝模式；硬體操作需等待 Firmware 完成支援。',
         'camera_upload_timeout': '手機上傳逾時。檢查相機後刪除本輪，再按一次開始新一輪純拍攝。' if _photo_only_session() else '檢查手機相機頁與網路連線後重新拍攝。',
         'dataset_commit_failed': '照片保存狀態不確定，請檢查暫存資料與 Dataset 後再操作。',
         'capture_options_invalid': '請保留照片並檢查暫存資料的復原紀錄。',
@@ -3900,6 +4073,23 @@ def _state_payload(extra=None):
     }
     if extra:
         payload.update(extra)
+    network = local_network.NETWORK.snapshot()
+    network['selection_disabled_reason'] = _options_disabled_reason()
+    network['selection_allowed'] = network['selection_disabled_reason'] is None
+    if not _esp32_is_online():
+        network['setup'] = {'status': 'unknown', 'reason': 'esp32_offline'}
+    payload['network'] = network
+    if not network['selected']:
+        payload['camera_ready'] = False
+        for key in ('can_change_options', 'can_start_photo_capture', 'can_classify',
+                    'can_recapture', 'can_test_feeder', 'can_start_auto_run',
+                    'can_confirm_feeder_calibration'):
+            payload[key] = False
+        payload['options_disabled_reason'] = network['reason']
+        payload['photo_capture_disabled_reason'] = network['reason']
+    if not _photo_only_session() and _network_hardware_disabled_reason():
+        payload['can_classify'] = False
+        payload['can_recapture'] = False
     return payload
 
 

@@ -4,6 +4,7 @@ const localVideo = document.getElementById('local-video');
     const startButton = document.getElementById('btn-start-camera');
     const statusEl = document.getElementById('status');
     const diagnosticEl = document.getElementById('diagnostic');
+    const rtcStatusEl = document.getElementById('rtc-status');
 
     let localStream = null;
     let peerConnection = null;
@@ -25,7 +26,7 @@ const localVideo = document.getElementById('local-video');
     const captureStartedTelemetryTimeoutMs = 750;
     const webrtcPollMs = 1000;
     const RTC_CONFIG = {
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+        iceServers: [],
     };
 
     function setStatus(message) {
@@ -34,7 +35,7 @@ const localVideo = document.getElementById('local-video');
 
     function updateDiagnostic() {
         if (!window.isSecureContext) {
-            diagnosticEl.textContent = '非安全來源：手機瀏覽器通常不會開放相機。請使用 https://電腦IP:8000/camera/，並先接受自簽憑證。';
+            diagnosticEl.textContent = 'camera_secure_context_required：isSecureContext=false。請用控制台所選網路的 HTTPS 相機網址；接受憑證警告後仍須確認此檢查通過。';
             return;
         }
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -121,7 +122,7 @@ const localVideo = document.getElementById('local-video');
     async function startCamera() {
         updateDiagnostic();
         if (!window.isSecureContext) {
-            setStatus('目前不是安全來源，相機權限不會被瀏覽器開放。');
+            setStatus('camera_secure_context_required：目前不是安全來源，相機權限不會被瀏覽器開放。');
             return;
         }
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -154,7 +155,7 @@ const localVideo = document.getElementById('local-video');
             localVideo.srcObject = localStream;
             watchLiveFrames();
             startPanel.classList.add('hidden');
-            setStatus('相機已開啟，等待 dashboard 連線與拍攝命令。');
+            setStatus('相機已開啟，等待正式拍攝請求；RTC 預覽另行連線。');
             currentOfferId = 0;
             knownAnswerId = 0;
             restartWebrtcPolling(0);
@@ -193,7 +194,7 @@ const localVideo = document.getElementById('local-video');
         const offerId = Number(data.offer_id || 0);
         if (!localStream) {
             if (data.offer_present) {
-                setStatus('dashboard 已送出即時畫面請求，請先開啟相機以回覆 WebRTC answer。');
+                rtcStatusEl.textContent = 'RTC 預覽：請先開啟相機。';
             }
             return;
         }
@@ -212,7 +213,7 @@ const localVideo = document.getElementById('local-video');
                 },
             });
             knownAnswerId = Number(answerPayload.answer_id || knownAnswerId);
-            setStatus('已連線 dashboard 即時畫面。');
+            rtcStatusEl.textContent = 'RTC 預覽已連線。';
         } else if (offerId && offerId !== currentOfferId) {
             currentOfferId = 0;
             restartWebrtcPolling(0);
@@ -245,9 +246,11 @@ const localVideo = document.getElementById('local-video');
             });
             const response = await fetch(`/api/webrtc/state?${params.toString()}`, { cache: 'no-store' });
             const data = await response.json();
+            if (!response.ok) throwHttpError(data, response.status);
             await handleWebrtcState(data);
             return data;
         } catch (error) {
+            rtcStatusEl.textContent = `RTC 預覽同步失敗：${error.message}；正式照片採集獨立運作。`;
             console.warn('WebRTC signaling 同步失敗', error);
             return null;
         }
@@ -263,7 +266,7 @@ const localVideo = document.getElementById('local-video');
         const failedHint = peerConnection.connectionState === 'failed' || peerConnection.iceConnectionState === 'failed'
             ? '，請回 dashboard 按重新連線串流'
             : '';
-        setStatus(`串流狀態：${peerConnection.connectionState} / ICE：${peerConnection.iceConnectionState}${debug}${failedHint}`);
+        rtcStatusEl.textContent = `RTC 預覽：${peerConnection.connectionState} / ICE：${peerConnection.iceConnectionState}${debug}${failedHint}；正式照片採集獨立運作。`;
     }
 
     async function pollCaptureState() {
