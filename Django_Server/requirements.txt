@@ -2,3 +2,4 @@ Django==5.2.16
 django-sslserver-v2==1.0
 python-dotenv==1.2.2
 qrcode==8.2
+zeroconf==0.151.5

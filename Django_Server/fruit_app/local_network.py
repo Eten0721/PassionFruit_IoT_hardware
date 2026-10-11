@@ -10,6 +10,24 @@ from functools import partial, wraps
 from django.http import JsonResponse
 
 
+def publish_mdns(selection, port, run_id, revision):
+    from zeroconf import IPVersion, ServiceInfo, Zeroconf
+    service = ServiceInfo(
+        '_pf-iot._tcp.local.', f'pf-{run_id}._pf-iot._tcp.local.',
+        port=port, addresses=[ipaddress.IPv4Address(selection['ipv4']).packed],
+        server=f'pf-{run_id}.local.',
+        properties={'api_version': '1', 'scheme': 'https', 'server_run_id': run_id,
+                    'network_revision': str(revision), 'info_path': '/api/network/info/'},
+    )
+    publisher = Zeroconf(interfaces=[selection['ipv4']], ip_version=IPVersion.V4Only)
+    try:
+        publisher.register_service(service)
+    except Exception:
+        publisher.close()
+        raise
+    return publisher
+
+
 class NetworkError(Exception):
     def __init__(self, reason):
         self.reason = reason
@@ -65,8 +83,11 @@ ConvertTo-Json -InputObject $rows -Compress
 
 
 class LocalNetwork:
-    def __init__(self, inventory=read_windows_interfaces):
+    def __init__(self, inventory=read_windows_interfaces, discovery_factory=publish_mdns):
         self._inventory = inventory
+        self._discovery_factory = discovery_factory
+        self._publisher = None
+        self._published_revision = None
         self._lock = threading.RLock()
         self._worker = None
         self._stop = threading.Event()
@@ -82,6 +103,9 @@ class LocalNetwork:
             self._interfaces = []
             self._checked_at = None
             self._reason = 'network_selection_required'
+            self._discovery = {'status': 'waiting', 'reason': 'network_selection_required'}
+            self._diagnostic = None
+            self._diagnostic_report_at = None
 
     def start_monitor(self):
         if self._worker is not None:
@@ -97,13 +121,45 @@ class LocalNetwork:
             raise RuntimeError(self._reason) from exc
 
     def stop_monitor(self):
-        if self._worker is None:
+        if self._worker is not None:
+            self._stop.set()
+            self._worker.join(timeout=12)
+            if self._worker.is_alive():
+                raise RuntimeError('network_monitor_shutdown_failed')
+            self._worker = None
+        self._close_discovery()
+
+    def _close_discovery(self):
+        if self._publisher is not None:
+            self._publisher.close()
+            self._publisher = None
+        self._published_revision = None
+
+    def _sync_discovery(self):
+        # Only the serving monitor owns mDNS sockets; HTTP never waits for registration.
+        with self._lock:
+            revision = self.revision
+            selection = self.selection.copy() if self.selection else None
+            run_id, port = self.server_run_id, self.port
+        if revision == self._published_revision:
             return
-        self._stop.set()
-        self._worker.join(timeout=6)
-        if self._worker.is_alive():
-            raise RuntimeError('network_monitor_shutdown_failed')
-        self._worker = None
+        self._close_discovery()
+        publisher = None
+        status = {'status': 'waiting', 'reason': 'network_selection_required'}
+        if selection:
+            try:
+                publisher = self._discovery_factory(selection, port, run_id, revision)
+                status = {'status': 'advertising', 'reason': None}
+            except Exception:
+                status = {'status': 'unavailable', 'reason': 'network_discovery_registration_failed'}
+        with self._lock:
+            stale = revision != self.revision or self._stop.is_set()
+            if not stale:
+                self._publisher = publisher
+                self._published_revision = revision if publisher or not selection else None
+                self._discovery = status
+        if stale and publisher is not None:
+            publisher.close()
 
     def _read_inventory(self):
         try:
@@ -119,11 +175,13 @@ class LocalNetwork:
                 self.revision += 1
             self.selection = None
             self._reason = reason
+            self._invalidate_diagnostics()
             return
         if self.selection and self.selection not in rows:
             self.selection = None
             self.revision += 1
             self._reason = 'network_selection_stale'
+            self._invalidate_diagnostics()
         if not rows:
             self._reason = 'no_connected_network'
         elif self._reason in ('no_connected_network', 'network_inventory_failed', 'network_inventory_pending'):
@@ -138,6 +196,7 @@ class LocalNetwork:
             with self._lock:
                 if revision == self.revision:
                     self._apply_inventory(rows, reason)
+            self._sync_discovery()
             self._stop.wait(max(0, 1 - (time.monotonic() - started)))
 
     def _refresh(self, force=False):
@@ -161,7 +220,53 @@ class LocalNetwork:
             self.selection = candidate.copy()
             self.revision += 1
             self._reason = None
+            self._invalidate_diagnostics()
+            self._discovery = {'status': 'pending', 'reason': 'network_discovery_pending'}
             return self.snapshot()
+
+    def _invalidate_diagnostics(self):
+        self._diagnostic = None
+        self._diagnostic_report_at = None
+        self._discovery = {'status': 'waiting', 'reason': self._reason}
+
+    def diagnostic(self, data, *, report=False, observation=False):
+        with self._lock:
+            self._refresh()
+            if not self.selection:
+                raise NetworkError(self._reason)
+            if (data.get('server_run_id') != self.server_run_id
+                    or str(data.get('network_revision')) != str(self.revision)):
+                raise NetworkError('network_identity_mismatch')
+            boot_id = data.get('boot_id')
+            if not isinstance(boot_id, str) or not 1 <= len(boot_id) <= 96:
+                raise NetworkError('network_diagnostic_invalid')
+            if observation:
+                if data.get('discovery_reason') != 'multiple_controllers_found':
+                    raise NetworkError('network_diagnostic_invalid')
+                self._diagnostic = {'boot_id': boot_id, 'source': 'mdns',
+                                    'reason': 'multiple_controllers_found', 'diagnostic_id': None}
+                self._diagnostic_report_at = None
+            elif report:
+                if (not self._diagnostic or self._diagnostic['boot_id'] != boot_id
+                        or not self._diagnostic['diagnostic_id']
+                        or data.get('diagnostic_id') != self._diagnostic['diagnostic_id']):
+                    raise NetworkError('network_diagnostic_mismatch')
+                self._diagnostic_report_at = time.monotonic()
+            else:
+                source, reason = data.get('discovery_source'), data.get('discovery_reason', '')
+                if source not in ('mdns', 'manual') or reason not in (
+                        '', 'controller_not_found', 'discovery_timeout',
+                        'network_discovery_unavailable', 'network_info_invalid', 'network_info_unavailable'):
+                    raise NetworkError('network_diagnostic_invalid')
+                if (not self._diagnostic or self._diagnostic['boot_id'] != boot_id
+                        or not self._diagnostic['diagnostic_id']):
+                    self._diagnostic_report_at = None
+                    self._diagnostic = {'boot_id': boot_id, 'diagnostic_id': str(uuid.uuid4())}
+                self._diagnostic.update(source=source, reason=reason or None)
+            return {'ok': True, 'diagnostic': True, 'command': 'none', 'command_id': 0,
+                    'auto_trigger_enabled': False, 'control_allowed': False,
+                    'reason': 'network_capability_missing', 'server_run_id': self.server_run_id,
+                    'network_revision': self.revision, 'diagnostic_id': self._diagnostic['diagnostic_id']}
 
     def snapshot(self):
         with self._lock:
@@ -176,7 +281,14 @@ class LocalNetwork:
                 'server_run_id': self.server_run_id, 'network_revision': self.revision,
                 'server_url': origin, 'camera_url': f'{origin}/camera/' if origin else None,
                 'qr_url': '/api/network/qr.svg' if origin else None,
-                'discovery': {'status': 'unavailable', 'reason': 'network_discovery_not_implemented'},
+                'discovery': self._discovery.copy(),
+                'esp32': {
+                    **(self._diagnostic or {}),
+                    'online': self._diagnostic_report_at is not None
+                    and time.monotonic() - self._diagnostic_report_at < 6,
+                    'status': 'discovery_conflict' if self._diagnostic and self._diagnostic['reason'] == 'multiple_controllers_found'
+                    else 'round_trip_complete' if self._diagnostic_report_at is not None else 'waiting_for_report',
+                },
                 'setup': {'status': 'unknown', 'reason': 'network_capability_missing'},
             }
 

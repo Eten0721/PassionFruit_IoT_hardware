@@ -9,6 +9,7 @@
 #include <freertos/task.h>
 
 #include "ProtocolTypes.h"
+#include "DiscoverySecureClient.h"
 
 class DjangoApiClient {
  public:
@@ -72,7 +73,7 @@ class DjangoApiClient {
   std::atomic<bool> stopped_{false};
   std::atomic<bool> wifiReady_{false};
 
-  WiFiClientSecure secureClient_;
+  DiscoverySecureClient secureClient_;
   HTTPClient http_;
   bool wifiAttemptInProgress_;
   bool wifiWasConnected_;
@@ -80,6 +81,28 @@ class DjangoApiClient {
   uint32_t nextWiFiAttemptAt_;
   String activeOrigin_;
   String bootId_;
+  String controllerOrigin_;
+  String serverRunId_;
+  String discoverySource_;
+  String discoveryReason_;
+  uint32_t networkRevision_ = 0;
+  uint32_t discoveryStartedAt_ = 0;
+  uint32_t nextDiscoveryAt_ = 0;
+  uint32_t nextProbeAt_ = 0;
+  uint32_t lastProbeSuccessAt_ = 0;
+  bool mdnsStarted_ = false;
+  bool initialDiscoveryComplete_ = false;
+  bool conflictDetected_ = false;
+  bool manualAttempted_ = false;
+
+  bool ensureController(uint32_t currentTime);
+  bool tryManualController();
+  bool validateController(const String& origin, const String& runId,
+                          const String& revision, uint32_t timeoutMS);
+  void probeController();
+  void resetController(uint32_t currentTime);
+  String networkIdentity() const;
+  static bool validOrigin(const String& origin);
 
   static void workerEntry(void* context);
   void runWorker();

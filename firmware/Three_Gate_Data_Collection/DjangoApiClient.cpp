@@ -1,6 +1,13 @@
 #include "DjangoApiClient.h"
 
 #include <ctype.h>
+#include <ESPmDNS.h>
+
+#if __has_include("network.local.h")
+#include "network.local.h"
+#else
+const char* manualDjangoOrigin = "";
+#endif
 #include <esp_system.h>
 
 #include "Config.h"
@@ -9,6 +16,24 @@
 namespace {
 
 const char* kResponseHeaders[] = {"Connection"};
+
+bool decimal(const String& value) {
+  if (value.length() == 0 || value.length() > 9) return false;
+  for (unsigned int i = 0; i < value.length(); ++i) {
+    if (!isdigit(static_cast<unsigned char>(value.charAt(i)))) return false;
+  }
+  return value.toInt() > 0;
+}
+
+bool runIdentity(const String& value) {
+  if (value.length() != 36) return false;
+  for (unsigned int i = 0; i < value.length(); ++i) {
+    if (i == 8 || i == 13 || i == 18 || i == 23) {
+      if (value.charAt(i) != '-') return false;
+    } else if (!isxdigit(static_cast<unsigned char>(value.charAt(i)))) return false;
+  }
+  return true;
+}
 
 }  // namespace
 
@@ -56,17 +81,249 @@ void DjangoApiClient::runWorker() {
 
   while (!stopping_.load(std::memory_order_acquire)) {
     ensureWiFi(millis());
+    if (!wifiConnected() || !ensureController(millis())) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+    if (FirmwareConfig::kNetworkDiagnosticsOnly) {
+      if (timeReached(millis(), nextProbeAt_)) probeController();
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
     if (requestState_.load(std::memory_order_acquire) == RequestState::kQueued) {
       requestState_.store(RequestState::kRunning, std::memory_order_relaxed);
       result_ = request_.post
-          ? executePost(request_.url.c_str(), request_.body, request_.timeoutMS)
-          : executeGet(request_.url.c_str(), request_.timeoutMS);
+          ? executePost((controllerOrigin_ + request_.url).c_str(), request_.body, request_.timeoutMS)
+          : executeGet((controllerOrigin_ + request_.url).c_str(), request_.timeoutMS);
       requestState_.store(RequestState::kCompleted, std::memory_order_release);
     }
     vTaskDelay(pdMS_TO_TICKS(10));
   }
   closeConnection();
+  if (mdnsStarted_) MDNS.end();
   stopped_.store(true, std::memory_order_release);
+}
+
+
+void DjangoApiClient::resetController(uint32_t currentTime) {
+  closeConnection();
+  controllerOrigin_ = "";
+  serverRunId_ = "";
+  networkRevision_ = 0;
+  initialDiscoveryComplete_ = false;
+  conflictDetected_ = false;
+  manualAttempted_ = false;
+  discoveryStartedAt_ = currentTime;
+  nextDiscoveryAt_ = currentTime;
+  nextProbeAt_ = currentTime;
+  lastProbeSuccessAt_ = currentTime;
+}
+
+bool DjangoApiClient::validOrigin(const String& origin) {
+  if (!origin.startsWith("https://")) return false;
+  const String hostPort = origin.substring(8);
+  const int colon = hostPort.indexOf(':');
+  const String host = colon < 0 ? hostPort : hostPort.substring(0, colon);
+  const String port = colon < 0 ? String("443") : hostPort.substring(colon + 1);
+  IPAddress address;
+  if (!address.fromString(host) || address.toString() != host || !decimal(port) || port.toInt() > 65535) return false;
+  if (address[0] == 0 || address[0] == 127 || address[0] >= 224 ||
+      (address[0] == 169 && address[1] == 254)) return false;
+  const uint32_t mask = static_cast<uint32_t>(WiFi.subnetMask());
+  const uint32_t ip = static_cast<uint32_t>(address);
+  return mask != 0 && (ip & mask) == (static_cast<uint32_t>(WiFi.localIP()) & mask)
+      && (ip & ~mask) != 0 && (ip & ~mask) != ~mask;
+}
+
+bool DjangoApiClient::validateController(
+    const String& origin, const String& runId, const String& revision, uint32_t timeoutMS) {
+  if (!validOrigin(origin)) {
+    discoveryReason_ = "network_info_invalid";
+    return false;
+  }
+  const HttpResult info = executeGet((origin + "/api/network/info/?format=text").c_str(), timeoutMS);
+  if (!info.isSuccess()) {
+    discoveryReason_ = "network_info_unavailable";
+    return false;
+  }
+  const String actualRun = readTextValue(info.body, "server_run_id");
+  const String actualRevision = readTextValue(info.body, "network_revision");
+  if (readTextValue(info.body, "api_version") != "1" ||
+      readTextValue(info.body, "scheme") != "https" ||
+      readTextValue(info.body, "selected") != "1" ||
+      readTextValue(info.body, "server_url") != origin ||
+      readTextValue(info.body, "camera_url") != origin + "/camera/" ||
+      !runIdentity(actualRun) || !decimal(actualRevision) ||
+      (runId.length() > 0 && (runId != actualRun || revision != actualRevision))) {
+    discoveryReason_ = "network_info_invalid";
+    return false;
+  }
+  controllerOrigin_ = origin;
+  serverRunId_ = actualRun;
+  networkRevision_ = actualRevision.toInt();
+  return true;
+}
+
+bool DjangoApiClient::ensureController(uint32_t currentTime) {
+  if (controllerOrigin_.length() > 0) {
+    if (discoverySource_ == "manual" && timeReached(currentTime, nextDiscoveryAt_)) {
+      // Healthy manual controllers stay selected while bounded mDNS browsing continues.
+      if (!mdnsStarted_) mdnsStarted_ = MDNS.begin("pf-esp32-" + String(esp_random(), HEX));
+      if (mdnsStarted_) MDNS.queryService("pf-iot", "tcp");
+      nextDiscoveryAt_ = millis() + FirmwareConfig::kDiscoveryRetryMS;
+    }
+    return true;
+  }
+  if (!timeReached(currentTime, nextDiscoveryAt_)) return false;
+  if (!manualAttempted_ && !conflictDetected_ &&
+      currentTime - discoveryStartedAt_ >= FirmwareConfig::kDiscoveryWindowMS) {
+    initialDiscoveryComplete_ = true;
+    manualAttempted_ = true;
+    nextDiscoveryAt_ = currentTime + FirmwareConfig::kDiscoveryRetryMS;
+    return tryManualController();
+  }
+  nextDiscoveryAt_ = currentTime + FirmwareConfig::kDiscoveryRetryMS;
+  if (!mdnsStarted_) mdnsStarted_ = MDNS.begin("pf-esp32-" + String(esp_random(), HEX));
+  const uint32_t elapsed = currentTime - discoveryStartedAt_;
+  const bool firstWindowExpired = !initialDiscoveryComplete_ && elapsed >= FirmwareConfig::kDiscoveryWindowMS;
+  const bool finishInitialWithoutQuery = firstWindowExpired && !conflictDetected_;
+  if (firstWindowExpired) initialDiscoveryComplete_ = true;
+  const uint32_t deadline = initialDiscoveryComplete_
+      ? currentTime + FirmwareConfig::kDiscoveryWindowMS
+      : discoveryStartedAt_ + FirmwareConfig::kDiscoveryWindowMS;
+  if (!initialDiscoveryComplete_ && !firstWindowExpired && deadline - currentTime < 3000UL) {
+    nextDiscoveryAt_ = deadline;
+    return false;
+  }
+  const int count = mdnsStarted_ && !finishInitialWithoutQuery ? MDNS.queryService("pf-iot", "tcp") : 0;
+  discoveryReason_ = mdnsStarted_ ? "controller_not_found" : "network_discovery_unavailable";
+  String chosenOrigin, chosenRun;
+  uint32_t chosenRevision = 0;
+  int valid = 0;
+  // queryService in core 3.3.11 is bounded to 3 s and 20 answers.
+  for (int i = 0; i < count; ++i) {
+    if (timeReached(millis(), deadline)) {
+      discoveryReason_ = "discovery_timeout";
+      controllerOrigin_ = "";
+      return false;
+    }
+    if (MDNS.txt(i, "api_version") != "1" || MDNS.txt(i, "scheme") != "https" ||
+        MDNS.txt(i, "info_path") != "/api/network/info/" ||
+        !runIdentity(MDNS.txt(i, "server_run_id")) || !decimal(MDNS.txt(i, "network_revision"))) continue;
+    const String origin = "https://" + MDNS.address(i).toString() + ":" + String(MDNS.port(i));
+    const uint32_t validationStartedAt = millis();
+    if (timeReached(validationStartedAt, deadline)) {
+      controllerOrigin_ = "";
+      discoveryReason_ = "discovery_timeout";
+      return false;
+    }
+    // Reserve TCP + TLS + header/body waits before starting another validation.
+    if (deadline - validationStartedAt < 7000UL) {
+      nextDiscoveryAt_ = deadline;
+      discoveryReason_ = "discovery_timeout";
+      controllerOrigin_ = "";
+      return false;
+    }
+    secureClient_.setDiscoveryDeadline(deadline);
+    const bool verified = validateController(origin, MDNS.txt(i, "server_run_id"), MDNS.txt(i, "network_revision"),
+                                             FirmwareConfig::kCommandHttpTimeoutMS);
+    secureClient_.clearDiscoveryDeadline();
+    if (!verified) {
+      if (timeReached(millis(), deadline)) {
+        initialDiscoveryComplete_ = true;
+        controllerOrigin_ = "";
+        discoveryReason_ = "discovery_timeout";
+        return false;
+      }
+      continue;
+    }
+    if (timeReached(millis(), deadline)) {
+      controllerOrigin_ = "";
+      discoveryReason_ = "discovery_timeout";
+      return false;
+    }
+    if (origin == chosenOrigin && serverRunId_ == chosenRun) continue;
+    ++valid;
+    if (valid > 1) {
+      conflictDetected_ = true;
+      initialDiscoveryComplete_ = true;
+      const String secondOrigin = controllerOrigin_;
+      const String secondIdentity = networkIdentity();
+      const String firstIdentity = "boot_id=" + encodeFormValue(bootId_) +
+          "&server_run_id=" + encodeFormValue(chosenRun) + "&network_revision=" + String(chosenRevision);
+      controllerOrigin_ = "";
+      discoveryReason_ = "multiple_controllers_found";
+      const String observation = "event=network_discovery_status&discovery_reason=multiple_controllers_found&";
+      executePost((chosenOrigin + "/api/esp32/report/").c_str(), observation + firstIdentity,
+                  FirmwareConfig::kCommandHttpTimeoutMS);
+      executePost((secondOrigin + "/api/esp32/report/").c_str(), observation + secondIdentity,
+                  FirmwareConfig::kCommandHttpTimeoutMS);
+      Serial.println(discoveryReason_);
+      return false;
+    }
+    chosenOrigin = origin;
+    chosenRun = serverRunId_;
+    chosenRevision = networkRevision_;
+  }
+  conflictDetected_ = false;
+  controllerOrigin_ = chosenOrigin;
+  if (valid == 1) {
+    serverRunId_ = chosenRun;
+    networkRevision_ = chosenRevision;
+    discoverySource_ = "mdns";
+    discoveryReason_ = "";
+    lastProbeSuccessAt_ = millis();
+    Serial.println("Controller discovered: " + controllerOrigin_);
+    return true;
+  }
+  if (millis() - discoveryStartedAt_ < FirmwareConfig::kDiscoveryWindowMS) return false;
+  initialDiscoveryComplete_ = true;
+  manualAttempted_ = true;
+  return tryManualController();
+}
+
+bool DjangoApiClient::tryManualController() {
+  if (String(manualDjangoOrigin).length() > 0 &&
+      validateController(manualDjangoOrigin, "", "", FirmwareConfig::kCommandHttpTimeoutMS)) {
+    discoverySource_ = "manual";
+    lastProbeSuccessAt_ = millis();
+    Serial.println("Manual controller verified: " + controllerOrigin_);
+    return true;
+  }
+  Serial.println("Controller discovery: " + discoveryReason_);
+  return false;
+}
+
+String DjangoApiClient::networkIdentity() const {
+  return "boot_id=" + encodeFormValue(bootId_) + "&server_run_id=" + encodeFormValue(serverRunId_) +
+      "&network_revision=" + String(networkRevision_);
+}
+
+void DjangoApiClient::probeController() {
+  const String identity = networkIdentity();
+  const String url = controllerOrigin_ + "/api/esp32/command/?diagnostic=1&" + identity +
+      "&discovery_source=" + discoverySource_ + "&discovery_reason=" + discoveryReason_;
+  const HttpResult command = executeGet(url.c_str(), FirmwareConfig::kCommandHttpTimeoutMS);
+  const String id = readTextValue(command.body, "diagnostic_id");
+  bool ok = command.isSuccess() && runIdentity(id) &&
+      readTextValue(command.body, "server_run_id") == serverRunId_ &&
+      readTextValue(command.body, "network_revision") == String(networkRevision_) &&
+      readTextValue(command.body, "diagnostic") == "1" &&
+      readTextValue(command.body, "control_allowed") == "0" &&
+      readTextValue(command.body, "command") == "none";
+  if (ok) {
+    const HttpResult report = executePost((controllerOrigin_ + "/api/esp32/report/").c_str(),
+        "event=network_probe&" + identity + "&diagnostic_id=" + encodeFormValue(id),
+        FirmwareConfig::kCommandHttpTimeoutMS);
+    ok = report.isSuccess() && readTextValue(report.body, "diagnostic_id") == id &&
+        readTextValue(report.body, "server_run_id") == serverRunId_ &&
+        readTextValue(report.body, "network_revision") == String(networkRevision_) &&
+        readTextValue(report.body, "control_allowed") == "0";
+  }
+  if (ok) lastProbeSuccessAt_ = millis();
+  else Serial.println("Controller diagnostic failed: network_probe_failed");
+  if (!ok && millis() - lastProbeSuccessAt_ >= 6000UL) resetController(millis());
+  nextProbeAt_ = millis() + FirmwareConfig::kNetworkProbeIntervalMS;
 }
 
 bool DjangoApiClient::submit(
@@ -95,6 +352,7 @@ bool DjangoApiClient::takeResult(HttpResult& result) {
 bool DjangoApiClient::ensureWiFi(uint32_t currentTime) {
   if (WiFi.status() == WL_CONNECTED) {
     if (!wifiWasConnected_) {
+      resetController(currentTime);
       Serial.print("Wi-Fi connected. IP: ");
       Serial.println(WiFi.localIP());
     }
@@ -107,6 +365,9 @@ bool DjangoApiClient::ensureWiFi(uint32_t currentTime) {
   if (wifiWasConnected_) {
     Serial.println("Wi-Fi disconnected. Scheduling non-blocking reconnect.");
     closeConnection();
+    resetController(currentTime);
+    if (mdnsStarted_) MDNS.end();
+    mdnsStarted_ = false;
   }
   wifiWasConnected_ = false;
   wifiReady_.store(false, std::memory_order_release);
@@ -148,10 +409,10 @@ bool DjangoApiClient::pollCommand(
     const String& feederSensorState,
     int lastFeedCommandId,
     bool sorterCapable) {
-  if (!wifiConnected()) {
+  if (FirmwareConfig::kNetworkDiagnosticsOnly || !wifiConnected()) {
     return false;
   }
-  String url(commandUrl);
+  String url("/api/esp32/command/?format=text");
   url += url.indexOf('?') >= 0 ? "&" : "?";
   url += "boot_id=" + encodeFormValue(bootId_);
   url += "&capability=feeder_v1";
@@ -180,6 +441,7 @@ bool DjangoApiClient::postReport(
     uint32_t feederElapsedMS,
     uint32_t feederMaxRunMS,
     const String& feederStopReason) {
+  if (FirmwareConfig::kNetworkDiagnosticsOnly) return false;
   String body;
   body.reserve(160 + ((event.length() + message.length() + triggerId.length()) * 3));
   body = "event=" + encodeFormValue(event);
@@ -209,7 +471,7 @@ bool DjangoApiClient::postReport(
     body += "&feeder_stop_reason=" + encodeFormValue(feederStopReason);
   }
 
-  return submit(reportUrl, body, timeoutMS, true);
+  return submit("/api/esp32/report/", body, timeoutMS, true);
 }
 
 MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
@@ -481,12 +743,15 @@ void DjangoApiClient::startWiFiAttempt(uint32_t currentTime) {
 HttpResult DjangoApiClient::executeGet(const char* url, uint32_t timeoutMS) {
   HttpResult result;
   const uint32_t startedAt = millis();
+  if (FirmwareConfig::kNetworkDiagnosticsOnly) secureClient_.boundRequest(timeoutMS * 4 + 1000UL);
   if (!wifiConnected()) {
+    secureClient_.clearDiscoveryDeadline();
     result.statusCode = -4;
     result.elapsedMS = millis() - startedAt;
     return result;
   }
   if (!prepareRequest(url, timeoutMS)) {
+    secureClient_.clearDiscoveryDeadline();
     result.statusCode = -1;
     result.elapsedMS = millis() - startedAt;
     closeConnection();
@@ -500,6 +765,7 @@ HttpResult DjangoApiClient::executeGet(const char* url, uint32_t timeoutMS) {
   }
   result.elapsedMS = millis() - startedAt;
   finishRequest(result);
+  secureClient_.clearDiscoveryDeadline();
   return result;
 }
 
@@ -509,12 +775,15 @@ HttpResult DjangoApiClient::executePost(
     uint32_t timeoutMS) {
   HttpResult result;
   const uint32_t startedAt = millis();
+  if (FirmwareConfig::kNetworkDiagnosticsOnly) secureClient_.boundRequest(timeoutMS * 4 + 1000UL);
   if (!wifiConnected()) {
+    secureClient_.clearDiscoveryDeadline();
     result.statusCode = -4;
     result.elapsedMS = millis() - startedAt;
     return result;
   }
   if (!prepareRequest(url, timeoutMS)) {
+    secureClient_.clearDiscoveryDeadline();
     result.statusCode = -1;
     result.elapsedMS = millis() - startedAt;
     closeConnection();
@@ -529,6 +798,7 @@ HttpResult DjangoApiClient::executePost(
   }
   result.elapsedMS = millis() - startedAt;
   finishRequest(result);
+  secureClient_.clearDiscoveryDeadline();
   return result;
 }
 
@@ -605,10 +875,10 @@ String DjangoApiClient::encodeFormValue(const String& value) {
 
 String DjangoApiClient::readTextValue(const String& body, const String& key) {
   const String prefix = key + "=";
-  const int startIndex = body.indexOf(prefix);
-  if (startIndex < 0) {
-    return "";
-  }
+  int startIndex = body.startsWith(prefix) ? 0 : body.indexOf("\n" + prefix);
+  if (startIndex < 0) return "";
+  if (startIndex != 0 || !body.startsWith(prefix)) ++startIndex;
+  if (body.indexOf("\n" + prefix, startIndex + prefix.length()) >= 0) return "";
 
   const int valueStart = startIndex + prefix.length();
   int valueEnd = body.indexOf('\n', valueStart);

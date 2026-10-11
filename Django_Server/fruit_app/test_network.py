@@ -18,7 +18,14 @@ class NetworkOnboardingTests(SimpleTestCase):
             'interface_id': '7', 'name': 'Wi-Fi', 'ipv4': '192.168.50.10', 'prefix': 24,
         }]
         self.inventory = mock.Mock(side_effect=lambda: self.interfaces.copy())
-        self.network = local_network.LocalNetwork(self.inventory)
+        self.publishers = []
+        def publish(*args):
+            publisher = mock.Mock()
+            self.publishers.append((args, publisher))
+            return publisher
+        self.publisher_factory = mock.Mock(side_effect=publish)
+        self.network = local_network.LocalNetwork(self.inventory, self.publisher_factory)
+        self.addCleanup(self.network.stop_monitor)
         self.network.start_run(port=8443)
         patcher = mock.patch.object(local_network, 'NETWORK', self.network)
         patcher.start()
@@ -51,7 +58,7 @@ class NetworkOnboardingTests(SimpleTestCase):
         self.assertEqual(info['server_url'], 'https://192.168.50.10:8443')
         self.assertEqual(info['camera_url'], 'https://192.168.50.10:8443/camera/')
         self.assertEqual(info['network_revision'], 1)
-        self.assertEqual(info['discovery']['reason'], 'network_discovery_not_implemented')
+        self.assertEqual(info['discovery']['reason'], 'network_discovery_pending')
         self.assertEqual(info['setup']['status'], 'unknown')
 
     def test_failed_inventory_empty_inventory_and_stale_choices(self):
@@ -205,6 +212,104 @@ class NetworkOnboardingTests(SimpleTestCase):
 
     def test_loopback_does_not_allow_a_foreign_browser_origin(self):
         self.assertEqual(self.post('/api/network/', {'interface_id': '7', 'ipv4': '192.168.50.10'}, HTTP_ORIGIN='https://other.example').json()['reason'], 'network_origin_mismatch')
+
+    def test_diagnostic_round_trip_is_scoped_and_never_consumes_motor_command(self):
+        self.select()
+        info = self.client.get('/api/network/info/').json()
+        identity = {'boot_id': 'esp32-test-1', 'server_run_id': info['server_run_id'],
+                    'network_revision': info['network_revision'], 'discovery_source': 'mdns'}
+        device = {'secure': True, 'HTTP_HOST': '192.168.50.10:8443', 'REMOTE_ADDR': '192.168.50.20'}
+        existing.views.APP_STATE['motor_command'] = {'command': 'feed_one', 'command_id': 99}
+        response = self.client.get('/api/esp32/command/', {'diagnostic': '1', **identity}, **device)
+        self.assertEqual(response.status_code, 200)
+        text = response.content.decode()
+        self.assertIn('command=none\n', text)
+        self.assertIn('control_allowed=0\n', text)
+        diagnostic_id = next(line.split('=', 1)[1] for line in text.splitlines() if line.startswith('diagnostic_id='))
+        report = {'event': 'network_probe', **identity, 'diagnostic_id': diagnostic_id}
+        for _ in range(2):
+            self.assertEqual(self.post('/api/esp32/report/', report, **device).status_code, 200)
+        network = self.client.get('/api/network/').json()
+        self.assertTrue(network['esp32']['online'])
+        self.assertEqual(network['esp32']['source'], 'mdns')
+        self.assertEqual(existing.views.APP_STATE['motor_command'], {'command': 'feed_one', 'command_id': 99})
+        self.assertIsNone(existing.views.APP_STATE['last_esp32_poll_monotonic'])
+        self.assertEqual(self.client.get('/api/esp32/command/', **device).json()['reason'], 'network_capability_missing')
+        self.assertEqual(self.post('/api/esp32/report/', {**report, 'diagnostic_id': 'wrong'}, **device).json()['reason'], 'network_diagnostic_mismatch')
+        self.assertEqual(self.client.get('/api/esp32/command/', {'diagnostic': '1', **identity, 'network_revision': 0}, **device).json()['reason'], 'network_identity_mismatch')
+        self.assertEqual(self.post('/api/esp32/report/', report, **{**device, 'REMOTE_ADDR': '192.168.51.20'}).json()['reason'], 'network_subnet_mismatch')
+        with mock.patch('fruit_app.local_network.time.monotonic', return_value=existing.views.time.monotonic() + 7):
+            self.assertFalse(self.client.get('/api/network/').json()['esp32']['online'])
+
+    def test_discovery_monitor_registers_selected_ipv4_and_cleans_up_on_reselection(self):
+        import time
+        self.select()
+        self.network.start_monitor()
+        for _ in range(100):
+            if self.network.snapshot()['discovery']['status'] == 'advertising':
+                break
+            time.sleep(0.01)
+        self.assertEqual(len(self.publishers), 1)
+        args, old = self.publishers[0]
+        self.assertEqual(args[0], self.interfaces[0])
+        self.assertEqual(args[1], 8443)
+        self.assertEqual(args[3], 1)
+        self.network.stop_monitor()
+        old.close.assert_called_once()
+        self.select()
+        self.network.start_monitor()
+        for _ in range(100):
+            if len(self.publishers) == 2:
+                break
+            time.sleep(0.01)
+        self.assertEqual(len(self.publishers), 2)
+        self.network.start_run(port=8443)
+        self.publishers[1][1].close.assert_called_once()
+        self.assertFalse(self.network.snapshot()['selected'])
+
+    def test_discovery_registration_failure_keeps_https_origin_and_manual_diagnostic(self):
+        import time
+        self.publisher_factory.side_effect = OSError('adapter failed')
+        self.select()
+        self.network.start_monitor()
+        for _ in range(100):
+            if self.network.snapshot()['discovery']['status'] == 'unavailable':
+                break
+            time.sleep(0.01)
+        info = self.client.get('/api/network/').json()
+        self.assertEqual(info['discovery']['reason'], 'network_discovery_registration_failed')
+        self.assertEqual(info['server_url'], 'https://192.168.50.10:8443')
+        response = self.client.get('/api/esp32/command/', {
+            'diagnostic': '1', 'boot_id': 'manual-test', 'server_run_id': info['server_run_id'],
+            'network_revision': info['network_revision'], 'discovery_source': 'manual',
+            'discovery_reason': 'controller_not_found',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'control_allowed=0', response.content)
+
+    def test_network_info_text_is_identity_checked_and_has_no_external_urls(self):
+        self.select()
+        response = self.client.get('/api/network/info/?format=text')
+        self.assertIn(b'api_version=1\n', response.content)
+        self.assertIn(b'selected=1\n', response.content)
+        self.assertIn(b'server_url=https://192.168.50.10:8443\n', response.content)
+        self.assertIn('no-store', response['Cache-Control'])
+        self.assertEqual(self.client.get('/api/network/info/', secure=True,
+                                        HTTP_HOST='192.168.50.11:8443', REMOTE_ADDR='192.168.50.20').json()['reason'], 'network_origin_mismatch')
+
+    def test_controller_conflict_is_visible_without_marking_device_online(self):
+        info = self.select().json()
+        observation = {'event': 'network_discovery_status', 'boot_id': 'conflict-device',
+                       'server_run_id': info['server_run_id'], 'network_revision': info['network_revision'],
+                       'discovery_reason': 'multiple_controllers_found'}
+        response = self.post('/api/esp32/report/', observation)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'control_allowed=0\n', response.content)
+        device = self.client.get('/api/network/').json()['esp32']
+        self.assertFalse(device['online'])
+        self.assertEqual(device['status'], 'discovery_conflict')
+        self.assertEqual(device['reason'], 'multiple_controllers_found')
+        self.assertEqual(self.post('/api/esp32/report/', {**observation, 'discovery_reason': 'unknown'}).json()['reason'], 'network_diagnostic_invalid')
 
     def test_cleanup_and_settings_enforce_selected_network_scope(self):
         routes = ('/api/discard/', '/api/reset_dataset/', '/api/set_counter/',

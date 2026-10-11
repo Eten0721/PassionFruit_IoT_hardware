@@ -85,6 +85,13 @@
 - 每次啟動、Wi-Fi 重新加入或控制端確認失聯後，先用 mDNS 找 `_pf-iot._tcp`，再查詢網路資訊確認版本／身分與 URL。首輪探索最多 `15000 ms`，期間不啟動動作；找不到才試已存手動 origin，仍持續有界背景探索。多個有效控制端回 `multiple_controllers_found` 而不任選；已選定健康控制端不因背景發現別台而遷移。
 - 指向本次探索或手動驗證的 HTTPS origin 加上既有 command／report routes，移除編譯時固定 Wi-Fi 與完整 API URL 的依賴。本期沿用既有 ESP32 `setInsecure()`，不宣稱驗證 HTTPS 伺服器憑證或抵抗區網偽冒，僅適用可信任、隔離區網；正式裝置驗證另案設計。控制端、網路 revision 或 `boot_id` 改變使舊 lease 與舊動作失效；未完成流程須人工復原，不能將 report 或 command 重送到另一控制端後繼續。
 
+Issue #24 診斷切片沿用以上探索與身分契約，尚未開放 lease／實體控制。`GET /api/network/info/?format=text` 將版本、scheme、selected、身分與 URL 回為逐行 `key=value`；預設 JSON 仍保留。ESP32 核對 TXT 與 info 的身分及 origin，再用同一 origin 的既有 routes：
+
+- `GET /api/esp32/command/?diagnostic=1` 攜帶 `boot_id`、`server_run_id`、`network_revision`、`discovery_source=mdns|manual` 與 `discovery_reason`；回逐行文字、`diagnostic_id`、`command=none`、`control_allowed=0`，不領取 motor command 或刷新正式硬體 readiness。
+- `POST /api/esp32/report/` 的 `event=network_probe` 回傳相同身分與 `diagnostic_id`；相符往返完成才顯示診斷連線，最後成功 report 超過 `6000 ms` 則顯示離線。診斷 HTTP 除既有階段 timeout 外，各有 `7000 ms` 總等待上限；首輪 info 驗證另受共同的 `15000 ms` 絕對截止限制，晚到結果無效。
+- 多控制端時不選定 origin、不試手動備援；只向已驗證的前兩個候選各回報 `event=network_discovery_status`、身分與 `discovery_reason=multiple_controllers_found`，供 Dashboard 顯示衝突，且不標記已連線。後續探索確認衝突消失後才重新選擇。
+- 此切片的手動 origin 僅由 ignored `network.local.h` 或 host adapter 提供；正式配網頁由後續切片提供。Wi-Fi 暫時沿用 ignored `secrets.h`，移除編譯時 Wi-Fi 設定的完整目標仍由配網切片完成。首輪探索與 HTTP 都在既有網路 worker；診斷 Firmware 不宣告 `local_network_v1`，不接受實體命令。
+
 #### 失聯門檻與安全交握
 
 | 項目 | 本期基線 | 判定 |

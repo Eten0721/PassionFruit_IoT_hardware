@@ -27,6 +27,7 @@ miniconda*/
 secrets.*
 !*.example.*
 firmware/**/secrets.h
+firmware/**/network.local.h
 
 # Django local runtime files
 Django_Server/db.sqlite3

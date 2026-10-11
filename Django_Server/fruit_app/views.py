@@ -298,7 +298,29 @@ def network_api(request):
 
 @require_GET
 def network_info_api(request):
-    return _no_store_response(JsonResponse(local_network.NETWORK.snapshot()))
+    payload = local_network.NETWORK.snapshot()
+    if payload['selected']:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
+    if request.GET.get('format') == 'text':
+        keys = ('api_version', 'scheme', 'selected', 'server_run_id', 'network_revision', 'server_url', 'camera_url')
+        return _network_text_response({key: payload[key] for key in keys})
+    return _no_store_response(JsonResponse(payload))
+
+
+def _network_text_response(payload):
+    body = '\n'.join(f'{key}={int(value) if isinstance(value, bool) else value}'
+                     for key, value in payload.items()) + '\n'
+    return _no_store_response(HttpResponse(body, content_type='text/plain'))
+
+
+def _network_diagnostic_response(data, *, report=False, observation=False):
+    try:
+        payload = local_network.NETWORK.diagnostic(data, report=report, observation=observation)
+    except local_network.NetworkError as exc:
+        return local_network.network_error(exc.reason)
+    return _network_text_response(payload)
 
 
 @require_GET
@@ -879,6 +901,8 @@ def esp32_trigger_api(request):
 @require_GET
 @network_required
 def esp32_command_api(request):
+    if request.GET.get('diagnostic') == '1':
+        return _network_diagnostic_response(request.GET)
     _ensure_dataset_structure()
     with STATE_LOCK:
         reason = local_network.NETWORK.request_reason(request)
@@ -1062,9 +1086,13 @@ def esp32_command_api(request):
 @require_POST
 @network_required
 def esp32_report_api(request):
-    _ensure_dataset_structure()
     data = _request_data(request)
     event = (data.get('event') or '').strip()
+    if event == 'network_probe':
+        return _network_diagnostic_response(data, report=True)
+    if event == 'network_discovery_status':
+        return _network_diagnostic_response(data, observation=True)
+    _ensure_dataset_structure()
     command_id = _safe_int(data.get('command_id'))
 
     with STATE_LOCK:

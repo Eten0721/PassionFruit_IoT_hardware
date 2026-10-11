@@ -6,7 +6,9 @@
 
 ## 現行穩定功能
 
-- Issue [#22](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/22) 已完成每次 HTTPS serving process 啟動的網路確認、本機 SVG 相機 QR、origin／subnet 檢查與本機 ICE；介面過期先阻擋新操作，保留資料檢查與清理。背景盤點不阻塞手機輪詢，tests／import／一般管理指令不啟動監測。純拍攝三張保存、QR 實際解碼與程序重設已通過自動測試；mDNS／ESP32 新網路能力尚未啟用，正式硬體操作目前回 `network_capability_missing`。完整運轉中遷移與復原仍屬後續切片。
+- Issue [#24](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/24) 已加入所選 IPv4 的 mDNS 發佈、ESP32 worker 自動探索與身分核對、動態 origin 診斷 command/report 往返，以及 Dashboard 診斷連線／衝突原因。手動備援由 ignored 本機測試設定提供，重新啟動仍優先探索；尚未實機驗收，Firmware 不宣告 `local_network_v1`，正式硬體運轉仍被阻擋。契約集中於 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
+
+- Issue [#22](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/22) 已完成每次 HTTPS serving process 啟動的網路確認、本機 SVG 相機 QR、origin／subnet 檢查與本機 ICE；介面過期先阻擋新操作，保留資料檢查與清理。背景盤點不阻塞手機輪詢，tests／import／一般管理指令不啟動監測。純拍攝三張保存、QR 實際解碼與程序重設已通過自動測試；正式硬體操作目前回 `network_capability_missing`。完整運轉中遷移與復原仍屬後續切片。
 
 - Issue [#23](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/23) 的 Chrome 新位址、另一台電腦與完全離線實機驗收已由操作員於 `2026-10-11` 確認完成，並授權關閉。手機診斷顯示新相機網址為 `https://192.168.0.93:8000/camera/`，User-Agent 回報 iOS `27.0.1`、Chrome `154.0.8037.55`，安全來源與相機 API 可用，影格為 `1080 × 1920`；`dataset/temp/fruit_005/` 的三張 JPEG 已由 agent 檢查保存成功並可完整解碼。其餘情境以操作員的實機確認為據；先前 RTC／ICE 為 `new` 的紀錄是拍攝前快照，不作為完成時狀態。驗收工具與操作範本見 [Chrome 新位址與離線拍攝驗收](acceptance/issue-23-chrome-camera.md)。
 

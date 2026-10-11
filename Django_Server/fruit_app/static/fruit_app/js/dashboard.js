@@ -159,7 +159,11 @@ const remoteVideo = document.getElementById('remote-video');
         setTextIfChanged(document.getElementById('server-url'), network.server_url || '尚未確認');
         setTextIfChanged(document.getElementById('camera-url'), network.camera_url || '確認網路後顯示');
         setTextIfChanged(document.getElementById('network-discovery-status'),
-            `裝置探索尚未啟用：${network.discovery?.reason || 'unknown'}。正式硬體運轉維持停用。`);
+            `裝置探索：${network.discovery?.status || 'unknown'}${network.discovery?.reason ? `，${network.discovery.reason}` : ''}。正式硬體運轉維持停用。`);
+        const device = network.esp32 || {};
+        setTextIfChanged(document.getElementById('network-device-status'), device.online
+            ? `ESP32 診斷往返已完成，來源：${device.source}${device.reason ? `，探索原因：${device.reason}` : ''}。`
+            : `ESP32 診斷尚未連線：${device.reason || device.status || 'waiting_for_report'}。${device.reason === 'multiple_controllers_found' ? '發現多個控制端，請關閉多餘的 Django。' : '探索失敗時可使用控制端網址備援。'}`);
         setTextIfChanged(document.getElementById('network-setup-status'),
             `配網狀態無法確認：${network.setup?.reason || 'unknown'}`);
         const qr = document.getElementById('camera-qr');
@@ -486,8 +490,9 @@ const remoteVideo = document.getElementById('remote-video');
             ? 'error' : captureStatusTone(status);
         setTextIfChanged(imageCountEl, `${data.image_total ?? images.length} / ${data.image_count || 3}`);
 
-        setTextIfChanged(esp32StatusEl, data.esp32_online ? '在線' : '離線');
-        esp32Indicator.dataset.state = data.esp32_online ? 'online' : 'offline';
+        const diagnosticOnline = Boolean(data.network?.esp32?.online);
+        setTextIfChanged(esp32StatusEl, data.esp32_online ? '在線' : diagnosticOnline ? '診斷已連線' : '離線');
+        esp32Indicator.dataset.state = data.esp32_online || diagnosticOnline ? 'online' : 'offline';
         setTextIfChanged(cameraReadyStatusEl, data.camera_ready ? '可拍攝' : '未就緒');
         cameraReadyIndicator.dataset.state = data.camera_ready ? 'ready' : 'offline';
         const sensor = sensorStatus(data.feeder_sensor_state);

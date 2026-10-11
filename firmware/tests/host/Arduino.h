@@ -10,6 +10,8 @@
 
 #include "FakePlatform.h"
 
+using std::min;
+
 constexpr int HEX = 16;
 constexpr int OUTPUT = 1;
 constexpr int INPUT = 0;
