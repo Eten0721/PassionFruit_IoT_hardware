@@ -9,7 +9,7 @@
 
 ## Decision
 
-模型訓練與推論 pipeline 維持獨立 Git Repository，本機可放在硬體 workspace 的 ignored `external/` 目錄。原始照片、訓練輸出與 prototype 權重不進 Git。Django 正式部署權重的例外與固定介面由 ADR-0017 定義。
+模型訓練與研究推論 pipeline 維持獨立 Git Repository，本機可放在硬體 workspace 的 ignored `external/` 目錄。原始照片、訓練輸出與 prototype 權重不進 Git。Django 的本地部署推論與固定權重介面由 ADR-0017 定義，部署不需要模型 checkout。
 
 ## Consequences
 

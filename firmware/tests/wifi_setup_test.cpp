@@ -28,11 +28,22 @@ static void request(CaptureController& controller, const std::string& path, int 
   Fake::setupRequest(path, method, args);
   pump(controller, [before] { return Fake::setupSnapshot().size() > before; });
 }
-static void longPress(CaptureController& controller) {
+static void press(CaptureController& controller) {
   Fake::bootLow = true;
   tick(controller, millis() + 1);
   tick(controller, millis() + 50);
-  tick(controller, millis() + 3000);
+  Fake::bootLow = false;
+  tick(controller, millis() + 1);
+  tick(controller, millis() + 50);
+}
+static void exitSetup(CaptureController& controller) {
+  request(controller, "/exit", HTTP_POST);
+  assert(Fake::setupSnapshot().back().first == 200);
+  assert(response() == "setup_closed");
+  assert(Fake::ap);
+  tick(controller, millis() + 500);
+  pump(controller, [] { return !Fake::ap; });
+  assert(Fake::connected);
 }
 static void save(CaptureController& controller, const std::string& ssid = "new-network") {
   request(controller, "/save", HTTP_POST, {{"ssid", ssid}, {"password", "test-password-only"}, {"origin", "https://192.0.2.1:8000"}});
@@ -46,6 +57,9 @@ static void initialSetupAndReboot() {
     request(controller, "/");
     assert(response().find("https://cdn") == std::string::npos);
     assert(response().find("type=\"password\"") != std::string::npos);
+    assert(response().find("退出連線") != std::string::npos);
+    request(controller, "/exit", HTTP_POST);
+    assert(Fake::setupSnapshot().back().first == 409 && Fake::ap);
     request(controller, "/scan", HTTP_POST);
     assert(Fake::scanAsync);
     // Direct input works before the asynchronous scan completes.
@@ -63,6 +77,8 @@ static void initialSetupAndReboot() {
     Fake::noIP = true; Fake::connected = true;
     request(controller, "/status");
     assert(Fake::wifiNvs.empty());
+    request(controller, "/exit", HTTP_POST);
+    assert(Fake::setupSnapshot().back().first == 409 && Fake::ap);
     Fake::noIP = false;
     request(controller, "/status");
     pump(controller, [] { return !Fake::wifiNvs.empty(); });
@@ -70,8 +86,9 @@ static void initialSetupAndReboot() {
     request(controller, "/status");
     assert(response().find("saved") == 0);
     assert(response().find("test-password-only") == std::string::npos);
-    tick(controller, millis() + 3000);
-    pump(controller, [] { return !Fake::ap; });
+    tick(controller, millis() + 60000);
+    assert(Fake::ap && Fake::requestSnapshot().empty());
+    exitSetup(controller);
     assert(Fake::connected);
     pump(controller, [] { return !Fake::requestSnapshot().empty(); });
     assert(Fake::mdnsQueries > 0);
@@ -96,8 +113,10 @@ static void buttonAndOffline() {
   Fake::bootLow = false; tick(controller, millis() + 1); tick(controller, millis() + 50);
   assert(!Fake::ap);
   Fake::connected = false;
-  longPress(controller);
+  const uint32_t pressedAt = millis();
+  press(controller);
   pump(controller, [] { return Fake::ap.load(); });
+  assert(millis() - pressedAt < 1000);
 }
 static void wrongPasswordAndSaveFailureKeepPrevious() {
   reset();
@@ -105,7 +124,7 @@ static void wrongPasswordAndSaveFailureKeepPrevious() {
   CaptureController controller; controller.begin();
   pump(controller, [] { return !Fake::requestSnapshot().empty(); });
   for (int i = 0; i < 20; ++i) tick(controller, millis() + 10);
-  longPress(controller);
+  press(controller);
   pump(controller, [] { return Fake::ap.load(); });
   const auto previous = Fake::wifiNvs;
   save(controller, "wrong-password-network");
@@ -127,8 +146,7 @@ static void wrongPasswordAndSaveFailureKeepPrevious() {
   Fake::wifiNvsFail = false;
   save(controller); Fake::connected = true;
   pump(controller, [previous] { return Fake::wifiNvs != previous; });
-  tick(controller, millis() + 3000);
-  pump(controller, [] { return !Fake::ap; });
+  exitSetup(controller);
   assert(millis() > start);
 }
 static void invalidConfigurationAndAPFailure() {
@@ -152,7 +170,7 @@ static void motionBlocksButton() {
     for (const auto& o : Fake::outputs) if (o.pin == 23 && o.value == 1300) return true;
     return false;
   });
-  longPress(controller);
+  press(controller);
   for (int i = 0; i < 50; ++i) tick(controller, millis() + 10);
   assert(!Fake::ap);
 }
@@ -164,7 +182,7 @@ static void centralDenialAndHeldBoot() {
   Fake::bootLow = false; tick(controller, millis() + 1); tick(controller, millis() + 50);
   Fake::setupAllowed = false;
   for (int i = 0; i < 50; ++i) tick(controller, millis() + 10);
-  longPress(controller);
+  press(controller);
   for (int i = 0; i < 50; ++i) tick(controller, millis() + 10);
   assert(!Fake::ap);
 }
@@ -174,20 +192,19 @@ static void apFailureAndRollover() {
   for (int i = 0; i < 100; ++i) tick(controller, millis() + 10);
   assert(!Fake::ap && Fake::wifiNvs.empty());
   Fake::apFail = false;
-  longPress(controller);
+  press(controller);
   pump(controller, [] { return Fake::ap.load(); });
   save(controller);
   Fake::connected = true;
   pump(controller, [] { return !Fake::wifiNvs.empty(); });
-  tick(controller, millis() + 3000);
-  pump(controller, [] { return !Fake::ap; });
+  exitSetup(controller);
 }
 static void connectedSTAWithoutDjangoCanSetup() {
   reset(); Fake::mdnsAddresses.clear();
   CaptureController controller; controller.begin();
   for (int i = 0; i < 70; ++i) tick(controller, millis() + 10);
   assert(Fake::connected);
-  longPress(controller);
+  press(controller);
   pump(controller, [] { return Fake::ap.load(); });
 }
 static void rememberedControllerUnavailableCanSetup() {
@@ -196,8 +213,32 @@ static void rememberedControllerUnavailableCanSetup() {
   pump(controller, [] { return !Fake::requestSnapshot().empty(); });
   for (int i = 0; i < 30; ++i) tick(controller, millis() + 10);
   for (int i = 0; i < 30; ++i) Fake::enqueue({-11, "", "", false, "GET"});
-  longPress(controller);
+  press(controller);
   pump(controller, [] { return Fake::ap.load(); });
+}
+static void lostConnectionKeepsAP() {
+  reset(false);
+  CaptureController controller; controller.begin();
+  pump(controller, [] { return Fake::ap.load(); });
+  save(controller); Fake::connected = true;
+  pump(controller, [] { return !Fake::wifiNvs.empty(); });
+  const auto saved = Fake::wifiNvs;
+  Fake::connected = false;
+  request(controller, "/exit", HTTP_POST);
+  assert(Fake::setupSnapshot().back().first == 409 && Fake::ap);
+  request(controller, "/status");
+  assert(response() == "wifi_connection_lost");
+  assert(Fake::wifiNvs == saved && Fake::requestSnapshot().empty());
+  save(controller); Fake::connected = true;
+  request(controller, "/status");
+  request(controller, "/status");
+  assert(response().find("saved") == 0);
+  request(controller, "/exit", HTTP_POST);
+  assert(Fake::setupSnapshot().back().first == 200);
+  Fake::connected = false;
+  tick(controller, millis() + 500);
+  request(controller, "/status");
+  assert(Fake::ap && response() == "wifi_connection_lost");
 }
 int main() {
   std::cout << std::unitbuf;
@@ -210,6 +251,7 @@ int main() {
   std::cout << "AP failure and rollover\n"; apFailureAndRollover();
   std::cout << "STA without Django\n"; connectedSTAWithoutDjangoCanSetup();
   std::cout << "remembered controller unavailable\n"; rememberedControllerUnavailableCanSetup();
+  std::cout << "connection lost before exit\n"; lostConnectionKeepsAP();
   Fake::reset();
   std::cout << "wifi setup tests passed\n";
 }

@@ -44,11 +44,11 @@
 
 - ESP32 設定熱點使用使用者指定、符合至少 `8` 字元要求的密碼，與目標 Wi-Fi 密碼分開；實際值僅存於不納入 Git 的私密設定，不寫入規格。密碼已於討論定案，韌體仍須驗證設定值並明確回報熱點啟動失敗。
 
-- 採不接 USB 的設定熱點方式；無已存 Wi-Fi 設定時自動開啟，已有設定時由正常開機後長按板上 BOOT 進入。BOOT 腳位須依實際板型核對；長按約 `3 s` 為操作目標，不在按住 BOOT 上電或重置時配網。
+- 採不接 USB 的設定熱點方式；無已存 Wi-Fi 設定時自動開啟，已有設定時由正常開機後按一下板上 BOOT 進入。BOOT 腳位須依實際板型核對；按鍵需通過去抖與安全閒置檢查，不在按住 BOOT 上電或重置時配網。
 - 使用電腦或相機手機連入設定熱點，由 ESP32 本機提供獨立設定頁，選擇目標 Wi-Fi 並輸入密碼；不依賴 Django Dashboard 可連線。短暫斷線先重試既有設定，不自動清除設定。
-- 成功加入目標 Wi-Fi 並取得 IP 後保存設定，短暫顯示成功結果後自動關閉設定熱點，保留對目標 Wi-Fi 的連線；不要求再次按 BOOT，也不等待 Django 上線或網際網路可用。
+- 成功加入目標 Wi-Fi 並取得 IP 後保存設定，設定頁啟用「退出連線」按鈕；按下後才關閉設定熱點，保留對目標 Wi-Fi 的連線，不要求再次按 BOOT，也不等待 Django 上線或網際網路可用。
 - 密碼錯誤或連線逾時時保留設定熱點，允許修改、重試。設定端在熱點關閉後切回目標 Wi-Fi；不保證手機或電腦會自動切回。
-- 只允許安全閒置時進入配網；送料、拍攝或分類途中長按 BOOT 不切換網路，須等本輪完成或人工安全復原後再操作。Dashboard 底部在停穩設定與送料校正之後，以獨立的「ESP32 網路設定」摺疊區（`dashboard.html` 的 `network-setup`）顯示配網狀態、阻擋原因與長按 BOOT 的操作指引；ESP32 離線時顯示無法確認，不宣稱可安全配網。
+- 只允許安全閒置時進入配網；送料、拍攝或分類途中按 BOOT 不切換網路，須等本輪完成或人工安全復原後再操作。Dashboard 底部在停穩設定與送料校正之後，以獨立的「ESP32 網路設定」摺疊區（`dashboard.html` 的 `network-setup`）顯示配網狀態、阻擋原因與按一下 BOOT 的操作指引；ESP32 離線時顯示無法確認，不宣稱可安全配網。
 
 ### 手機加入與斷線恢復
 
@@ -78,9 +78,9 @@
 #### ESP32 配網與控制端識別
 
 - 沿用 Arduino core 的 `WiFi`、`WebServer`、`Preferences`、`ESPmDNS`，不為配網另引入 WiFiManager。目標網路使用 DHCP；固定的 ESP32 設定熱點網址只用於自身配網，不是 Django 位址。設定熱點名稱帶裝置識別尾碼，頁面資源全在 Firmware，使用 `http://192.168.4.1/` 並顯示切回目標 Wi-Fi 的指引，不依賴 captive portal 自動彈出。
-- BOOT 以 active-low、去抖與 `3000 ms` 長按判定；本期 `esp32:esp32:esp32` 的 GPIO `0` 為實作候選，須核對實際主板後才宣稱可用。只在無送料、Capture、Gate 3 待處理、sorter、命令或未清理果實的安全閒置開 AP；無已存設定且正常初始化完成時自動開 AP。已發生帶果實的安全鎖不能用 BOOT 繞過；從未進入實體流程、僅舊 Wi-Fi 不可達的閒置裝置仍可重新配網。
+- BOOT 以 active-low 與 `50 ms` 去抖判定，每次按下只提出一次配網請求；開機後須先放開按鍵；本期 `esp32:esp32:esp32` 的 GPIO `0` 為實作候選，須核對實際主板後才宣稱可用。只在無送料、Capture、Gate 3 待處理、sorter、命令或未清理果實的安全閒置開 AP；無已存設定且正常初始化完成時自動開 AP。已發生帶果實的安全鎖不能用 BOOT 繞過；從未進入實體流程、僅舊 Wi-Fi 不可達的閒置裝置仍可重新配網。
 - 進入設定模式先停用自動 trigger／新命令，使用 AP+STA 非阻塞嘗試新 Wi-Fi。已連線時以 heartbeat 的 `motion=setup` 請求中央保留安全閒置；中央回 `setup_allowed=1` 後才開 AP，期間拒絕新硬體操作，配網完成後以一般狀態回報解除保留。離線只在本機安全閒置且未保留中央阻擋時允許 BOOT 配網。頁面提供非阻塞 SSID 掃描、SSID／密碼、可選手動 Django HTTPS origin 與連線結果；允許直接輸入 SSID。POST 驗證 SSID 長度與 Wi-Fi 密碼格式，密碼不用 query string、回應、log 或 QR；手動 origin 只接受有效 IPv4、HTTPS 與合法 port，不接受 userinfo、任意 API path 或外網位址。
-- 候選設定先留 RAM，取得目標 Wi-Fi 的有效 IP 後才以一筆帶 schema version 的 Preferences 設定記錄保存；檢查寫入結果，失敗不覆蓋上一份可用設定、不關 AP。Wi-Fi 嘗試 `15000 ms` 逾時，成功且保存完成後顯示結果 `3000 ms`，自動只關 AP、保留 STA。錯誤回 `wifi_connect_timeout`、`wifi_configuration_invalid`、`wifi_config_save_failed` 或 `setup_ap_failed`，允許修正再試；保存不以 Django／Internet 上線為條件。
+- 候選設定先留 RAM，取得目標 Wi-Fi 的有效 IP 後才以一筆帶 schema version 的 Preferences 設定記錄保存；檢查寫入結果，失敗不覆蓋上一份可用設定、不關 AP。Wi-Fi 嘗試 `15000 ms` 逾時，成功且保存完成後持續顯示結果與保留 AP，直到設定頁以 `POST /exit` 手動退出；僅在保存完成且目標 Wi-Fi 仍連線、有有效 IP 時接受，否則回 `409 setup_exit_unavailable`。退出回應後只關 AP、保留 STA，等待退出期間不恢復硬體控制。已保存後掉線回 `wifi_connection_lost`，保留 AP 與 NVS 並允許重試。錯誤回 `wifi_connect_timeout`、`wifi_configuration_invalid`、`wifi_config_save_failed` 或 `setup_ap_failed`，允許修正再試；保存不以 Django／Internet 上線為條件。
 - 設定熱點密碼由 ignored `setup.local.h` 提供，範本為 `setup.example.h`；缺少有效密碼回 `setup_ap_failed`，不開放無密碼 AP。不把實際值放進 Firmware example、文件、Issue 或 log；禁止會輸出 WebServer POST 內容的 Verbose debug build。目標 Wi-Fi 密碼保存在裝置 NVS，第一版不聲稱具備抵抗實體 Flash 讀取的加密保護。一般重試不清空 NVS；更換網路不需重新燒錄。
 - 每次啟動、Wi-Fi 重新加入或控制端確認失聯後，先用 mDNS 找 `_pf-iot._tcp`，再查詢網路資訊確認版本／身分與 URL。首輪探索最多 `15000 ms`，期間不啟動動作；找不到才試已存手動 origin，仍持續有界背景探索。多個有效控制端回 `multiple_controllers_found` 而不任選；已選定健康控制端不因背景發現別台而遷移。
 - 指向本次探索或手動驗證的 HTTPS origin 加上既有 command／report routes，移除編譯時固定 Wi-Fi 與完整 API URL 的依賴。本期沿用既有 ESP32 `setInsecure()`，不宣稱驗證 HTTPS 伺服器憑證或抵抗區網偽冒，僅適用可信任、隔離區網；正式裝置驗證另案設計。控制端、網路 revision 或 `boot_id` 改變使舊 lease 與舊動作失效；未完成流程須人工復原，不能將 report 或 command 重送到另一控制端後繼續。
@@ -400,7 +400,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 ### 檢測、保存與結束
 
-- 自動檢測模式在三張原圖全部保存後，將三張交給模型 Repository 的既有推論 pipeline；ROI 處理後分別執行 color、wrinkle 與 local defect。此階段不產生品質級距，也不將 YOLO 結果當成人工標籤。
+- 自動檢測模式在三張原圖全部保存後，由 Django 本地推論處理；正式權重只從 `Django_Server/models/` 載入，無須外部模型 Repository 或資料。ROI 處理後分別執行 color、wrinkle 與 local defect。此階段不產生品質級距，也不將 YOLO 結果當成人工標籤。
 - 每顆果實獨立資料夾，保存原始上傳照片、成功產生的原圖 ROI 框選圖、遮罩 ROI、灰階加 CLAHE 圖、局部瑕疵標示圖與一份 `result.json`；以照片檔名維持結果對應，不要求站點、時間或模型版本欄位。檢測產物與人工級距 Dataset 分開保存，均不納入 Git。
 - Dashboard 在自動檢測模式以三張照片分組，每組依序顯示 ROI 框選、color、wrinkle、defect 四格影像與判定，共十二格；四模型有跳過、缺失或失敗時，整輪不得顯示完整成功。蒐集模式保留原照片預覽。
 - 部分檢測失敗仍保留三張原圖、成功產物與每張的具體失敗原因，顯示「檢測未完整完成」後結束，不自動重拍；無法產生的裁切或標示圖不建立。保存失敗不得顯示存檔成功。

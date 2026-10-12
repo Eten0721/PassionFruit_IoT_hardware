@@ -50,6 +50,13 @@ int main(int argc, char** argv) {
       }
       assert(Fake::ap);
       Fake::setupRequest("/save", HTTP_POST, {{"ssid", "provisioned-network"}, {"password", "host-only-password"}});
+      for (int i = 0; i < 500 && Fake::wifiNvs.empty(); ++i) {
+        if (Fake::wifiSSID == "provisioned-network") Fake::connected = true;
+        Fake::now += 10; controller.tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+      assert(Fake::ap && !Fake::wifiNvs.empty() && Fake::connected);
+      Fake::setupRequest("/exit", HTTP_POST);
       for (int i = 0; i < 500 && Fake::ap; ++i) {
         if (Fake::wifiSSID == "provisioned-network") Fake::connected = true;
         Fake::now += 10; controller.tick();

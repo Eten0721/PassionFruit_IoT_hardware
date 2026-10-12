@@ -1,5 +1,7 @@
 Django==5.2.16
 django-sslserver-v2==1.0
-python-dotenv==1.2.2
 qrcode==8.2
 zeroconf==0.151.5
+ultralytics==8.4.46
+opencv-python==4.13.0.92
+numpy==2.4.3

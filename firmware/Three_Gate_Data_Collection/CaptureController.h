@@ -97,12 +97,10 @@ class CaptureController {
   DjangoApiClient api_;
   bool bootReleased_ = false;
   bool bootRawLow_ = false;
-  bool bootStableLow_ = false;
   bool bootConsumed_ = false;
   bool setupAwaitingGrant_ = false;
   bool centralSetupBlocked_ = false;
   uint32_t bootChangedAt_ = 0;
-  uint32_t bootPressedAt_ = 0;
   uint32_t setupRequestedAt_ = 0;
   bool setupAllowedLocal() const;
   void checkSetupButton(uint32_t currentTime);

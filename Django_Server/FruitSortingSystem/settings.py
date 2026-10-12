@@ -12,25 +12,16 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 import os
-
-from dotenv import load_dotenv
+import secrets
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Local development settings live at the repository root. Existing process
-# environment variables take precedence over values from this ignored file.
-load_dotenv(BASE_DIR.parent / '.env')
-
-
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get(
-    'DJANGO_SECRET_KEY',
-    'django-insecure-local-development-key-change-before-production',
-)
+# shortcut: Demo regenerates its key on startup; use a stable private key before adding persistent sessions or signatures.
+SECRET_KEY = secrets.token_urlsafe(50)
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -99,19 +90,7 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 DATASET_ROOT = BASE_DIR / 'dataset'
 
 # Automatic inspection stays separate from the manually labelled Dataset.
-def _project_path(environment_name, default):
-    configured = Path(os.environ.get(environment_name, default)).expanduser()
-    return configured if configured.is_absolute() else BASE_DIR.parent / configured
-
-
-MODEL_REPOSITORY_ROOT = _project_path(
-    'MODEL_REPOSITORY_ROOT',
-    BASE_DIR.parent / 'external' / 'ps-quality-detection-system',
-)
-DETECTION_OUTPUT_ROOT = _project_path(
-    'DETECTION_OUTPUT_ROOT',
-    BASE_DIR / 'detection_results',
-)
+DETECTION_OUTPUT_ROOT = BASE_DIR / 'detection_results'
 DETECTION_MODEL_ROOT = BASE_DIR / 'models'
 DETECTION_MODEL_PATHS = {
     'roi': str(DETECTION_MODEL_ROOT / 'ROI.pt'),

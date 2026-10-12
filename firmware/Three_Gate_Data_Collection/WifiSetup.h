@@ -12,7 +12,7 @@ class WifiSetup {
  public:
   ~WifiSetup();
   void begin();
-  void tick(uint32_t now, bool requested);
+  void tick(bool requested);
   bool active() const { return active_; }
   bool configured() const { return record_.ssid[0] != 0; }
   void reconnect() const;
@@ -30,11 +30,14 @@ class WifiSetup {
   bool active_ = false;
   bool connecting_ = false;
   bool saved_ = false;
+  bool exitRequested_ = false;
   bool storageReady_ = false;
   uint32_t phaseStartedAt_ = 0;
   String reason_;
   void open();
   void saveRequest();
+  void exitRequest();
+  bool savedConnectionReady() const;
   void scanRequest();
   void statusRequest();
   void fail(const char* reason);

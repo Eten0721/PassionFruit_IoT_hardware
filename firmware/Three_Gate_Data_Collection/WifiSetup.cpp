@@ -17,12 +17,14 @@ const char kPage[] PROGMEM = R"HTML(<!doctype html><html lang="zh-Hant"><meta ch
 <form id="setup"><label>SSID<input name="ssid" list="networks" maxlength="32" required></label><datalist id="networks"></datalist>
 <label>Wi-Fi 密碼<input name="password" type="password" maxlength="64" autocomplete="new-password"></label>
 <label>手動 Django HTTPS origin（選填）<input name="origin" placeholder="https://192.168.1.10:8000" maxlength="47"></label><button id="save">連線並保存</button></form>
-<p id="status" role="status">尚未保存。</p><p>取得 IP 並保存成功後，設定熱點會自動關閉。請將手機切回目標 Wi-Fi，再掃 Dashboard 相機 QR。保存不等待 Django 上線。</p>
+<p id="status" role="status">尚未保存。</p><button id="exit" type="button" disabled>退出連線</button>
+<p>取得 IP 並保存成功後，按「退出連線」關閉設定熱點，再將手機切回目標 Wi-Fi，掃 Dashboard 相機 QR。ESP32 會保留目標 Wi-Fi 連線。保存不等待 Django 上線。</p>
 <script>
-const form=document.querySelector('#setup'),status=document.querySelector('#status'),save=document.querySelector('#save');let busy=false;
-form.addEventListener('submit',async e=>{e.preventDefault();save.disabled=true;try{const r=await fetch('/save',{method:'POST',body:new URLSearchParams(new FormData(form))});const s=await r.text();form.elements.password.value='';status.textContent=s;busy=r.ok;if(!busy)save.disabled=false}catch{status.textContent='設定頁連線失敗，請確認仍連上設定熱點。';save.disabled=false}});
+const form=document.querySelector('#setup'),status=document.querySelector('#status'),save=document.querySelector('#save'),exit=document.querySelector('#exit');let busy=false,closing=false;
+form.addEventListener('submit',async e=>{e.preventDefault();save.disabled=true;exit.disabled=true;try{const r=await fetch('/save',{method:'POST',body:new URLSearchParams(new FormData(form))});const s=await r.text();form.elements.password.value='';status.textContent=s;busy=r.ok;if(!busy)save.disabled=false}catch{status.textContent='設定頁連線失敗，請確認仍連上設定熱點。';save.disabled=false}});
 document.querySelector('#scan').onclick=async()=>{const target=document.querySelector('#scan-status');target.textContent='掃描中…';try{const r=await fetch('/scan',{method:'POST'});target.textContent=await r.text()}catch{target.textContent='掃描請求失敗，可直接輸入 SSID。'}};
-setInterval(async()=>{try{const r=await fetch('/status',{cache:'no-store'});const s=await r.text();status.textContent=s;if(s.startsWith('saved')){busy=false;save.disabled=true}else if(!s.startsWith('connecting')){busy=false;save.disabled=false}const scan=await fetch('/scan',{cache:'no-store'});if(scan.status===200){const names=(await scan.text()).split('\n');document.querySelector('#networks').replaceChildren(...names.filter(Boolean).map(n=>{const o=document.createElement('option');o.value=n;return o}));document.querySelector('#scan-status').textContent='掃描完成，也可直接輸入。'}}catch{if(!busy)status.textContent='熱點可能已關閉，請切回目標 Wi-Fi。'}},500);
+exit.onclick=async()=>{exit.disabled=true;try{const r=await fetch('/exit',{method:'POST'});const s=await r.text();closing=r.ok;status.textContent=r.ok?'退出請求已送出，請將手機切回目標 Wi-Fi。':s}catch{status.textContent='退出請求失敗，請確認仍連上設定熱點。'}};
+const statusPoll=setInterval(async()=>{try{const r=await fetch('/status',{cache:'no-store'});const s=await r.text();const ready=s.startsWith('saved');if(closing&&ready)return;closing=false;status.textContent=s;exit.disabled=!ready;if(ready){busy=false;save.disabled=true}else if(!s.startsWith('connecting')){busy=false;save.disabled=false}const scan=await fetch('/scan',{cache:'no-store'});if(scan.status===200){const names=(await scan.text()).split('\n');document.querySelector('#networks').replaceChildren(...names.filter(Boolean).map(n=>{const o=document.createElement('option');o.value=n;return o}));document.querySelector('#scan-status').textContent='掃描完成，也可直接輸入。'}}catch{if(closing){clearInterval(statusPoll);status.textContent='退出請求已送出，請將手機切回目標 Wi-Fi。'}else if(!busy)status.textContent='設定頁連線失敗，請確認仍連上設定熱點。'}},500);
 </script></html>)HTML";
 bool usableIP(const IPAddress& ip) {
   return ip[0] != 0 && ip[0] != 127 && ip[0] < 224 && !(ip[0] == 169 && ip[1] == 254);
@@ -69,6 +71,7 @@ void WifiSetup::begin() {
       memchr(stored.origin, 0, sizeof(stored.origin)) && validConfig(stored.ssid, stored.password)) record_ = stored;
   server_.on("/", HTTP_GET, [this] { server_.sendHeader("Cache-Control", "no-store"); server_.send_P(200, "text/html; charset=utf-8", kPage); });
   server_.on("/save", HTTP_POST, [this] { saveRequest(); });
+  server_.on("/exit", HTTP_POST, [this] { exitRequest(); });
   server_.on("/scan", HTTP_POST, [this] { scanRequest(); });
   server_.on("/scan", HTTP_GET, [this] {
     const int count = WiFi.scanComplete();
@@ -100,6 +103,7 @@ void WifiSetup::open() {
   }
   active_ = true;
   saved_ = false;
+  exitRequested_ = false;
   reason_ = "ready";
   server_.begin();
 }
@@ -129,6 +133,21 @@ void WifiSetup::saveRequest() {
   server_.send(202, "text/plain", reason_);
 }
 
+bool WifiSetup::savedConnectionReady() const {
+  return saved_ && WiFi.status() == WL_CONNECTED && usableIP(WiFi.localIP()) && WiFi.SSID() == String(record_.ssid);
+}
+
+void WifiSetup::exitRequest() {
+  server_.sendHeader("Cache-Control", "no-store");
+  if (!savedConnectionReady() || exitRequested_) {
+    server_.send(409, "text/plain", "setup_exit_unavailable");
+    return;
+  }
+  exitRequested_ = true;
+  phaseStartedAt_ = millis();
+  server_.send(200, "text/plain", "setup_closed");
+}
+
 void WifiSetup::scanRequest() {
   if (connecting_ || saved_) { server_.send(409, "text/plain", "setup_busy"); return; }
   if (WiFi.scanComplete() != WIFI_SCAN_RUNNING) {
@@ -140,7 +159,7 @@ void WifiSetup::scanRequest() {
 
 void WifiSetup::statusRequest() {
   server_.sendHeader("Cache-Control", "no-store");
-  server_.send(200, "text/plain; charset=utf-8", saved_ ? "saved\nIP: " + WiFi.localIP().toString() + "\n請切回目標 Wi-Fi。" : reason_);
+  server_.send(200, "text/plain; charset=utf-8", saved_ ? "saved\nIP: " + WiFi.localIP().toString() + "\n請按「退出連線」關閉設定熱點，再切回目標 Wi-Fi。" : reason_);
 }
 
 void WifiSetup::fail(const char* reason) {
@@ -151,11 +170,16 @@ void WifiSetup::fail(const char* reason) {
   if (configured()) reconnect();
 }
 
-void WifiSetup::tick(uint32_t now, bool requested) {
+void WifiSetup::tick(bool requested) {
   if (requested && !active_) open();
   if (!active_) return;
+  if (saved_ && !savedConnectionReady()) {
+    saved_ = false;
+    exitRequested_ = false;
+    reason_ = "wifi_connection_lost";
+  }
   server_.handleClient();
-  now = millis();
+  const uint32_t now = millis();
   if (connecting_) {
     if (now - phaseStartedAt_ >= FirmwareConfig::kWifiConnectAttemptTimeoutMS) { fail("wifi_connect_timeout"); return; }
     if (WiFi.status() != WL_CONNECTED || !usableIP(WiFi.localIP()) || WiFi.SSID() != String(candidate_.ssid)) return;
@@ -169,16 +193,17 @@ void WifiSetup::tick(uint32_t now, bool requested) {
     candidate_ = Record();
     connecting_ = false;
     saved_ = true;
-    phaseStartedAt_ = now;
     reason_ = "saved";
   }
-  if (saved_ && now - phaseStartedAt_ >= 3000UL) {
+  // Let the exit response reach the phone before shutting down its connection.
+  if (exitRequested_ && now - phaseStartedAt_ >= 500UL && savedConnectionReady()) {
     WiFi.softAPdisconnect(false);
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
     WiFi.scanDelete();
     server_.stop();
     active_ = false;
+    exitRequested_ = false;
   }
 }
 

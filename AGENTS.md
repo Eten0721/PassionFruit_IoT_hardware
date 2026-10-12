@@ -12,8 +12,8 @@
 
 ## Repository 邊界
 
-- 硬體、Firmware、Django 與 `Django_Server/models/` 的四個正式部署權重由本 Repository 維護。
-- 模型訓練與推論 pipeline 位於 `external/ps-quality-detection-system/`，保留獨立 `.git`。
+- 硬體、Firmware、Django 本地部署推論與 `Django_Server/models/` 的四個正式部署權重由本 Repository 維護；部署與權重替換不需要外部 checkout 或資料。
+- 模型訓練與研究推論 pipeline 位於選用的 `external/ps-quality-detection-system/`，保留獨立 `.git`。
 - 兩個 Repository 分別 commit 與 push；父層不得追蹤 child Repository、照片、訓練輸出或歷史 checkpoint。
 - Dataset 實體位於獨立資料目錄，不納入 Git。
 

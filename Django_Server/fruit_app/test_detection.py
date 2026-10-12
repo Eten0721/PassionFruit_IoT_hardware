@@ -30,9 +30,9 @@ class DetectionFlowTests(SimpleTestCase):
     def setUp(self):
         existing.DataCollectionFlowTests.setUp(self)
         self.detection_root = self.dataset_root / 'detection-results'
-        model_root = self.dataset_root / 'model-repository'
+        model_root = self.dataset_root / 'models'
         paths = {
-            role: model_root / 'models' / f'{role}.pt'
+            role: model_root / f'{role}.pt'
             for role in ('roi', 'color', 'wrinkle', 'defect')
         }
         for path in paths.values():
@@ -40,7 +40,6 @@ class DetectionFlowTests(SimpleTestCase):
             path.touch()
         self.detection_settings = override_settings(
             DETECTION_OUTPUT_ROOT=self.detection_root,
-            MODEL_REPOSITORY_ROOT=model_root,
             DETECTION_MODEL_PATHS={
                 role: str(path) for role, path in paths.items()
             },

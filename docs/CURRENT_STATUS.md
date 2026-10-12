@@ -6,7 +6,7 @@
 
 ## 現行穩定功能
 
-- Issue [#26](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/26) 已接入安全閒置 BOOT 配網、本機 SSID 掃描與設定頁、取得 IP 後保存 NVS、自動關 AP 並保留 STA，以及 Dashboard 配網狀態。正式 Firmware 不再依賴編譯時的目標 Wi-Fi；中央拒絕與既有安全鎖仍阻擋配網，安全閒置的 Django 不可達情境可由本機重新設定。自動測試與編譯不代替實機驗收；BOOT 候選腳位、換網與斷電保存仍待操作員驗證。完整契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
+- Issue [#26](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/26) 已接入安全閒置 BOOT 單次按鍵配網、本機 SSID 掃描與設定頁、取得 IP 後保存 NVS、設定頁手動退出 AP 並保留 STA，以及 Dashboard 配網狀態。正式 Firmware 不再依賴編譯時的目標 Wi-Fi；中央拒絕與既有安全鎖仍阻擋配網，安全閒置的 Django 不可達情境可由本機重新設定。自動測試與編譯不代替實機驗收；BOOT 候選腳位、換網與斷電保存仍待操作員驗證。完整契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
 
 - Issue [#24](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/24) 的動態探索已接入 Issue [#25](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/25) 控制流程：正式 Firmware 宣告 `local_network_v1`，雙端依 lease／keepalive 與相機 readiness 停止後續動作，保存跨重啟安全鎖，經清理、人工確認、歸位與雙端提交後才能開始新一輪。同介面換 IP 會撤銷舊工作並更新 origin；介面消失仍須人工選擇。Django、host 與跨端 HTTP 交握已驗證，實機停止延遲與重啟保持位置尚未驗收。配網頁與免重燒錄 Wi-Fi 設定由 Issue #26 提供；契約集中於 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
 
@@ -26,7 +26,7 @@
 - 正式自動運轉會在 ESP32 同時回報 `feeder_v1` 與 `gate3_sorter_v1`、送料校正、感測區、相機與三站流程皆就緒時送入單顆果實；同一筆 HC-SR04 trigger 啟動首站，分類器 terminal report 完成後才允許下一顆。
 - 正式 Firmware 已按感測、閘門、分類器、HTTPS 與流程控制拆分模組。
 - Django 與模型開發統一使用 `PF` Conda 環境，基準為 Python `3.14.4` 與 Django `5.2.16` LTS。
-- 模型訓練與推論 pipeline 採獨立 Repository；四個 Django 正式部署權重固定存於 `Django_Server/models/` 並由 Git LFS 管理，照片快照存於獨立資料目錄。
+- Django 部署推論由本 Repository 自足維護，四個正式權重固定存於 `Django_Server/models/` 並由 Git LFS 管理；外部 Repository 僅供模型訓練、研究推論與候選權重開發，照片快照存於獨立資料目錄。
 - 目前 Dataset 快照包含 `327` 顆果實與 `981` 張照片，尚待建立正式 train／valid／test 切分與第二份備份。
 
 現行協定與數值見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。

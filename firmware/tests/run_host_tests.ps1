@@ -6,7 +6,6 @@ $binary = Join-Path $buildDir 'control_network_test.exe'
 $sourceDir = Join-Path $buildDir 'src'
 New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
 Get-ChildItem -LiteralPath $firmwareRoot -File | Where-Object { $_.Extension -in '.h', '.cpp' -and $_.Name -notin 'secrets.h', 'network.local.h', 'setup.local.h' } | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $sourceDir }
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'host\secrets.example.h') -Destination (Join-Path $sourceDir 'secrets.h')
 Set-Content -LiteralPath (Join-Path $sourceDir 'network.local.h') -Value 'const char* manualDjangoOrigin = "https://192.0.2.9:9443";' -Encoding ascii
 Set-Content -LiteralPath (Join-Path $sourceDir 'setup.local.h') -Value 'const char* setupApPassword = "host-ap-test-only";' -Encoding ascii
 $sources = Get-ChildItem -LiteralPath $sourceDir -Filter '*.cpp' | ForEach-Object { $_.FullName }

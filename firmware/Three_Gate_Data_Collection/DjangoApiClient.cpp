@@ -97,7 +97,7 @@ void DjangoApiClient::runWorker() {
       }
     }
     const bool wasSetup = wifiSetup_.active();
-    wifiSetup_.tick(millis(), requested || automatic);
+    wifiSetup_.tick(requested || automatic);
     if (wifiSetup_.active()) {
       wifiReady_.store(false, std::memory_order_release);
       vTaskDelay(pdMS_TO_TICKS(10));

@@ -1,5 +1,5 @@
 #pragma once
 
-// Optional test fallback: copy to ignored network.local.h.
-// Startup always tries mDNS first. Only a same-subnet HTTPS IPv4 origin is accepted.
+// Diagnostics-only fallback: copy to ignored network.local.h.
+// Production uses provisioning NVS; both modes try mDNS first.
 const char* manualDjangoOrigin = "";

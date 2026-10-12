@@ -1731,7 +1731,6 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir):
                 Path(fruit_dir) / filename for filename in IMAGE_FILENAMES
             ],
             output_root=Path(settings.DETECTION_OUTPUT_ROOT),
-            repository_root=Path(settings.MODEL_REPOSITORY_ROOT),
             model_paths=dict(settings.DETECTION_MODEL_PATHS),
             model_options=dict(
                 getattr(settings, 'DETECTION_MODEL_OPTIONS', {})

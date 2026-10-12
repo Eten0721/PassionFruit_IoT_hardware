@@ -21,7 +21,6 @@ miniconda*/
 # Environment variables and secrets
 .env
 .env.*
-!.env.example
 *.key
 *.pem
 secrets.*

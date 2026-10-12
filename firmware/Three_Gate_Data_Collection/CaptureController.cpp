@@ -271,13 +271,10 @@ void CaptureController::checkSetupButton(uint32_t currentTime) {
   if (currentTime - bootChangedAt_ < 50UL) return;
   if (!low) {
     bootReleased_ = true;
-    bootStableLow_ = false;
     bootConsumed_ = false;
     return;
   }
-  if (!bootReleased_) return;
-  if (!bootStableLow_) { bootStableLow_ = true; bootPressedAt_ = currentTime; }
-  if (bootConsumed_ || currentTime - bootPressedAt_ < 3000UL) return;
+  if (!bootReleased_ || bootConsumed_) return;
   bootConsumed_ = true;
   if (!setupAllowedLocal() || centralSetupBlocked_) { Serial.println("setup_blocked"); return; }
   autoTriggerEnabled_ = false;
