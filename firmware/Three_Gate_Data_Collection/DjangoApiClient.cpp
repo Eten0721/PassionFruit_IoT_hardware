@@ -11,7 +11,6 @@ const char* manualDjangoOrigin = "";
 #include <esp_system.h>
 
 #include "Config.h"
-#include "secrets.h"
 
 namespace {
 
@@ -77,14 +76,50 @@ void DjangoApiClient::runWorker() {
 
   secureClient_.setInsecure();
   bootId_ = WiFi.macAddress() + "-" + String(esp_random(), HEX);
-  startWiFiAttempt(millis());
+  wifiSetup_.begin();
+  bool automaticSetupAttempted = false;
 
   while (!stopping_.load(std::memory_order_acquire)) {
+    const bool requested = setupRequested_.exchange(false, std::memory_order_acq_rel);
+    const bool automatic = !automaticSetupAttempted && !wifiSetup_.configured() && !wifiSetup_.active() &&
+        localSetupAllowed_.load(std::memory_order_acquire);
+    if (automatic) automaticSetupAttempted = true;
+    if (requested || automatic) {
+      setupPending_.store(true, std::memory_order_release);
+      closeConnection();
+      resetController(millis());
+      if (mdnsStarted_) MDNS.end();
+      mdnsStarted_ = false;
+      RequestState queued = RequestState::kQueued;
+      if (requestState_.compare_exchange_strong(queued, RequestState::kRunning, std::memory_order_acq_rel)) {
+        result_ = HttpResult();
+        requestState_.store(RequestState::kCompleted, std::memory_order_release);
+      }
+    }
+    const bool wasSetup = wifiSetup_.active();
+    wifiSetup_.tick(millis(), requested || automatic);
+    if (wifiSetup_.active()) {
+      wifiReady_.store(false, std::memory_order_release);
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+    if (wasSetup || requested || automatic) {
+      wifiWasConnected_ = false;
+      wifiAttemptInProgress_ = false;
+      nextWiFiAttemptAt_ = millis();
+      resetController(millis());
+      setupPending_.store(false, std::memory_order_release);
+    }
+    if (!wifiSetup_.configured()) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
     ensureWiFi(millis());
     if (!wifiConnected() || !ensureController(millis())) {
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
+    controllerReady_.store(true, std::memory_order_release);
     if (FirmwareConfig::kNetworkDiagnosticsOnly) {
       if (timeReached(millis(), nextProbeAt_)) probeController();
       vTaskDelay(pdMS_TO_TICKS(10));
@@ -120,6 +155,7 @@ void DjangoApiClient::runWorker() {
 
 
 void DjangoApiClient::resetController(uint32_t currentTime) {
+  controllerReady_.store(false, std::memory_order_release);
   closeConnection();
   controllerOrigin_ = "";
   serverRunId_ = "";
@@ -134,19 +170,7 @@ void DjangoApiClient::resetController(uint32_t currentTime) {
 }
 
 bool DjangoApiClient::validOrigin(const String& origin) {
-  if (!origin.startsWith("https://")) return false;
-  const String hostPort = origin.substring(8);
-  const int colon = hostPort.indexOf(':');
-  const String host = colon < 0 ? hostPort : hostPort.substring(0, colon);
-  const String port = colon < 0 ? String("443") : hostPort.substring(colon + 1);
-  IPAddress address;
-  if (!address.fromString(host) || address.toString() != host || !decimal(port) || port.toInt() > 65535) return false;
-  if (address[0] == 0 || address[0] == 127 || address[0] >= 224 ||
-      (address[0] == 169 && address[1] == 254)) return false;
-  const uint32_t mask = static_cast<uint32_t>(WiFi.subnetMask());
-  const uint32_t ip = static_cast<uint32_t>(address);
-  return mask != 0 && (ip & mask) == (static_cast<uint32_t>(WiFi.localIP()) & mask)
-      && (ip & ~mask) != 0 && (ip & ~mask) != ~mask;
+  return WifiSetup::validOrigin(origin, true);
 }
 
 bool DjangoApiClient::validateController(
@@ -297,8 +321,10 @@ bool DjangoApiClient::ensureController(uint32_t currentTime) {
 }
 
 bool DjangoApiClient::tryManualController() {
-  if (String(manualDjangoOrigin).length() > 0 &&
-      validateController(manualDjangoOrigin, "", "", FirmwareConfig::kCommandHttpTimeoutMS)) {
+  const String origin = wifiSetup_.manualOrigin().length() ? wifiSetup_.manualOrigin()
+      : FirmwareConfig::kNetworkDiagnosticsOnly ? String(manualDjangoOrigin) : String("");
+  if (origin.length() > 0 &&
+      validateController(origin, "", "", FirmwareConfig::kCommandHttpTimeoutMS)) {
     discoverySource_ = "manual";
     lastProbeSuccessAt_ = millis();
     Serial.println("Manual controller verified: " + controllerOrigin_);
@@ -343,6 +369,7 @@ void DjangoApiClient::probeController() {
 bool DjangoApiClient::submit(
     const String& url, const String& body, uint32_t timeoutMS, bool post) {
   if (workerTask_ == nullptr ||
+      setupPending() ||
       requestState_.load(std::memory_order_acquire) != RequestState::kIdle) {
     return false;
   }
@@ -367,9 +394,15 @@ bool DjangoApiClient::takeResult(HttpResult& result) {
 }
 
 void DjangoApiClient::setControlState(uint32_t generation, bool interlocked, const String& motion, bool setupAllowed) {
+  localSetupAllowed_.store(setupAllowed, std::memory_order_release);
   controlGeneration_ = generation;
   controlState_ = "recovery_generation=" + String(generation) + "&network_interlocked=" + String(interlocked ? 1 : 0)
       + "&motion=" + encodeFormValue(motion) + "&setup_allowed=" + String(setupAllowed ? 1 : 0);
+}
+
+void DjangoApiClient::requestSetup() {
+  setupPending_.store(true, std::memory_order_release);
+  setupRequested_.store(true, std::memory_order_release);
 }
 
 bool DjangoApiClient::heartbeat() {
@@ -774,7 +807,7 @@ void DjangoApiClient::startWiFiAttempt(uint32_t currentTime) {
   }
 
   Serial.println("Starting non-blocking Wi-Fi connection attempt.");
-  WiFi.begin(ssid, password);
+  wifiSetup_.reconnect();
   wifiAttemptInProgress_ = true;
   wifiAttemptStartedAt_ = currentTime;
   nextWiFiAttemptAt_ = currentTime + FirmwareConfig::kWifiReconnectIntervalMS;

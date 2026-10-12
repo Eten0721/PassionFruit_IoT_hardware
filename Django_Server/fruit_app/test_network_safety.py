@@ -49,6 +49,50 @@ class NetworkSafetyTests(SimpleTestCase):
         self.assertEqual(response['control_lease_ms'], 6000)
         self.assertEqual(views.APP_STATE['motor_command']['command_id'], 88)
 
+    def test_setup_requires_both_idle_device_and_idle_server(self):
+        self.prepare()
+        response = self.client.get('/api/esp32/heartbeat/', self.device()).json()
+        self.assertTrue(response['setup_allowed'])
+        self.assertEqual(self.client.get('/api/state/').json()['network']['setup']['status'], 'allowed')
+        views.APP_STATE['motor_command'] = {'command': 'feed_one', 'command_id': 88}
+        response = self.client.get('/api/esp32/heartbeat/', self.device()).json()
+        self.assertFalse(response['setup_allowed'])
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(state['network']['setup'], {'status': 'blocked', 'reason': 'motor_command_pending'})
+
+    def test_setup_grant_reserves_idle_server_until_device_rejoins(self):
+        self.prepare()
+        response = self.client.get('/api/esp32/heartbeat/', self.device(motion='setup')).json()
+        self.assertTrue(response['setup_allowed'])
+        self.assertEqual(self.post('/api/feeder/test/').json()['reason'], 'esp32_setup_active')
+        self.assertEqual(self.post('/api/auto_run/', {'enabled': True}).json()['reason'], 'esp32_setup_active')
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.client.get('/api/esp32/heartbeat/', self.device())
+        self.assertFalse(views.APP_STATE['esp32_setup_active'])
+
+    def test_setup_reports_each_central_blocker_and_offline_unknown(self):
+        self.prepare()
+        for fields, reason in (
+            ({'auto_run_enabled': True}, 'auto_run_active'),
+            ({'gate3_waiting_fruit_id': 'fruit_001'}, 'gate3_waiting_for_classification'),
+            ({'active_fruit_id': 'fruit_001'}, 'active_fruit_exists'),
+            ({'pending_capture': True}, 'capture_busy'),
+            ({'network_persist_failed': True}, 'network_recovery_required'),
+            ({'sorter_recovery_required': True}, 'sorter_recovery_required'),
+            ({'auto_run_recovery_reason': 'sorter_recovery_clear_failed'}, 'sorter_recovery_clear_failed'),
+        ):
+            with self.subTest(reason=reason):
+                previous = {key: views.APP_STATE.get(key) for key in fields}
+                views.APP_STATE.update(fields)
+                response = self.client.get('/api/esp32/heartbeat/', self.device()).json()
+                self.assertFalse(response['setup_allowed'])
+                self.assertEqual(self.client.get('/api/network/').json()['setup']['reason'], reason)
+                views.APP_STATE.update(previous)
+        self.client.get('/api/esp32/heartbeat/', self.device(setup_allowed='0'))
+        self.assertEqual(self.client.get('/api/state/').json()['network']['setup']['reason'], 'esp32_not_idle')
+        views.APP_STATE['last_esp32_poll_monotonic'] = views.time.monotonic() - 6
+        self.assertEqual(self.client.get('/api/state/').json()['network']['setup'], {'status': 'unknown', 'reason': 'esp32_offline'})
+
     def test_stale_camera_blocks_both_hardware_trigger_routes(self):
         self.prepare()
         views.APP_STATE['camera_last_live_frame_monotonic'] = views.time.monotonic() - 5.5

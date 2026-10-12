@@ -21,14 +21,14 @@ class FirmwareHttpTests(SimpleTestCase):
     _fake_image = safety.NetworkSafetyTests._fake_image
     _upload_station = safety.NetworkSafetyTests._upload_station
 
-    def exercise(self, *, change_ip=False):
+    def exercise(self, *, change_ip=False, provision=False):
         self.interfaces[0]['ipv4'] = '192.0.2.1'
         self.network.server_run_id = '12345678-1234-1234-1234-123456789abc'
         self.assertEqual(self.post('/api/network/', {'interface_id': '7', 'ipv4': '192.0.2.1'}).status_code, 200)
         stage = 'initial'
         events = []
         passed = False
-        with subprocess.Popen([str(HARNESS)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        with subprocess.Popen([str(HARNESS), *(['--setup'] if provision else [])], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True, encoding='utf-8') as process:
             timeout = threading.Timer(25, process.kill)
             timeout.start()
@@ -110,3 +110,6 @@ class FirmwareHttpTests(SimpleTestCase):
 
     def test_same_interface_ip_change_rejoins_before_human_recovery(self):
         self.exercise(change_ip=True)
+
+    def test_ap_configuration_save_close_discovery_and_control_round_trip(self):
+        self.exercise(provision=True)

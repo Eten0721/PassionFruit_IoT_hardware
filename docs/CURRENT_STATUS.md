@@ -1,12 +1,14 @@
 # 目前狀態
 
-更新日期：2026-10-11
+更新日期：2026-10-12
 
 本文件是可覆寫的目前快照。完成歷史由 Git、tag 與 release 保存；未完成工作的詳細規格與討論以 GitHub Issues 為準。
 
 ## 現行穩定功能
 
-- Issue [#24](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/24) 的動態探索已接入 Issue [#25](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/25) 控制流程：正式 Firmware 宣告 `local_network_v1`，雙端依 lease／keepalive 與相機 readiness 停止後續動作，保存跨重啟安全鎖，經清理、人工確認、歸位與雙端提交後才能開始新一輪。同介面換 IP 會撤銷舊工作並更新 origin；介面消失仍須人工選擇。Django、host 與跨端 HTTP 交握已驗證，實機停止延遲與重啟保持位置尚未驗收。配網頁與免重燒錄 Wi-Fi 設定仍由後續切片提供；契約集中於 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
+- Issue [#26](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/26) 已接入安全閒置 BOOT 配網、本機 SSID 掃描與設定頁、取得 IP 後保存 NVS、自動關 AP 並保留 STA，以及 Dashboard 配網狀態。正式 Firmware 不再依賴編譯時的目標 Wi-Fi；中央拒絕與既有安全鎖仍阻擋配網，安全閒置的 Django 不可達情境可由本機重新設定。自動測試與編譯不代替實機驗收；BOOT 候選腳位、換網與斷電保存仍待操作員驗證。完整契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
+
+- Issue [#24](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/24) 的動態探索已接入 Issue [#25](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/25) 控制流程：正式 Firmware 宣告 `local_network_v1`，雙端依 lease／keepalive 與相機 readiness 停止後續動作，保存跨重啟安全鎖，經清理、人工確認、歸位與雙端提交後才能開始新一輪。同介面換 IP 會撤銷舊工作並更新 origin；介面消失仍須人工選擇。Django、host 與跨端 HTTP 交握已驗證，實機停止延遲與重啟保持位置尚未驗收。配網頁與免重燒錄 Wi-Fi 設定由 Issue #26 提供；契約集中於 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
 
 - Issue [#22](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/22) 已完成每次 HTTPS serving process 啟動的網路確認、本機 SVG 相機 QR、origin／subnet 檢查與本機 ICE；介面過期先阻擋新操作，保留資料檢查與清理。背景盤點不阻塞手機輪詢，tests／import／一般管理指令不啟動監測。純拍攝三張保存、QR 實際解碼與程序重設已通過自動測試；正式硬體操作目前回 `network_capability_missing`。完整運轉中遷移與復原仍屬後續切片。
 

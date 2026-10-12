@@ -15,6 +15,8 @@ using std::min;
 constexpr int HEX = 16;
 constexpr int OUTPUT = 1;
 constexpr int INPUT = 0;
+constexpr int INPUT_PULLUP = 2;
+#define PROGMEM
 constexpr int LOW = 0;
 constexpr int HIGH = 1;
 
@@ -74,6 +76,8 @@ inline FakeSerial Serial;
 inline uint32_t millis() { return Fake::now.load(); }
 inline uint32_t micros() { return millis() * 1000; }
 inline void pinMode(int, int) {}
+namespace Fake { inline std::atomic<bool> bootLow{false}; }
+inline int digitalRead(int) { return Fake::bootLow ? LOW : HIGH; }
 inline void digitalWrite(int, int) { Fake::assertControlThread(); }
 inline void delayMicroseconds(int) {}
 inline unsigned long pulseIn(int, int, unsigned long) {

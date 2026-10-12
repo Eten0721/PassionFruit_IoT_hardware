@@ -20,9 +20,12 @@ static int count(int pin, int value) {
   for (const auto& output : Fake::outputs) if (output.pin == pin && output.value == value) ++found;
   return found;
 }
-int main() {
+int main(int argc, char** argv) {
   Fake::reset();
   Fake::nvs.clear();
+  const bool provision = argc > 1 && std::string(argv[1]) == "--setup";
+  Fake::seedWifi = !provision;
+  Fake::wifiNvs.clear();
   std::atomic<int> action{0};
   std::atomic<bool> committed{false};
   Fake::bridge = [&](const Fake::Request& request) {
@@ -40,6 +43,20 @@ int main() {
   {
     CaptureController controller;
     controller.begin();
+    if (provision) {
+      for (int i = 0; i < 500 && !Fake::ap; ++i) {
+        Fake::now += 10; controller.tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+      assert(Fake::ap);
+      Fake::setupRequest("/save", HTTP_POST, {{"ssid", "provisioned-network"}, {"password", "host-only-password"}});
+      for (int i = 0; i < 500 && Fake::ap; ++i) {
+        if (Fake::wifiSSID == "provisioned-network") Fake::connected = true;
+        Fake::now += 10; controller.tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+      assert(!Fake::ap && !Fake::wifiNvs.empty() && Fake::connected);
+    }
     for (int i = 0; i < 2500; ++i) {
       const int instruction = action.exchange(0);
       if (instruction == 1) Fake::echoUS = 5800;

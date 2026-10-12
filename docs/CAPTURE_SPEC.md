@@ -79,9 +79,9 @@
 
 - 沿用 Arduino core 的 `WiFi`、`WebServer`、`Preferences`、`ESPmDNS`，不為配網另引入 WiFiManager。目標網路使用 DHCP；固定的 ESP32 設定熱點網址只用於自身配網，不是 Django 位址。設定熱點名稱帶裝置識別尾碼，頁面資源全在 Firmware，使用 `http://192.168.4.1/` 並顯示切回目標 Wi-Fi 的指引，不依賴 captive portal 自動彈出。
 - BOOT 以 active-low、去抖與 `3000 ms` 長按判定；本期 `esp32:esp32:esp32` 的 GPIO `0` 為實作候選，須核對實際主板後才宣稱可用。只在無送料、Capture、Gate 3 待處理、sorter、命令或未清理果實的安全閒置開 AP；無已存設定且正常初始化完成時自動開 AP。已發生帶果實的安全鎖不能用 BOOT 繞過；從未進入實體流程、僅舊 Wi-Fi 不可達的閒置裝置仍可重新配網。
-- 進入設定模式先停用自動 trigger／新命令，使用 AP+STA 非阻塞嘗試新 Wi-Fi。頁面提供非阻塞 SSID 掃描、SSID／密碼、可選手動 Django HTTPS origin 與連線結果；允許直接輸入 SSID。POST 驗證 SSID 長度與 Wi-Fi 密碼格式，密碼不用 query string、回應、log 或 QR；手動 origin 只接受有效 IPv4、HTTPS 與合法 port，不接受 userinfo、任意 API path 或外網位址。
+- 進入設定模式先停用自動 trigger／新命令，使用 AP+STA 非阻塞嘗試新 Wi-Fi。已連線時以 heartbeat 的 `motion=setup` 請求中央保留安全閒置；中央回 `setup_allowed=1` 後才開 AP，期間拒絕新硬體操作，配網完成後以一般狀態回報解除保留。離線只在本機安全閒置且未保留中央阻擋時允許 BOOT 配網。頁面提供非阻塞 SSID 掃描、SSID／密碼、可選手動 Django HTTPS origin 與連線結果；允許直接輸入 SSID。POST 驗證 SSID 長度與 Wi-Fi 密碼格式，密碼不用 query string、回應、log 或 QR；手動 origin 只接受有效 IPv4、HTTPS 與合法 port，不接受 userinfo、任意 API path 或外網位址。
 - 候選設定先留 RAM，取得目標 Wi-Fi 的有效 IP 後才以一筆帶 schema version 的 Preferences 設定記錄保存；檢查寫入結果，失敗不覆蓋上一份可用設定、不關 AP。Wi-Fi 嘗試 `15000 ms` 逾時，成功且保存完成後顯示結果 `3000 ms`，自動只關 AP、保留 STA。錯誤回 `wifi_connect_timeout`、`wifi_configuration_invalid`、`wifi_config_save_failed` 或 `setup_ap_failed`，允許修正再試；保存不以 Django／Internet 上線為條件。
-- 設定熱點密碼由 ignored 私密設定提供；不把實際值放進 Firmware example、文件、Issue 或 log。目標 Wi-Fi 密碼保存在裝置 NVS，第一版不聲稱具備抵抗實體 Flash 讀取的加密保護。一般重試不清空 NVS；更換網路不需重新燒錄。
+- 設定熱點密碼由 ignored `setup.local.h` 提供，範本為 `setup.example.h`；缺少有效密碼回 `setup_ap_failed`，不開放無密碼 AP。不把實際值放進 Firmware example、文件、Issue 或 log；禁止會輸出 WebServer POST 內容的 Verbose debug build。目標 Wi-Fi 密碼保存在裝置 NVS，第一版不聲稱具備抵抗實體 Flash 讀取的加密保護。一般重試不清空 NVS；更換網路不需重新燒錄。
 - 每次啟動、Wi-Fi 重新加入或控制端確認失聯後，先用 mDNS 找 `_pf-iot._tcp`，再查詢網路資訊確認版本／身分與 URL。首輪探索最多 `15000 ms`，期間不啟動動作；找不到才試已存手動 origin，仍持續有界背景探索。多個有效控制端回 `multiple_controllers_found` 而不任選；已選定健康控制端不因背景發現別台而遷移。
 - 指向本次探索或手動驗證的 HTTPS origin 加上既有 command／report routes，移除編譯時固定 Wi-Fi 與完整 API URL 的依賴。本期沿用既有 ESP32 `setInsecure()`，不宣稱驗證 HTTPS 伺服器憑證或抵抗區網偽冒，僅適用可信任、隔離區網；正式裝置驗證另案設計。控制端、網路 revision 或 `boot_id` 改變使舊 lease 與舊動作失效；未完成流程須人工復原，不能將 report 或 command 重送到另一控制端後繼續。
 
@@ -90,7 +90,7 @@
 - `GET /api/esp32/command/?diagnostic=1` 攜帶 `boot_id`、`server_run_id`、`network_revision`、`discovery_source=mdns|manual` 與 `discovery_reason`；回逐行文字、`diagnostic_id`、`command=none`、`control_allowed=0`，不領取 motor command 或刷新正式硬體 readiness。
 - `POST /api/esp32/report/` 的 `event=network_probe` 回傳相同身分與 `diagnostic_id`；相符往返完成才顯示診斷連線，最後成功 report 超過 `6000 ms` 則顯示離線。診斷 HTTP 除既有階段 timeout 外，各有 `7000 ms` 總等待上限；首輪 info 驗證另受共同的 `15000 ms` 絕對截止限制，晚到結果無效。
 - 多控制端時不選定 origin、不試手動備援；只向已驗證的前兩個候選各回報 `event=network_discovery_status`、身分與 `discovery_reason=multiple_controllers_found`，供 Dashboard 顯示衝突，且不標記已連線。後續探索確認衝突消失後才重新選擇。
-- 手動 origin 僅由 ignored `network.local.h` 或 host adapter 提供；正式配網頁由後續切片提供。Wi-Fi 暫時沿用 ignored `secrets.h`，移除編譯時 Wi-Fi 設定的完整目標仍由配網切片完成。首輪探索與 HTTP 都在既有網路 worker；診斷模式不宣告 `local_network_v1`，正式控制模式依下列安全交握接受命令。
+- 正式 Firmware 的 Wi-Fi 與手動 origin 由設定頁保存至 NVS，不再讀取 `secrets.h`；每次加入 Wi-Fi 都先探索。ignored `network.local.h` 僅作診斷模式／host adapter 備援。配網 HTTP、NVS、首輪探索與 Django HTTP 都在既有單一網路 worker；診斷模式不宣告 `local_network_v1`，正式控制模式依下列安全交握接受命令。
 
 #### 失聯門檻與安全交握
 

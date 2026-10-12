@@ -164,8 +164,10 @@ const remoteVideo = document.getElementById('remote-video');
         setTextIfChanged(document.getElementById('network-device-status'), device.online
             ? `ESP32 診斷往返已完成，來源：${device.source}${device.reason ? `，探索原因：${device.reason}` : ''}。`
             : `ESP32 診斷尚未連線：${device.reason || device.status || 'waiting_for_report'}。${device.reason === 'multiple_controllers_found' ? '發現多個控制端，請關閉多餘的 Django。' : '探索失敗時可使用控制端網址備援。'}`);
-        setTextIfChanged(document.getElementById('network-setup-status'),
-            `配網狀態無法確認：${network.setup?.reason || 'unknown'}`);
+        const setup = network.setup || {};
+        setTextIfChanged(document.getElementById('network-setup-status'), setup.status === 'allowed'
+            ? '可配網（allowed）：ESP32 與中央均處於安全閒置。'
+            : `${setup.status === 'blocked' ? '配網被阻擋（blocked）' : '配網無法確認（unknown）'}：${setup.reason || 'unknown'}`);
         const qr = document.getElementById('camera-qr');
         qr.hidden = !selected;
         if (selected) {

@@ -6,6 +6,7 @@
 
 void CaptureController::begin() {
   Serial.begin(115200);
+  pinMode(FirmwareConfig::kBootPin, INPUT_PULLUP);
 
   sensor_.begin();
   gates_.begin();
@@ -52,6 +53,12 @@ void CaptureController::begin() {
 void CaptureController::tick() {
   uint32_t currentTime = millis();
 
+  if (api_.setupPending()) {
+    HttpResult discarded;
+    if (api_.takeResult(discarded)) networkRequest_ = NetworkRequest::kNone;
+    return;
+  }
+
   checkControlSafety(currentTime);
   if (!networkInterlocked_ || recoveryRunning_) {
     classifier_.tick(currentTime);
@@ -64,13 +71,23 @@ void CaptureController::tick() {
   handleSensor(currentTime);
   checkControlSafety(millis());
   collectNetworkResult(millis());
+  checkSetupButton(millis());
+  if (setupAwaitingGrant_ && !api_.controllerReady() && millis() - setupRequestedAt_ >= 7000UL) {
+    setupAwaitingGrant_ = false;
+    if (setupAllowedLocal() && !centralSetupBlocked_) api_.requestSetup();
+  }
+  if (api_.setupPending()) return;
   api_.setControlState(generation_, networkInterlocked_,
-      recoveryRunning_ ? "recover_network" : motionPhase_ == MotionPhase::kFeederDriving ? "feed_one"
+      setupAwaitingGrant_ ? "setup" : recoveryRunning_ ? "recover_network" : motionPhase_ == MotionPhase::kFeederDriving ? "feed_one"
       : classifierCommandActive_ ? "classify_fruit" : sequenceActive_ ? "capture" : "idle",
-      !networkInterlocked_ && !operationStarted_ && !sequenceActive_ && !pendingReport_.active);
+      setupAllowedLocal());
   currentTime = millis();
   checkStartSequenceWaitTimeout(currentTime);
   if (networkRequest_ != NetworkRequest::kNone) {
+    return;
+  }
+  if (setupAwaitingGrant_) {
+    if (api_.heartbeat()) networkRequest_ = NetworkRequest::kHeartbeat;
     return;
   }
 
@@ -97,7 +114,16 @@ void CaptureController::collectNetworkResult(uint32_t currentTime) {
   }
   const NetworkRequest request = networkRequest_;
   networkRequest_ = NetworkRequest::kNone;
-  if (!FirmwareConfig::kNetworkDiagnosticsOnly && !acceptControlResult(result, currentTime)) return;
+  const bool accepted = FirmwareConfig::kNetworkDiagnosticsOnly || acceptControlResult(result, currentTime);
+  if (setupAwaitingGrant_ && request == NetworkRequest::kHeartbeat) {
+    setupAwaitingGrant_ = false;
+    const bool granted = accepted && DjangoApiClient::controlValue(result.body, "setup_allowed") == "1";
+    const bool unreachable = result.statusCode <= 0 && !centralSetupBlocked_;
+    if (setupAllowedLocal() && (granted || unreachable)) api_.requestSetup();
+    return;
+  }
+  if (setupAwaitingGrant_) return;
+  if (!accepted) return;
   switch (request) {
     case NetworkRequest::kHeartbeat:
       yieldAfterHeartbeat_ = true;
@@ -184,6 +210,10 @@ bool CaptureController::acceptControlResult(const HttpResult& result, uint32_t c
       (hasAcceptedSentAt_ && static_cast<int32_t>(result.sentAt - lastAcceptedSentAt_) < 0)) return false;
   const uint32_t returnedGeneration = generation.toInt();
   if (generation != String(returnedGeneration)) return false;
+  if (result.statusCode > 0 && result.generation == generation_ && returnedGeneration == generation_ &&
+      !timeReached(currentTime, result.sentAt + 6000UL)) {
+    centralSetupBlocked_ = !result.isSuccess() || DjangoApiClient::controlValue(result.body, "setup_allowed") != "1";
+  }
   if (allowed == "0") {
     if (returnedGeneration >= generation_) {
       const bool active = operationStarted_ || autoTriggerEnabled_ || recoveryRunning_;
@@ -226,6 +256,37 @@ bool CaptureController::acceptControlResult(const HttpResult& result, uint32_t c
   lastAcceptedSentAt_ = result.sentAt;
   hasAcceptedSentAt_ = true;
   return true;
+}
+
+bool CaptureController::setupAllowedLocal() const {
+  return !networkInterlocked_ && !persistFailed_ && !operationStarted_ && !autoTriggerEnabled_ &&
+      !sequenceActive_ && !classifierCommandActive_ && !pendingReport_.active && !autoTrigger_.active() &&
+      !awaitingFruitAfterTimeout_ && !recoveryRunning_ && motionPhase_ == MotionPhase::kIdle &&
+      !classifier_.busy() && classifier_.available() && gatesAreSafeForFastPath();
+}
+
+void CaptureController::checkSetupButton(uint32_t currentTime) {
+  const bool low = digitalRead(FirmwareConfig::kBootPin) == LOW;
+  if (low != bootRawLow_) { bootRawLow_ = low; bootChangedAt_ = currentTime; }
+  if (currentTime - bootChangedAt_ < 50UL) return;
+  if (!low) {
+    bootReleased_ = true;
+    bootStableLow_ = false;
+    bootConsumed_ = false;
+    return;
+  }
+  if (!bootReleased_) return;
+  if (!bootStableLow_) { bootStableLow_ = true; bootPressedAt_ = currentTime; }
+  if (bootConsumed_ || currentTime - bootPressedAt_ < 3000UL) return;
+  bootConsumed_ = true;
+  if (!setupAllowedLocal() || centralSetupBlocked_) { Serial.println("setup_blocked"); return; }
+  autoTriggerEnabled_ = false;
+  if (WiFi.status() != WL_CONNECTED || !api_.controllerReady()) {
+    api_.requestSetup();
+    return;
+  }
+  setupAwaitingGrant_ = true;
+  setupRequestedAt_ = currentTime;
 }
 
 void CaptureController::recoverNetwork(const MotorCommand& command, uint32_t currentTime) {

@@ -61,6 +61,7 @@ inline std::vector<Request> infoRequests;
 inline std::vector<std::thread> workers;
 inline bool wireControl = false;
 inline bool controlAllowed = true;
+inline bool setupAllowed = true;
 inline bool recoveryAllowed = false;
 inline uint32_t serverGeneration = 0;
 inline uint32_t infoRevision = 1;
@@ -122,11 +123,11 @@ inline Reply http(const std::string& method, const std::string& url, const std::
           "\",\"server_run_id\":\"12345678-1234-1234-1234-123456789abc\",\"network_revision\":1,\"recovery_generation\":" +
           std::to_string(serverGeneration) + ",\"control_allowed\":" + (controlAllowed ? "true" : "false") +
           ",\"recovery_allowed\":" + (recoveryAllowed ? "true" : "false") + ",\"control_lease_ms\":" +
-          (controlAllowed ? "6000" : "0"));
+          (controlAllowed ? "6000" : "0") + ",\"setup_allowed\":" + (setupAllowed ? "true" : "false"));
     } else {
       reply.body += "\nboot_id=" + boot + "\nserver_run_id=12345678-1234-1234-1234-123456789abc\nnetwork_revision=1\nrecovery_generation=" +
           std::to_string(serverGeneration) + "\ncontrol_allowed=" + (controlAllowed ? "1" : "0") +
-          "\nrecovery_allowed=" + (recoveryAllowed ? "1" : "0") + "\ncontrol_lease_ms=" + (controlAllowed ? "6000" : "0") + "\n";
+          "\nrecovery_allowed=" + (recoveryAllowed ? "1" : "0") + "\ncontrol_lease_ms=" + (controlAllowed ? "6000" : "0") + "\nsetup_allowed=" + (setupAllowed ? "1" : "0") + "\n";
     }
   }
   return reply;
@@ -134,7 +135,7 @@ inline Reply http(const std::string& method, const std::string& url, const std::
 inline void reset(uint32_t start = 100) {
   for (auto& worker : workers) worker.join();
   workers.clear();
-  wireControl = false; controlAllowed = true; recoveryAllowed = false; serverGeneration = 0; infoRevision = 1; bridge = nullptr;
+  wireControl = false; controlAllowed = true; setupAllowed = true; recoveryAllowed = false; serverGeneration = 0; infoRevision = 1; bridge = nullptr;
   now = start; echoUS = 5800; sensorReads = 0; sensorLatencyMS = 0; outputs.clear();
   std::lock_guard<std::mutex> lock(mutex);
   replies.clear(); requests.clear(); releaseHttp = false; holdWiFi = false;

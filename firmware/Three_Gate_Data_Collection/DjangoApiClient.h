@@ -10,6 +10,7 @@
 
 #include "ProtocolTypes.h"
 #include "DiscoverySecureClient.h"
+#include "WifiSetup.h"
 
 class DjangoApiClient {
  public:
@@ -23,6 +24,9 @@ class DjangoApiClient {
   bool takeResult(HttpResult& result);
   void setControlState(uint32_t generation, bool interlocked, const String& motion, bool setupAllowed);
   bool heartbeat();
+  void requestSetup();
+  bool setupPending() const { return setupPending_.load(std::memory_order_acquire); }
+  bool controllerReady() const { return controllerReady_.load(std::memory_order_acquire); }
   static String controlValue(const String& body, const String& key);
 
   // Submit once, then takeResult before submitting again; false means not queued.
@@ -78,6 +82,11 @@ class DjangoApiClient {
   std::atomic<bool> stopping_{false};
   std::atomic<bool> stopped_{false};
   std::atomic<bool> wifiReady_{false};
+  std::atomic<bool> setupPending_{false};
+  std::atomic<bool> setupRequested_{false};
+  std::atomic<bool> localSetupAllowed_{false};
+  std::atomic<bool> controllerReady_{false};
+  WifiSetup wifiSetup_;
 
   DiscoverySecureClient secureClient_;
   HTTPClient http_;

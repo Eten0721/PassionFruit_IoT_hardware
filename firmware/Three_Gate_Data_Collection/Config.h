@@ -10,6 +10,7 @@ constexpr uint8_t kUltrasonicTrigPin = 26;
 constexpr uint8_t kUltrasonicEchoPin = 27;
 constexpr uint8_t kClassifierPin = 25;
 constexpr uint8_t kFeederPin = 23;
+constexpr uint8_t kBootPin = 0;  // Candidate for this FQBN; physical board verification is pending.
 
 constexpr int kHomeAngle = 0;
 constexpr int kReleaseAngle = 90;
