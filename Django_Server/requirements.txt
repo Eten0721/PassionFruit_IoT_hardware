@@ -5,3 +5,4 @@ zeroconf==0.151.5
 ultralytics==8.4.46
 opencv-python==4.13.0.92
 numpy==2.4.3
+xgboost==3.2.0

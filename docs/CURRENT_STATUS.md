@@ -1,10 +1,12 @@
 # 目前狀態
 
-更新日期：2026-10-13
+更新日期：2026-10-14
 
 本文件是可覆寫的目前快照。完成歷史由 Git、tag 與 release 保存；未完成工作的詳細規格與討論以 GitHub Issues 為準。
 
 ## 現行穩定功能
+
+- Issue [#30](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/30) 已在 YOLO 後接入兩階段 XGBoost 判級，保存單顆 `result.json` 與檢測總表，現有檢測區顯示單張與整顆等級；契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#檢測與判級)。真實模型與交付範例比對一致，但訓練資料證據不足；結果與限制見 [XGBoost 判級驗收](acceptance/issue-30-xgboost-grading.md)，人工操作尚未驗收。硬體模式判級後仍保持 Gate 3 人工復原，實體分槽、人工接手、UI 版面與通知由後續 Issues 處理。
 
 - Issue [#29](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/29) 已分離蒐集與檢測資料區、編號、結果及清理範圍，保留所有舊資料原位；模式可跨重啟恢復，舊頁面請求與同編號照片不會混用分區。自動化驗證結果與人工驗收準備見 [資料分區驗收](acceptance/issue-29-dataset-modes.md)；人工操作尚未驗收。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#資料分區)。
 
@@ -28,7 +30,7 @@
 - 正式自動運轉會在 ESP32 同時回報 `feeder_v1` 與 `gate3_sorter_v1`、送料校正、感測區、相機與三站流程皆就緒時送入單顆果實；同一筆 HC-SR04 trigger 啟動首站，分類器 terminal report 完成後才允許下一顆。
 - 正式 Firmware 已按感測、閘門、分類器、HTTPS 與流程控制拆分模組。
 - Django 與模型開發統一使用 `PF` Conda 環境，基準為 Python `3.14.4` 與 Django `5.2.16` LTS。
-- Django 部署推論由本 Repository 自足維護，四個正式權重固定存於 `Django_Server/models/` 並由 Git LFS 管理；外部 Repository 僅供模型訓練、研究推論與候選權重開發，照片快照存於獨立資料目錄。
+- Django 部署推論由本 Repository 自足維護，四個 YOLO 權重與兩個 XGBoost 判級模型固定存於 `Django_Server/models/` 並由 Git LFS 管理；外部 Repository 僅供模型訓練、研究推論與候選權重開發，照片快照存於獨立資料目錄。
 - 目前 Dataset 快照包含 `327` 顆果實與 `981` 張照片，尚待建立正式 train／valid／test 切分與第二份備份。
 
 現行協定與數值見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。

@@ -43,7 +43,7 @@ flowchart LR
     AI -- 檢測結果 --> Django
 ```
 
-Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS client 輪詢命令，在本機負責感測、馬達停止與有界硬體流程；手機處理相機 readiness、預覽、拍攝與上傳。本 Repository 維護 Django 本地推論與四個 Git LFS 正式部署權重，部署不需要外部模型 Repository 或資料。
+Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS client 輪詢命令，在本機負責感測、馬達停止與有界硬體流程；手機處理相機 readiness、預覽、拍攝與上傳。本 Repository 維護 Django 本地推論、四個 YOLO 權重與兩個 XGBoost 判級模型（Git LFS），部署不需要外部模型 Repository 或資料。
 
 硬體採單電源、雙 LM25116 降壓分支，分別供三站與分類器的 MG996R，以及 XINHUI 送料馬達。電壓設定見 [現行規格](docs/CAPTURE_SPEC.md)，接線、市電安全與負載驗收要求見 [硬體接線與驗收摘要](record_image/硬體接線與驗收摘要.md)。
 

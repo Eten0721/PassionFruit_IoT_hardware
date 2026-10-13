@@ -6,6 +6,7 @@ import secrets
 import shutil
 import threading
 import time
+import uuid
 from datetime import datetime
 from functools import cache, wraps
 from pathlib import Path
@@ -23,6 +24,7 @@ from . import (
     capture_timing,
     dataset_store,
     detection,
+    grading,
     motor_commands,
     webrtc_signaling,
 )
@@ -32,12 +34,7 @@ from .local_network import network_required
 
 
 LABELS = ['上等', '中等', '下等', '加工']
-CLASSIFICATION_CODES = {
-    '上等': 'high',
-    '中等': 'medium',
-    '下等': 'low',
-    '加工': 'processing',
-}
+CLASSIFICATION_CODES = grading.CLASSIFICATION_CODES
 IMAGE_COUNT = 3
 IMAGE_FILENAMES = [f'img_{idx:02d}.jpg' for idx in range(1, IMAGE_COUNT + 1)]
 FRUIT_ID_PATTERN = re.compile(r'^fruit_(\d{3,})$')
@@ -1750,13 +1747,57 @@ def _set_capture_restart_recovery(fruit_id, *, photo_saved):
     _clear_wait_timer()
 
 
-def _run_detection_job(operation_token, fruit_id, fruit_dir):
+def _detection_session(fruit_dir):
+    """Result identity and capture metadata persisted at session start."""
+    try:
+        options = dataset_store.read_capture_options(Path(fruit_dir))
+    except (OSError, ValueError):
+        options = {}
+    result_id = options.get('result_id')
+    if not result_id:
+        # Legacy or unreadable session: derive an id that the job and the
+        # restart path agree on for this temp folder.
+        try:
+            created = Path(fruit_dir).stat().st_ctime_ns
+        except OSError:
+            created = options.get('capture_time') or ''
+        result_id = uuid.uuid5(uuid.NAMESPACE_URL, f'{Path(fruit_dir).resolve()}|{created}').hex
+    return {
+        'result_id': result_id,
+        'capture_time': options.get('capture_time') or APP_STATE.get('capture_time'),
+        'hardware_mode': options.get('hardware_mode') or APP_STATE.get('session_hardware_mode'),
+    }
+
+
+def _detection_message(fruit_id, result):
+    if result is None:
+        return f'{fruit_id} 檢測未完整完成，待人工處理；已保留原圖與可用產物。'
+    storage = result.get('storage') or {}
+    if storage.get('status') == 'failed':
+        return (
+            f'{fruit_id} 檢測結果保存失敗（{storage.get("reason")}），不視為完成；'
+            '請檢查磁碟後刪除本輪重拍。'
+        )
+    classification = result.get('classification') or {}
+    if result.get('complete'):
+        return (
+            f'{fruit_id} 檢測完成：整顆等級 {classification.get("label")}'
+            '（三張取最低級），結果已保存。'
+        )
+    reason = classification.get('reason') or result.get('reason')
+    return (
+        f'{fruit_id} 檢測未完整完成，待人工處理（{reason}）；'
+        '已保留原圖與可用產物。'
+    )
+
+
+def _run_detection_job(operation_token, fruit_id, fruit_dir, session):
     with STATE_LOCK:
         if not APP_STATE.operation_matches(operation_token):
             return
         APP_STATE['detection_status'] = 'running'
         APP_STATE['status'] = 'detection_running'
-        APP_STATE['message'] = f'{fruit_id} 正在執行四模型批次檢測。'
+        APP_STATE['message'] = f'{fruit_id} 正在執行四模型檢測與 XGBoost 判級。'
 
     try:
         result = detection.run_and_save(
@@ -1765,10 +1806,13 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir):
                 Path(fruit_dir) / filename for filename in IMAGE_FILENAMES
             ],
             output_root=_detection_output_root(),
+            summary_path=_detection_summary_path(),
             model_paths=dict(settings.DETECTION_MODEL_PATHS),
+            grade_model_paths=dict(settings.GRADE_MODEL_PATHS),
             model_options=dict(
                 getattr(settings, 'DETECTION_MODEL_OPTIONS', {})
             ),
+            **session,
         )
         error = None
     except Exception as exc:
@@ -1790,11 +1834,7 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir):
         terminal_status = (
             'detection_completed' if complete else 'detection_failed'
         )
-        message = (
-            f'{fruit_id} 三張照片已完成檢測並保存。'
-            if complete
-            else f'{fruit_id} 檢測未完整完成；已保留原圖與可用產物。'
-        )
+        message = _detection_message(fruit_id, result)
         if _photo_only_session():
             _clear_active_state(message, status=terminal_status)
             return
@@ -1826,7 +1866,8 @@ def _start_detection_job(fruit_id, fruit_dir):
     APP_STATE['message'] = f'{fruit_id} 三張原圖已保存，等待批次檢測。'
     threading.Thread(
         target=_run_detection_job,
-        args=(operation_token, fruit_id, Path(fruit_dir)),
+        args=(operation_token, fruit_id, Path(fruit_dir),
+              _detection_session(fruit_dir)),
         name=f'detection-{fruit_id}',
         daemon=True,
     ).start()
@@ -2225,6 +2266,8 @@ def discard_api(request):
         APP_STATE['message'] = f'{fruit_id} 正在刪除或隔離。'
 
     try:
+        if result_dir is not None:
+            detection.remove_summary_rows(_detection_summary_path(), fruit_id)
         result_discard = (
             _discard_temp_fruit(result_dir, fruit_id) if result_dir is not None else None
         )
@@ -2590,6 +2633,10 @@ def _dataset_root(work_mode=None):
 
 def _detection_output_root():
     return _dataset_root('detection') / 'results'
+
+
+def _detection_summary_path():
+    return _dataset_root('detection') / 'detection_summary.csv'
 
 
 def _dataset_options_path():
@@ -4864,11 +4911,14 @@ def _sync_active_state_with_filesystem():
         )
         if restored is None:
             image_paths = [fruit_dir / name for name in IMAGE_FILENAMES]
+            session = _detection_session(fruit_dir)
             try:
                 restored = detection.save_interrupted_result(
                     fruit_id=fruit_dir.name,
                     image_paths=image_paths,
                     output_root=_detection_output_root(),
+                    summary_path=_detection_summary_path(),
+                    **session,
                 )
             except OSError as exc:
                 save_error = f'{type(exc).__name__}: {exc}'
@@ -4876,6 +4926,7 @@ def _sync_active_state_with_filesystem():
                     fruit_id=fruit_dir.name,
                     image_paths=image_paths,
                     save_errors=[save_error],
+                    **session,
                 )
                 try:
                     (fruit_dir / '.detection-terminal').write_text(
@@ -5294,6 +5345,8 @@ def _reset_dataset_contents():
     with _metadata_path().open('w', encoding='utf-8-sig', newline='') as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=METADATA_FIELDNAMES)
         writer.writeheader()
+    if APP_STATE['work_mode'] == 'detection':
+        detection.reset_summary(_detection_summary_path())
     _load_image_list.cache_clear()
     _write_counter(1)
     _write_reset_state({

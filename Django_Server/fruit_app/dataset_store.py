@@ -8,6 +8,7 @@ same camera request without advancing a gate.
 from __future__ import annotations
 
 import json
+import uuid
 
 from pathlib import Path
 from typing import Callable, Iterable
@@ -46,7 +47,11 @@ def save_capture_session(
     work_mode: str = 'collection',
     hardware_mode: str = 'photo_only',
 ) -> None:
-    """Persist the selected modes before exposing a camera request."""
+    """Persist the selected modes before exposing a camera request.
+
+    ``result_id`` stays stable across restarts and never depends on the
+    resettable fruit counter.
+    """
     target = fruit_dir / '.capture-session.json'
     staging = target.with_suffix('.json.tmp')
     try:
@@ -54,6 +59,7 @@ def save_capture_session(
             'hardware_mode': hardware_mode,
             'work_mode': work_mode,
             'capture_time': capture_time,
+            'result_id': uuid.uuid4().hex,
         }), encoding='utf-8')
         staging.replace(target)
     finally:

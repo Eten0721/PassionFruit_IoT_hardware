@@ -1,1 +1,2 @@
 Django_Server/models/*.pt filter=lfs diff=lfs merge=lfs -text
+Django_Server/models/Grade*.json filter=lfs diff=lfs merge=lfs -text

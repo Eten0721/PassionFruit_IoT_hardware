@@ -43,6 +43,7 @@ const remoteVideo = document.getElementById('remote-video');
     const detectionPanel = document.getElementById('detection-panel');
     const detectionResults = document.getElementById('detection-results');
     const detectionSummary = document.getElementById('detection-summary');
+    const detectionGrade = document.getElementById('detection-grade');
     const optionsGuidance = document.getElementById('options-guidance');
     const autoRunButton = document.getElementById('btn-auto-run');
     const autoRunGuidance = document.getElementById('auto-run-guidance');
@@ -834,6 +835,45 @@ const remoteVideo = document.getElementById('remote-video');
         }).join('；');
     }
 
+    function viewGradeText(image) {
+        const grade = image.grade;
+        if (!grade) {
+            return '';
+        }
+        return grade.status === 'ok'
+            ? `｜等級：${grade.label}`
+            : `｜無法判級：${grade.reason || '未知原因'}`;
+    }
+
+    function fruitGrade(data, result) {
+        if (!result) {
+            return data.detection_error
+                ? { state: 'review', text: `整顆等級：待人工處理｜${data.detection_error}` }
+                : { state: 'waiting', text: '整顆等級：等待檢測' };
+        }
+        const classification = result.classification || {};
+        const storage = result.storage || {};
+        if (storage.status === 'failed') {
+            return { state: 'review', text: `結果保存失敗，不視為完成｜${storage.reason}` };
+        }
+        if (classification.status === 'graded' && !result.complete) {
+            return {
+                state: 'review',
+                text: `整顆等級：${classification.label}（檢測未完整，不視為完成）｜${result.reason || '未知原因'}`,
+            };
+        }
+        if (classification.status === 'graded') {
+            return {
+                state: 'graded',
+                text: `整顆等級：${classification.label}（三張取最低級）`,
+            };
+        }
+        return {
+            state: 'review',
+            text: `整顆等級：待人工處理｜${classification.reason || result.reason || '未知原因'}`,
+        };
+    }
+
     function renderDetection(data) {
         const result = data.detection_result;
         const manifest = JSON.stringify([
@@ -857,6 +897,9 @@ const remoteVideo = document.getElementById('remote-video');
             detectionSummary,
             statusLabels[data.detection_status] || data.detection_status || '等待',
         );
+        const grade = fruitGrade(data, result);
+        detectionGrade.dataset.state = grade.state;
+        setTextIfChanged(detectionGrade, grade.text);
         const stages = [
             { key: 'roi', title: 'ROI', artifact: 'roi_annotated' },
             { key: 'color', title: 'color', artifact: 'masked_roi' },
@@ -874,7 +917,7 @@ const remoteVideo = document.getElementById('remote-video');
                 const group = document.createElement('section');
                 group.className = 'detection-group';
                 const heading = document.createElement('h3');
-                heading.textContent = `照片 ${imageIndex + 1}｜${filename}`;
+                heading.textContent = `照片 ${imageIndex + 1}｜${filename}${viewGradeText(image)}`;
                 group.append(heading);
                 const grid = document.createElement('div');
                 grid.className = 'detection-grid';

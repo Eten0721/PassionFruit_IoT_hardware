@@ -50,13 +50,13 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 
 ### 硬體 Repository
 
-`Eten0721/PassionFruit_IoT_hardware` 維護 Django、ESP32 Firmware、硬體筆記、資料採集契約、本地部署推論，以及 `Django_Server/models/` 內四個經驗收的部署權重。它不追蹤原始照片、Dataset、訓練輸出、歷史 checkpoint 或 child Repository。
+`Eten0721/PassionFruit_IoT_hardware` 維護 Django、ESP32 Firmware、硬體筆記、資料採集契約、本地部署推論，以及 `Django_Server/models/` 內經驗收的四個 YOLO 權重與兩個 XGBoost 判級模型。它不追蹤原始照片、Dataset、訓練輸出、歷史 checkpoint 或 child Repository。
 
 ### 模型 Repository
 
 `fcu-passionfruit-project/ps-quality-detection-system` 獨立維護模型訓練、研究推論 pipeline、Dataset manifest 與候選權重。只有模型開發需要建立 `external/ps-quality-detection-system/` checkout，並保留自己的 `.git`；操作方式見 [`external/README.md`](../external/README.md)。
 
-兩個 Repository 必須分別檢查、commit 與 push。Django 部署推論由本 Repository 自足維護，只讀取 `Django_Server/models/ROI.pt`、`Color.pt`、`Wrinkle.pt`、`Defect.pt`，並以 Git LFS 管理；部署與權重替換不需要外部 checkout 或資料。責任切分見 [ADR-0017](adr/0017-fixed-django-model-assets.md)。
+兩個 Repository 必須分別檢查、commit 與 push。Django 部署推論由本 Repository 自足維護，只讀取 `Django_Server/models/ROI.pt`、`Color.pt`、`Wrinkle.pt`、`Defect.pt`、`GradeStage1.json`、`GradeStage2.json`，並以 Git LFS 管理；部署與權重替換不需要外部 checkout 或資料。責任切分見 [ADR-0017](adr/0017-fixed-django-model-assets.md) 與 [ADR-0019](adr/0019-deployed-two-stage-xgboost-grading.md)。
 
 ### Dataset
 

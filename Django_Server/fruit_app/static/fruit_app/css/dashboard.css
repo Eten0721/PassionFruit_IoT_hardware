@@ -587,6 +587,21 @@ button:disabled {
     color: var(--muted);
 }
 
+.detection-grade {
+    margin: 0 0 14px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-small);
+    background: var(--surface-muted);
+    font-size: 18px;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+}
+
+.detection-grade[data-state="review"] {
+    border-color: #b45309;
+}
+
 .detection-group {
     min-width: 0;
 }

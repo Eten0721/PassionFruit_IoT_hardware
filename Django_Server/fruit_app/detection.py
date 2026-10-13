@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import shutil
+import threading
+import uuid
+from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 
 import cv2
 import numpy as np
+
+from . import grading
 
 
 ARTIFACT_NAMES = (
@@ -20,6 +26,14 @@ ARTIFACT_NAMES = (
 )
 MODEL_ROLES = ('roi', 'color', 'wrinkle', 'defect')
 DEFECT_CLASSES = {'abrasion', 'anthracnose', 'insect_bite', 'insect_track'}
+CONTRACT_VERSION = 1
+SUMMARY_FIELDS = [
+    'result_id', 'fruit_id', 'capture_time', 'completed_at', 'hardware_mode',
+    'result_status', 'classification_status', 'reason', 'view_01_grade', 'view_02_grade', 'view_03_grade',
+    'final_grade', 'final_label', 'final_code', 'classification_source',
+    'model_version', 'result_json',
+]
+_SUMMARY_LOCK = threading.Lock()
 
 
 def _class_names(model) -> set[str]:
@@ -389,15 +403,142 @@ def _image_complete(image: dict) -> bool:
     return all(name in image['artifacts'] for name in ARTIFACT_NAMES)
 
 
+def view_features(image: dict) -> dict:
+    """Convert one saved view to the delivered XGBoost raw-feature contract.
+
+    A view that lacks any required ROI or model output is reported as
+    unavailable instead of being filled with zeros.
+    """
+    roi = image.get('roi') or {}
+    if roi.get('status') != 'ok':
+        return {'unavailable': f"roi:{roi.get('reason') or 'unavailable'}"}
+    models = image.get('models') or {}
+    for role in MODEL_ROLES[1:]:
+        summary = models.get(role) or {}
+        if summary.get('status') != 'ok':
+            return {
+                'unavailable': f"{role}:{summary.get('reason') or 'unavailable'}"
+            }
+    color, wrinkle, defect = models['color'], models['wrinkle'], models['defect']
+    color_bad = {'bad_color': 1, 'good_color': 0}.get(color.get('class_name'))
+    wrinkle_label = _wrinkle_label(str(wrinkle.get('class_name', '')))
+    features = {
+        'fruit_area_ratio': roi.get('roi_area_ratio'),
+        'color_bad': color_bad,
+        'color_confidence': color.get('confidence'),
+        'wrinkle': None if wrinkle_label is None else int(
+            wrinkle_label == '有皺褶（壞）'
+        ),
+        'wrinkle_confidence': wrinkle.get('confidence'),
+    }
+    area_ratios = defect.get('area_ratios') or {}
+    max_confidences = defect.get('max_confidences') or {}
+    for name in sorted(DEFECT_CLASSES):
+        features[f'{name}_area_ratio'] = area_ratios.get(name)
+        features[f'{name}_max_confidence'] = max_confidences.get(name)
+    return features
+
+
+def _grade(images: dict[str, dict], grade_model_paths) -> dict:
+    try:
+        return grading.grade_views(
+            {name: view_features(image) for name, image in images.items()},
+            grade_model_paths,
+        )
+    except Exception as error:
+        reason = f'grade_model_failed: {type(error).__name__}: {error}'
+    return {
+        'views': {
+            name: grading.unavailable_view('grade_model_failed')
+            for name in images
+        },
+        'classification': grading.needs_review(reason),
+        'model': None,
+    }
+
+
+def _sorting(hardware_mode: str) -> dict:
+    if hardware_mode == 'photo_only':
+        return {'status': 'skipped', 'reason': 'photo_only'}
+    return {'status': 'not_started', 'reason': 'gate3_held'}
+
+
+def _now() -> str:
+    return datetime.now().astimezone().isoformat(timespec='seconds')
+
+
+def _finalise(
+    result: dict, *, run_dir: Path, summary_path: Path, replace: bool = True,
+) -> dict:
+    """Persist JSON, then the summary row; never claim a failed save."""
+    fruit_id = result['fruit_id']
+    result['storage'] = {
+        'status': 'saved', 'reason': None,
+        'result_json': f'{run_dir.parent.name}/{fruit_id}/result.json',
+        'summary_csv': summary_path.name,
+    }
+    _set_overall_status(result)
+    try:
+        _atomic_json(run_dir / 'result.json', result)
+    except OSError as error:
+        # Still record the failed round in the summary before reporting it.
+        result['storage'].update(
+            status='failed', result_json=None,
+            reason=f'result_json_save_failed: {type(error).__name__}: {error}',
+        )
+        _set_overall_status(result)
+        try:
+            upsert_summary(summary_path, result, replace=replace)
+        except Exception:
+            pass
+        raise
+    try:
+        upsert_summary(summary_path, result, replace=replace)
+    except Exception as error:
+        result['storage'].update(
+            status='failed',
+            reason=f'summary_save_failed: {type(error).__name__}: {error}',
+        )
+        _set_overall_status(result)
+        try:
+            _atomic_json(run_dir / 'result.json', result)
+        except OSError as json_error:
+            result['save_errors'].append(
+                f'result.json: {type(json_error).__name__}: {json_error}'
+            )
+    return result
+
+
+def _set_overall_status(result: dict) -> None:
+    inference = result['inference']
+    classification = result['classification']
+    storage = result['storage']
+    complete = (
+        inference['status'] == 'completed'
+        and classification['status'] == 'graded'
+        and storage['status'] == 'saved'
+    )
+    result['complete'] = complete
+    result['status'] = 'completed' if complete else 'failed'
+    result['reason'] = None if complete else (
+        inference['reason'] or classification['reason'] or storage['reason']
+    )
+
+
 def run_and_save(
     *,
     fruit_id: str,
     image_paths: list[Path],
     output_root: Path,
+    summary_path: Path,
     model_paths: dict[str, str],
+    grade_model_paths: dict[str, str],
+    result_id: str | None = None,
+    capture_time: str | None = None,
+    hardware_mode: str = 'photo_only',
     model_options: dict[str, dict] | None = None,
 ) -> dict:
-    """Run one three-image batch and save one durable fruit-level result."""
+    """Run one three-image batch, grade it and save one durable fruit result."""
     root = Path(output_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     run_dir = root / fruit_id
@@ -467,31 +608,65 @@ def run_and_save(
                     f'{source.name}/{name}: {type(error).__name__}: {error}'
                 )
 
-    complete = not save_errors and all(
+    inference_complete = not save_errors and all(
         _image_complete(image) for image in images.values()
     )
+    graded = _grade(images, grade_model_paths)
+    for name, image in images.items():
+        image['grade'] = graded['views'][name]
     result = {
+        'contract_version': CONTRACT_VERSION,
+        'result_id': result_id or uuid.uuid4().hex,
         'fruit_id': fruit_id,
-        'status': 'completed' if complete else 'failed',
-        'complete': complete,
-        'reason': None if complete else (
-            'artifact_save_failed' if save_errors else 'detection_incomplete'
-        ),
+        'work_mode': 'detection',
+        'hardware_mode': hardware_mode,
+        'capture_time': capture_time,
+        'completed_at': _now(),
+        'inference': {
+            'status': 'completed' if inference_complete else 'failed',
+            'reason': None if inference_complete else (
+                'artifact_save_failed' if save_errors else 'detection_incomplete'
+            ),
+        },
+        'classification': graded['classification'],
+        'sorting': _sorting(hardware_mode),
+        'model': {
+            'yolo': {role: Path(path).name for role, path in model_paths.items()},
+            'grading': graded['model'],
+        },
         'save_errors': save_errors,
         'images': images,
     }
-    _atomic_json(run_dir / 'result.json', result)
-    return result
+    if (run_dir / 'result.json').exists():
+        # A restart already recorded this round as interrupted; keep that.
+        existing = load_result(root, fruit_id)
+        if existing is not None:
+            return existing
+    return _finalise(result, run_dir=run_dir, summary_path=Path(summary_path))
 
 
 def interrupted_result(
-    *, fruit_id: str, image_paths: list[Path], save_errors=None
+    *, fruit_id: str, image_paths: list[Path], result_id: str | None = None,
+    capture_time: str | None = None, hardware_mode: str = 'photo_only',
+    save_errors=None,
 ) -> dict:
-    return {
+    result = {
+        'contract_version': CONTRACT_VERSION,
+        'result_id': result_id or uuid.uuid4().hex,
         'fruit_id': fruit_id,
-        'status': 'failed',
-        'complete': False,
-        'reason': 'service_restarted',
+        'work_mode': 'detection',
+        'hardware_mode': hardware_mode,
+        'capture_time': capture_time,
+        'completed_at': _now(),
+        'inference': {'status': 'failed', 'reason': 'service_restarted'},
+        'classification': grading.needs_review('service_restarted'),
+        'sorting': _sorting(hardware_mode),
+        'model': None,
+        'storage': {
+            'status': 'failed' if save_errors else 'pending',
+            'reason': '; '.join(save_errors or []) or None,
+            'result_json': None, 'summary_csv': None,
+        },
         'save_errors': list(save_errors or []),
         'images': {
             Path(source).name: {
@@ -501,19 +676,27 @@ def interrupted_result(
                     for role in MODEL_ROLES[1:]
                 },
                 'artifacts': {},
+                'grade': grading.unavailable_view('service_restarted'),
             }
             for source in image_paths
         },
     }
+    _set_overall_status(result)
+    return result
 
 
 def save_interrupted_result(
-    *, fruit_id: str, image_paths: list[Path], output_root: Path
+    *, fruit_id: str, image_paths: list[Path], output_root: Path,
+    summary_path: Path, result_id: str | None = None,
+    capture_time: str | None = None, hardware_mode: str = 'photo_only',
 ) -> dict:
     """Persist a restart terminal state without re-running any model."""
     run_dir = Path(output_root).resolve() / fruit_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    result = interrupted_result(fruit_id=fruit_id, image_paths=image_paths)
+    result = interrupted_result(
+        fruit_id=fruit_id, image_paths=image_paths, result_id=result_id,
+        capture_time=capture_time, hardware_mode=hardware_mode,
+    )
     for source in map(Path, image_paths):
         artifacts = result['images'][source.name]['artifacts']
         original_name = f'{source.stem}_original{source.suffix.lower()}'
@@ -530,8 +713,9 @@ def save_interrupted_result(
             filename = f'{source.stem}_{name}.jpg'
             if (run_dir / filename).is_file():
                 artifacts[name] = filename
-    _atomic_json(run_dir / 'result.json', result)
-    return result
+    return _finalise(
+        result, run_dir=run_dir, summary_path=Path(summary_path), replace=False,
+    )
 
 
 def load_result(output_root: Path, fruit_id: str) -> dict | None:
@@ -543,3 +727,93 @@ def load_result(output_root: Path, fruit_id: str) -> dict | None:
         )
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
+
+
+def summary_row(result: dict) -> dict:
+    classification = result['classification']
+    view_grades = [
+        image.get('grade', {}).get('grade') for image in result['images'].values()
+    ]
+    versions = (result.get('model') or {}).get('grading') or {}
+    model_version = ';'.join(
+        f"{stage}:{versions[stage]['sha256'][:12]}"
+        for stage in ('stage1', 'stage2') if stage in versions
+    )
+    row = {
+        'result_id': result['result_id'],
+        'fruit_id': result['fruit_id'],
+        'capture_time': result.get('capture_time') or '',
+        'completed_at': result.get('completed_at') or '',
+        'hardware_mode': result.get('hardware_mode') or '',
+        'result_status': result['status'],
+        'classification_status': classification['status'],
+        'reason': result['reason'] or classification['reason'] or '',
+        'final_grade': _blank(classification['grade']),
+        'final_label': classification['label'] or '',
+        'final_code': classification['code'] or '',
+        'classification_source': classification['source'] or '',
+        'model_version': model_version,
+        'result_json': result['storage']['result_json'] or '',
+    }
+    for index in range(3):
+        grade = view_grades[index] if index < len(view_grades) else None
+        row[f'view_{index + 1:02d}_grade'] = _blank(grade)
+    return row
+
+
+def _blank(value) -> str:
+    return '' if value is None else str(value)
+
+
+def _read_summary_rows(path: Path) -> list[dict]:
+    try:
+        with path.open(encoding='utf-8-sig', newline='') as stream:
+            return list(csv.DictReader(stream))
+    except FileNotFoundError:
+        return []
+
+
+def _write_summary_rows(path: Path, rows: list[dict]) -> None:
+    staging = path.with_suffix(path.suffix + '.tmp')
+    try:
+        with staging.open('w', encoding='utf-8-sig', newline='') as stream:
+            writer = csv.DictWriter(
+                stream, fieldnames=SUMMARY_FIELDS, extrasaction='ignore',
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+        staging.replace(path)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def upsert_summary(path: Path, result: dict, *, replace: bool = True) -> None:
+    """Keep exactly one row per result_id; retries replace instead of append.
+
+    ``replace=False`` keeps an existing row, so restart recovery never hides
+    the more specific failure the interrupted job already recorded.
+    """
+    row = summary_row(result)
+    with _SUMMARY_LOCK:
+        existing_rows = _read_summary_rows(path)
+        rows = [
+            existing for existing in existing_rows
+            if existing.get('result_id') != row['result_id']
+        ]
+        if not replace and len(rows) != len(existing_rows):
+            return
+        rows.append(row)
+        _write_summary_rows(path, rows)
+
+
+def remove_summary_rows(path: Path, fruit_id: str) -> None:
+    with _SUMMARY_LOCK:
+        rows = _read_summary_rows(path)
+        kept = [row for row in rows if row.get('fruit_id') != fruit_id]
+        if len(kept) != len(rows):
+            _write_summary_rows(path, kept)
+
+
+def reset_summary(path: Path) -> None:
+    with _SUMMARY_LOCK:
+        _write_summary_rows(path, [])

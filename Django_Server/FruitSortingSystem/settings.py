@@ -97,6 +97,10 @@ DETECTION_MODEL_PATHS = {
     'wrinkle': str(DETECTION_MODEL_ROOT / 'Wrinkle.pt'),
     'defect': str(DETECTION_MODEL_ROOT / 'Defect.pt'),
 }
+GRADE_MODEL_PATHS = {
+    'stage1': str(DETECTION_MODEL_ROOT / 'GradeStage1.json'),
+    'stage2': str(DETECTION_MODEL_ROOT / 'GradeStage2.json'),
+}
 DETECTION_MODEL_OPTIONS = {
     'roi': {'confidence': 0.25, 'imgsz': 640},
     'color': {'imgsz': 320},

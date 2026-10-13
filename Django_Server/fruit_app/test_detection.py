@@ -1,5 +1,6 @@
 """Automatic-detection contracts through HTTP and real temporary files."""
 
+import csv
 import json
 import threading
 import time
@@ -101,17 +102,22 @@ class DetectionFlowTests(SimpleTestCase):
         reports = []
         artifacts = []
         for path in image_paths:
+            no_defects = dict.fromkeys(
+                ('abrasion', 'anthracnose', 'insect_bite', 'insect_track'), 0.0,
+            )
             reports.append({
                 'ok': True, 'source': str(path),
-                'roi': {'status': 'ok', 'confidence': 0.98},
+                'roi': {'status': 'ok', 'confidence': 0.98,
+                        'roi_area_ratio': 0.25},
                 'models': {
                     'color': {'status': 'ok', 'class_name': 'good_color',
-                              'confidence': 0.91},
+                              'confidence': 0.95},
                     'wrinkle': {'status': 'ok',
                                 'class_name': 'false(沒皺褶)',
-                                'confidence': 0.87},
+                                'confidence': 0.9},
                     'defect': {'status': 'ok', 'detections': [],
-                               'area_ratios': {}, 'max_confidences': {}},
+                               'area_ratios': dict(no_defects),
+                               'max_confidences': dict(no_defects)},
                 },
             })
             image = np.full((24, 32, 3), 128, dtype=np.uint8)
@@ -322,7 +328,7 @@ class DetectionFlowTests(SimpleTestCase):
         result = json.loads((run_dir / 'result.json').read_text('utf-8'))
         self.assertFalse((self.detection_root / '.current.json').exists())
         self.assertEqual(len(result['images']), 3)
-        self.assertNotIn('capture_time', result)
+        self.assertTrue(result['capture_time'])
         self.assertNotIn('model_paths', json.dumps(result))
         for index, source_bytes in enumerate(original_bytes, start=1):
             name = f'img_{index:02d}.jpg'
@@ -437,6 +443,29 @@ class DetectionFlowTests(SimpleTestCase):
         self.assertTrue((run_dir / 'img_01_original.jpg').is_file())
         self.assertTrue((run_dir / 'result.json').is_file())
         self.assertFalse((run_dir / 'img_01_masked_roi.jpg').exists())
+        rows = self._summary_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['result_status'], 'failed')
+        self.assertEqual(rows[0]['reason'], 'artifact_save_failed')
+
+    @mock.patch(
+        'fruit_app.detection.execute_model_batch', side_effect=_external_result
+    )
+    @mock.patch(
+        'fruit_app.detection._atomic_json', side_effect=OSError('read only'),
+    )
+    def test_result_json_failure_still_records_failed_summary_row(
+        self, _json, _execute
+    ):
+        _fruit_id, state = self._run_photo_round()
+
+        self.assertEqual(state['detection_status'], 'failed')
+        self.assertIn('read only', state['detection_error'])
+        rows = self._summary_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['result_status'], 'failed')
+        self.assertEqual(rows[0]['result_json'], '')
+        self.assertTrue(rows[0]['reason'].startswith('result_json_save_failed'), rows[0])
 
     @mock.patch(
         'fruit_app.detection.execute_model_batch', side_effect=_external_result
@@ -571,3 +600,238 @@ class DetectionFlowTests(SimpleTestCase):
         for thread in threading.enumerate():
             if thread.name == f'detection-{fruit_id}':
                 thread.join(2)
+
+    # --- Two-stage XGBoost grading and durable result contract (#30) ---
+
+    def _summary_rows(self):
+        path = self.dataset_root / 'detection_summary.csv'
+        if not path.exists():
+            return []
+        with path.open(encoding='utf-8-sig', newline='') as stream:
+            return list(csv.DictReader(stream))
+
+    def _run_photo_round(self):
+        fruit_id = self._start_detection().json()['active_fruit_id']
+        self._upload_three(fruit_id)
+        return fruit_id, self._wait_for_detection()
+
+    @classmethod
+    def _worst_second_view(cls, image_paths, model_paths, **kwargs):
+        reports, artifacts = cls._external_result(image_paths, model_paths, **kwargs)
+        reports[1]['roi']['roi_area_ratio'] = 0.1
+        defect = reports[1]['models']['defect']
+        defect['area_ratios']['anthracnose'] = 0.3
+        defect['max_confidences']['anthracnose'] = 0.85
+        defect['detections'] = [{
+            'class_name': 'anthracnose', 'class_index': 1,
+            'confidence': 0.85, 'mask_area_ratio': 0.3,
+        }]
+        return reports, artifacts
+
+    def test_photo_round_grades_by_worst_view_and_saves_json_and_csv(self):
+        with mock.patch(
+            'fruit_app.detection.execute_model_batch',
+            side_effect=self._worst_second_view,
+        ):
+            fruit_id, state = self._run_photo_round()
+
+        self.assertEqual(state['detection_status'], 'completed')
+        result = state['detection_result']
+        self.assertEqual(result['contract_version'], 1)
+        self.assertEqual(result['inference']['status'], 'completed')
+        grades = {name: image['grade']['grade']
+                  for name, image in result['images'].items()}
+        self.assertEqual(grades['img_02.jpg'], 0)
+        self.assertEqual(grades['img_01.jpg'], 3)
+        classification = result['classification']
+        self.assertEqual(classification['status'], 'graded')
+        self.assertEqual(classification['grade'], 0)
+        self.assertEqual(classification['label'], '加工')
+        self.assertEqual(classification['code'], 'processing')
+        self.assertEqual(classification['source'], 'model')
+        self.assertEqual(classification['worst_view'], 'img_02.jpg')
+        self.assertEqual(result['storage'], {
+            'status': 'saved', 'reason': None,
+            'result_json': f'results/{fruit_id}/result.json',
+            'summary_csv': 'detection_summary.csv',
+        })
+        self.assertEqual(result['sorting']['status'], 'skipped')
+        self.assertEqual(
+            result['model']['grading']['stage1']['file'], 'GradeStage1.json',
+        )
+        features = result['images']['img_02.jpg']['grade']['features']
+        self.assertEqual(features['anthracnose_area_ratio'], 0.3)
+        self.assertEqual(features['color_confidence'], 0.95)
+        self.assertEqual(features['local_defect_type_count'], 1)
+
+        saved = json.loads(
+            (self.detection_root / fruit_id / 'result.json').read_text('utf-8')
+        )
+        self.assertEqual(saved['result_id'], result['result_id'])
+        self.assertEqual(saved['classification'], classification)
+        self.assertTrue(saved['capture_time'])
+
+        rows = self._summary_rows()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row['result_id'], result['result_id'])
+        self.assertEqual(row['fruit_id'], fruit_id)
+        self.assertEqual(
+            [row[f'view_{index:02d}_grade'] for index in (1, 2, 3)],
+            ['3', '0', '3'],
+        )
+        self.assertEqual(row['final_grade'], '0')
+        self.assertEqual(row['final_label'], '加工')
+        self.assertEqual(row['classification_source'], 'model')
+        self.assertEqual(row['result_status'], 'completed')
+        self.assertEqual(row['classification_status'], 'graded')
+        self.assertEqual(row['result_json'], f'results/{fruit_id}/result.json')
+        self.assertIn('stage1:', row['model_version'])
+
+        self.assertEqual(state['motor_command']['command'], 'none')
+
+    @mock.patch('fruit_app.detection.execute_model_batch')
+    def test_missing_roi_needs_manual_review_without_guessing_grade(self, execute):
+        reports, artifacts = self._external_result(
+            [Path(f'img_{index:02d}.jpg') for index in range(1, 4)], {}
+        )
+        reports[1]['roi'] = {'status': 'error', 'reason': 'roi_not_detected'}
+        reports[1]['models'] = {
+            role: {'status': 'skipped', 'reason': 'roi_unavailable'}
+            for role in ('color', 'wrinkle', 'defect')
+        }
+        artifacts[1] = {}
+        execute.return_value = reports, artifacts
+
+        fruit_id, state = self._run_photo_round()
+
+        self.assertEqual(state['detection_status'], 'failed')
+        result = state['detection_result']
+        self.assertEqual(result['inference']['status'], 'failed')
+        self.assertEqual(result['classification']['status'], 'needs_review')
+        self.assertIsNone(result['classification']['grade'])
+        self.assertIsNone(result['classification']['source'])
+        view = result['images']['img_02.jpg']['grade']
+        self.assertEqual(view['status'], 'unavailable')
+        self.assertEqual(view['reason'], 'roi:roi_not_detected')
+        self.assertIsNone(view['features'])
+        self.assertEqual(result['images']['img_01.jpg']['grade']['status'], 'ok')
+        self.assertIn('original', result['images']['img_02.jpg']['artifacts'])
+        self.assertIn('待人工處理', state['message'])
+
+        rows = self._summary_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['result_status'], 'failed')
+        self.assertEqual(rows[0]['classification_status'], 'needs_review')
+        self.assertEqual(rows[0]['final_grade'], '')
+        self.assertEqual(rows[0]['final_label'], '')
+        self.assertEqual(rows[0]['view_02_grade'], '')
+        self.assertEqual(rows[0]['reason'], 'detection_incomplete')
+
+    @mock.patch(
+        'fruit_app.detection.execute_model_batch', side_effect=_external_result
+    )
+    def test_missing_grade_model_needs_review_and_keeps_yolo_result(self, _execute):
+        with override_settings(GRADE_MODEL_PATHS={
+            'stage1': str(self.dataset_base / 'missing1.json'),
+            'stage2': str(self.dataset_base / 'missing2.json'),
+        }):
+            _fruit_id, state = self._run_photo_round()
+
+        self.assertEqual(state['detection_status'], 'failed')
+        result = state['detection_result']
+        self.assertEqual(result['inference']['status'], 'completed')
+        self.assertEqual(result['classification']['status'], 'needs_review')
+        self.assertTrue(
+            result['classification']['reason'].startswith('grade_model_failed')
+        )
+        self.assertIn(
+            'defect_annotated', result['images']['img_01.jpg']['artifacts'],
+        )
+        self.assertEqual(len(self._summary_rows()), 1)
+
+    @mock.patch(
+        'fruit_app.detection.execute_model_batch', side_effect=_external_result
+    )
+    def test_summary_csv_failure_is_not_reported_as_saved(self, _execute):
+        with mock.patch(
+            'fruit_app.detection._write_summary_rows',
+            side_effect=OSError('disk full'),
+        ):
+            fruit_id, state = self._run_photo_round()
+
+        self.assertEqual(state['detection_status'], 'failed')
+        result = state['detection_result']
+        self.assertEqual(result['classification']['status'], 'graded')
+        self.assertEqual(result['storage']['status'], 'failed')
+        self.assertIn('disk full', result['storage']['reason'])
+        self.assertIn('保存失敗', state['message'])
+        saved = json.loads(
+            (self.detection_root / fruit_id / 'result.json').read_text('utf-8')
+        )
+        self.assertEqual(saved['storage']['status'], 'failed')
+
+    @mock.patch(
+        'fruit_app.detection.execute_model_batch', side_effect=_external_result
+    )
+    def test_rounds_and_reset_never_reuse_result_ids_or_duplicate_rows(self, execute):
+        first_id, first = self._run_photo_round()
+        duplicate = self._upload_station(first_id, 3, 3)
+        self.assertEqual(duplicate.status_code, 409)
+        self.client.get('/api/state/')
+        second_id, second = self._run_photo_round()
+
+        self.assertEqual(execute.call_count, 2)
+        rows = self._summary_rows()
+        self.assertEqual([row['fruit_id'] for row in rows], [first_id, second_id])
+        result_ids = {first['detection_result']['result_id'],
+                      second['detection_result']['result_id']}
+        self.assertEqual(len(result_ids), 2)
+
+        reset = self._post_json('/api/reset_dataset/')
+        self.assertEqual(reset.status_code, 200)
+        self.assertEqual(self._summary_rows(), [])
+        third_id, third = self._run_photo_round()
+        self.assertEqual(third_id, first_id)
+        self.assertNotIn(third['detection_result']['result_id'], result_ids)
+        self.assertEqual(len(self._summary_rows()), 1)
+
+    @mock.patch(
+        'fruit_app.detection.execute_model_batch', side_effect=_external_result
+    )
+    def test_discarded_detection_removes_its_summary_row(self, _execute):
+        first_id, _ = self._run_photo_round()
+        second_id, _ = self._run_photo_round()
+        response = self._post_json('/api/discard/', {'fruit_id': second_id})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            [row['fruit_id'] for row in self._summary_rows()], [first_id],
+        )
+
+    @mock.patch('fruit_app.detection.execute_model_batch')
+    def test_restart_records_one_needs_review_row(self, execute):
+        release = threading.Event()
+
+        def blocked(image_paths, model_paths, **kwargs):
+            release.wait(2)
+            return self._external_result(image_paths, model_paths, **kwargs)
+
+        execute.side_effect = blocked
+        fruit_id = self._start_detection().json()['active_fruit_id']
+        self._upload_three(fruit_id)
+        views.reset_runtime_state_for_tests()
+        state = self.client.get('/api/state/').json()
+        self.client.get('/api/state/')
+
+        result = state['detection_result']
+        self.assertEqual(result['classification']['status'], 'needs_review')
+        self.assertEqual(result['classification']['reason'], 'service_restarted')
+        rows = self._summary_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['result_id'], result['result_id'])
+        self.assertEqual(rows[0]['reason'], 'service_restarted')
+        release.set()
+        for thread in threading.enumerate():
+            if thread.name == f'detection-{fruit_id}':
+                thread.join(2)
+        self.assertEqual(len(self._summary_rows()), 1)
