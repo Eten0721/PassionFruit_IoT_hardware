@@ -47,7 +47,8 @@ void DjangoApiClient::begin() {
   if (workerTask_ != nullptr) {
     return;
   }
-  if (xTaskCreate(workerEntry, "django-network", 8192, this, 1, &workerTask_) != pdPASS) {
+  if (xTaskCreatePinnedToCore(workerEntry, "django-network", FirmwareConfig::kNetworkWorkerStackBytes, this, 1,
+                              &workerTask_, FirmwareConfig::kNetworkWorkerCore) != pdPASS) {
     workerTask_ = nullptr;
     Serial.println("Network worker initialization failed: network_worker_unavailable");
   }
@@ -72,18 +73,26 @@ void DjangoApiClient::runWorker() {
   WiFi.mode(WIFI_STA);
   WiFi.persistent(false);
   WiFi.setSleep(false);
-  WiFi.setAutoReconnect(true);
+  // ensureWiFi owns every STA retry; the core's auto-reconnect would race its WiFi.begin calls.
+  WiFi.setAutoReconnect(false);
 
   secureClient_.setInsecure();
   bootId_ = WiFi.macAddress() + "-" + String(esp_random(), HEX);
   wifiSetup_.begin();
   bool automaticSetupAttempted = false;
+  uint32_t nextAutomaticSetupAt = 0;
 
   while (!stopping_.load(std::memory_order_acquire)) {
+    checkStackHeadroom(millis());
     const bool requested = setupRequested_.exchange(false, std::memory_order_acq_rel);
-    const bool automatic = !automaticSetupAttempted && !wifiSetup_.configured() && !wifiSetup_.active() &&
+    const bool automaticDue = !automaticSetupAttempted ||
+        (wifiSetup_.openFailure()[0] && timeReached(millis(), nextAutomaticSetupAt));
+    const bool automatic = automaticDue && !wifiSetup_.configured() && !wifiSetup_.active() &&
         localSetupAllowed_.load(std::memory_order_acquire);
-    if (automatic) automaticSetupAttempted = true;
+    if (automatic) {
+      automaticSetupAttempted = true;
+      nextAutomaticSetupAt = millis() + FirmwareConfig::kSetupApRetryMS;
+    }
     if (requested || automatic) {
       setupPending_.store(true, std::memory_order_release);
       closeConnection();
@@ -96,8 +105,9 @@ void DjangoApiClient::runWorker() {
         requestState_.store(RequestState::kCompleted, std::memory_order_release);
       }
     }
+    const bool cancel = setupCancelRequested_.exchange(false, std::memory_order_acq_rel);
     const bool wasSetup = wifiSetup_.active();
-    wifiSetup_.tick(requested || automatic);
+    wifiSetup_.tick(requested || automatic, cancel);
     if (wifiSetup_.active()) {
       wifiReady_.store(false, std::memory_order_release);
       vTaskDelay(pdMS_TO_TICKS(10));
@@ -127,7 +137,9 @@ void DjangoApiClient::runWorker() {
     }
     if (requestState_.load(std::memory_order_acquire) == RequestState::kQueued) {
       requestState_.store(RequestState::kRunning, std::memory_order_relaxed);
-      const String identity = networkIdentity() + "&network_capability=local_network_v1&" + request_.controlState;
+      const String setupFailure = wifiSetup_.openFailure();
+      const String identity = networkIdentity() + "&network_capability=local_network_v1&" + request_.controlState +
+          (setupFailure.length() ? "&setup_failure=" + setupFailure : String());
       const String run = serverRunId_;
       const uint32_t revision = networkRevision_;
       result_ = request_.post
@@ -799,6 +811,18 @@ int DjangoApiClient::readJsonInt(
   }
 
   return hasDigit ? static_cast<int>(value * sign) : defaultValue;
+}
+
+// Logs each new low of free worker stack under the warning line, to size kNetworkWorkerStackBytes from data.
+void DjangoApiClient::checkStackHeadroom(uint32_t currentTime) {
+  if (!timeReached(currentTime, nextStackCheckAt_)) return;
+  nextStackCheckAt_ = currentTime + FirmwareConfig::kNetworkStackCheckMS;
+  const uint32_t freeBytes = uxTaskGetStackHighWaterMark(nullptr);
+  if (freeBytes >= lowestFreeStack_) return;
+  lowestFreeStack_ = freeBytes;
+  if (freeBytes >= FirmwareConfig::kNetworkStackWarnBytes) return;
+  Serial.print("network_worker_stack_low free_bytes=");
+  Serial.println(freeBytes);
 }
 
 void DjangoApiClient::startWiFiAttempt(uint32_t currentTime) {

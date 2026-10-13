@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <atomic>
 #if defined(CORE_DEBUG_LEVEL) && CORE_DEBUG_LEVEL >= 5
 #error "Verbose WebServer logging exposes submitted Wi-Fi passwords; use a lower debug level."
 #endif
@@ -12,9 +13,12 @@ class WifiSetup {
  public:
   ~WifiSetup();
   void begin();
-  void tick(bool requested);
+  // cancel closes an active setup AP immediately (BOOT press) and restores the saved Wi-Fi.
+  void tick(bool requested, bool cancel);
   bool active() const { return active_; }
   bool configured() const { return record_.ssid[0] != 0; }
+  // Empty after the last open succeeded; otherwise the reason the setup AP could not start.
+  const char* openFailure() const { return openFailure_; }
   void reconnect() const;
   String manualOrigin() const { return record_.origin; }
   static bool validOrigin(const String& origin, bool sameSubnet);
@@ -31,12 +35,29 @@ class WifiSetup {
   bool connecting_ = false;
   bool saved_ = false;
   bool exitRequested_ = false;
+  bool cancelRequested_ = false;
   bool storageReady_ = false;
   uint32_t phaseStartedAt_ = 0;
+  uint32_t closeRequestedAt_ = 0;
+  uint32_t lastActivityAt_ = 0;
+  // Written by the Wi-Fi event task; the counters prove an event belongs to the current attempt.
+  std::atomic<uint32_t> gotIpEvents_{0};
+  std::atomic<uint32_t> disconnectEvents_{0};
+  std::atomic<uint8_t> lastDisconnectReason_{0};
+  uint32_t gotIpBaseline_ = 0;
+  uint32_t disconnectBaseline_ = 0;
+  network_event_handle_t eventHandler_ = 0;
+  const char* openFailure_ = "";
   String reason_;
+  static const char* attemptFailure(uint8_t reason);
   void open();
+  void close();
+  void cancelSetup();
+  void startConnect(const Record& record);
+  bool acceptSetupClient();
   void saveRequest();
   void exitRequest();
+  void cancelRequest();
   bool savedConnectionReady() const;
   void scanRequest();
   void statusRequest();

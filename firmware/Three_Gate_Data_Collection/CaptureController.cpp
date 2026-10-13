@@ -56,6 +56,8 @@ void CaptureController::tick() {
   if (api_.setupPending()) {
     HttpResult discarded;
     if (api_.takeResult(discarded)) networkRequest_ = NetworkRequest::kNone;
+    // A BOOT press during setup cancels it, so an unattended AP never strands the machine.
+    if (setupButtonPressed(currentTime)) api_.cancelSetup();
     return;
   }
 
@@ -265,17 +267,23 @@ bool CaptureController::setupAllowedLocal() const {
       !classifier_.busy() && classifier_.available() && gatesAreSafeForFastPath();
 }
 
-void CaptureController::checkSetupButton(uint32_t currentTime) {
+// True once per debounced press, and only after the button was released since boot.
+bool CaptureController::setupButtonPressed(uint32_t currentTime) {
   const bool low = digitalRead(FirmwareConfig::kBootPin) == LOW;
   if (low != bootRawLow_) { bootRawLow_ = low; bootChangedAt_ = currentTime; }
-  if (currentTime - bootChangedAt_ < 50UL) return;
+  if (currentTime - bootChangedAt_ < 50UL) return false;
   if (!low) {
     bootReleased_ = true;
     bootConsumed_ = false;
-    return;
+    return false;
   }
-  if (!bootReleased_ || bootConsumed_) return;
+  if (!bootReleased_ || bootConsumed_) return false;
   bootConsumed_ = true;
+  return true;
+}
+
+void CaptureController::checkSetupButton(uint32_t currentTime) {
+  if (!setupButtonPressed(currentTime)) return;
   if (!setupAllowedLocal() || centralSetupBlocked_) { Serial.println("setup_blocked"); return; }
   autoTriggerEnabled_ = false;
   if (WiFi.status() != WL_CONNECTED || !api_.controllerReady()) {

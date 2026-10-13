@@ -25,6 +25,8 @@ class DjangoApiClient {
   void setControlState(uint32_t generation, bool interlocked, const String& motion, bool setupAllowed);
   bool heartbeat();
   void requestSetup();
+  // Closes a pending or open setup AP and returns to the saved Wi-Fi.
+  void cancelSetup() { setupCancelRequested_.store(true, std::memory_order_release); }
   bool setupPending() const { return setupPending_.load(std::memory_order_acquire); }
   bool controllerReady() const { return controllerReady_.load(std::memory_order_acquire); }
   static String controlValue(const String& body, const String& key);
@@ -84,6 +86,7 @@ class DjangoApiClient {
   std::atomic<bool> wifiReady_{false};
   std::atomic<bool> setupPending_{false};
   std::atomic<bool> setupRequested_{false};
+  std::atomic<bool> setupCancelRequested_{false};
   std::atomic<bool> localSetupAllowed_{false};
   std::atomic<bool> controllerReady_{false};
   WifiSetup wifiSetup_;
@@ -112,7 +115,10 @@ class DjangoApiClient {
   bool manualAttempted_ = false;
   uint32_t controlGeneration_ = 0;
   String controlState_;
+  uint32_t nextStackCheckAt_ = 0;
+  uint32_t lowestFreeStack_ = UINT32_MAX;
 
+  void checkStackHeadroom(uint32_t currentTime);
   bool ensureController(uint32_t currentTime);
   bool tryManualController();
   bool validateController(const String& origin, const String& runId,

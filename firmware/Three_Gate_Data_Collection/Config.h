@@ -42,6 +42,15 @@ constexpr uint32_t kStartSequenceWaitLimitMS = 10000UL;
 
 constexpr uint32_t kWifiConnectAttemptTimeoutMS = 15000UL;
 constexpr uint32_t kWifiReconnectIntervalMS = 2000UL;
+// Closes an unattended setup AP and restores the saved Wi-Fi; the open page polls and keeps it alive.
+constexpr uint32_t kSetupIdleTimeoutMS = 600000UL;
+// Retries an automatic setup AP that failed to start on an unconfigured device.
+constexpr uint32_t kSetupApRetryMS = 30000UL;
+// Pinned with the Wi-Fi/lwIP tasks on core 0 so loop() keeps core 1 for motion control.
+constexpr uint32_t kNetworkWorkerStackBytes = 16384UL;
+constexpr BaseType_t kNetworkWorkerCore = 0;
+constexpr uint32_t kNetworkStackWarnBytes = 2048UL;
+constexpr uint32_t kNetworkStackCheckMS = 10000UL;
 constexpr uint32_t kCommandHttpTimeoutMS = 1500UL;
 constexpr uint32_t kAutoTriggerReportTimeoutMS = 1000UL;
 constexpr uint32_t kReportHttpTimeoutMS = 5000UL;

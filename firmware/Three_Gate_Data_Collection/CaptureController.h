@@ -103,6 +103,7 @@ class CaptureController {
   uint32_t bootChangedAt_ = 0;
   uint32_t setupRequestedAt_ = 0;
   bool setupAllowedLocal() const;
+  bool setupButtonPressed(uint32_t currentTime);
   void checkSetupButton(uint32_t currentTime);
 
   MotionPhase motionPhase_ = MotionPhase::kBootHomeSettling;

@@ -60,6 +60,17 @@ class NetworkSafetyTests(SimpleTestCase):
         state = self.client.get('/api/state/').json()
         self.assertEqual(state['network']['setup'], {'status': 'blocked', 'reason': 'motor_command_pending'})
 
+    def test_setup_ap_failure_is_shown_until_device_stops_reporting_it(self):
+        self.prepare()
+        self.client.get('/api/esp32/heartbeat/', self.device(setup_failure='setup_ap_failed'))
+        self.assertEqual(self.client.get('/api/state/').json()['network']['setup'],
+                         {'status': 'blocked', 'reason': 'setup_ap_failed'})
+        self.client.get('/api/esp32/heartbeat/', self.device(setup_failure='not_a_reason'))
+        self.assertEqual(self.client.get('/api/state/').json()['network']['setup']['status'], 'allowed')
+        self.client.get('/api/esp32/heartbeat/', self.device(setup_failure='setup_ap_failed'))
+        self.client.get('/api/esp32/heartbeat/', self.device())
+        self.assertEqual(self.client.get('/api/state/').json()['network']['setup']['status'], 'allowed')
+
     def test_setup_grant_reserves_idle_server_until_device_rejoins(self):
         self.prepare()
         response = self.client.get('/api/esp32/heartbeat/', self.device(motion='setup')).json()

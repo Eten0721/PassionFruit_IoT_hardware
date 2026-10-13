@@ -38,6 +38,7 @@ CLASSIFICATION_CODES = grading.CLASSIFICATION_CODES
 IMAGE_COUNT = 3
 IMAGE_FILENAMES = [f'img_{idx:02d}.jpg' for idx in range(1, IMAGE_COUNT + 1)]
 FRUIT_ID_PATTERN = re.compile(r'^fruit_(\d{3,})$')
+ESP32_SETUP_FAILURES = ('setup_ap_failed',)
 METADATA_FIELDNAMES = [
     'fruit_id',
     'label',
@@ -484,7 +485,8 @@ def _network_setup_payload():
         return {'status': 'unknown', 'reason': 'esp32_offline'}
     if not APP_STATE.get('esp32_network_capable'):
         return {'status': 'unknown', 'reason': 'network_capability_missing'}
-    reason = 'esp32_setup_active' if APP_STATE.get('esp32_setup_active') else _network_setup_reason()
+    reason = ('esp32_setup_active' if APP_STATE.get('esp32_setup_active')
+              else _network_setup_reason() or APP_STATE.get('esp32_setup_failure'))
     if reason is None and not APP_STATE.get('esp32_setup_allowed'):
         reason = 'esp32_not_idle'
     return {'status': 'blocked' if reason else 'allowed', 'reason': reason}
@@ -567,6 +569,8 @@ def _observe_device(data):
     APP_STATE['esp32_interlocked'] = _safe_bool(data.get('network_interlocked')) is True
     APP_STATE['esp32_motion'] = data.get('motion', 'unknown')
     APP_STATE['esp32_setup_allowed'] = _safe_bool(data.get('setup_allowed')) is True
+    # Firmware omits the field after its setup AP opens successfully, which clears the failure.
+    APP_STATE['esp32_setup_failure'] = data.get('setup_failure') if data.get('setup_failure') in ESP32_SETUP_FAILURES else None
     APP_STATE['esp32_setup_active'] = (
         data.get('motion') == 'setup' and APP_STATE['esp32_setup_allowed']
         and _network_setup_reason() is None
@@ -2535,7 +2539,8 @@ def reset_runtime_state_for_tests():
     with STATE_LOCK:
         for key in ('network_recovery', 'network_identity', 'network_persist_failed',
                     'esp32_network_capable', 'esp32_interlocked', 'esp32_motion',
-                    'esp32_setup_allowed', 'esp32_setup_active', 'recovery_generation', 'network_recovery_receipt'):
+                    'esp32_setup_allowed', 'esp32_setup_active', 'esp32_setup_failure', 'recovery_generation',
+                    'network_recovery_receipt'):
             APP_STATE.pop(key, None)
         APP_STATE.update({
             'work_mode': 'collection',
