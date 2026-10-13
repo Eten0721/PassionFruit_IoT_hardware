@@ -263,7 +263,7 @@ const remoteVideo = document.getElementById('remote-video');
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data),
+            body: JSON.stringify({ dataset_mode: lastState?.work_mode, ...data }),
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -524,6 +524,10 @@ const remoteVideo = document.getElementById('remote-video');
             : '開始自動運轉後，HC-SR04 會啟動三閘門流程，手機每站上傳 1 張照片。');
         renderThumbnails(images, photoOnly);
         renderDetection(data);
+        setTextIfChanged(document.getElementById('dataset-scope'),
+            `目前資料區：${data.work_mode === 'detection' ? '自動檢測' : '蒐集'}｜${data.dataset_path}`);
+        setTextIfChanged(document.getElementById('legacy-dataset-location'),
+            `舊資料保留原位，不納入本頁清理：${data.legacy_dataset_path} 根目錄、${data.legacy_detection_path}`);
         renderTiming(data.timing || {});
         renderCaptureTiming(data);
         renderTransitionTrace(data);
@@ -1537,7 +1541,9 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     async function resetDataset() {
-        if (!confirm('確定要重置整個 dataset 嗎？這會刪除 temp 與所有分類資料夾內的照片，並清空 metadata.csv。')) {
+        const datasetMode = lastState?.work_mode;
+        const modeName = datasetMode === 'detection' ? '自動檢測' : '蒐集';
+        if (!confirm(`確定要重置${modeName}資料區嗎？這會刪除此模式的暫存、照片與結果並重置編號，另一模式及舊資料保留。`)) {
             return;
         }
         if (!confirm('再次確認：此動作無法復原，下一筆 ID 會回到 fruit_001。')) {
@@ -1548,10 +1554,10 @@ const remoteVideo = document.getElementById('remote-video');
         }
         try {
             await releaseThumbnailsBeforeFileOperation();
-            const payload = await postJson('/api/reset_dataset/');
+            const payload = await postJson('/api/reset_dataset/', { dataset_mode: datasetMode });
             lastState = payload;
             renderState(payload);
-            setMessage(`dataset 已重置，下一筆資料將從 fruit_001 開始。${warningText(payload)}`);
+            setMessage(`${modeName}資料區已重置，下一筆資料將從 fruit_001 開始。${warningText(payload)}`);
             await refreshState();
         } catch (error) {
             if (error.payload) {
@@ -1566,8 +1572,9 @@ const remoteVideo = document.getElementById('remote-video');
 
     async function openDatasetFolder() {
         try {
-            const response = await fetch('/api/open_dataset_folder/');
+            const response = await fetch(`/api/open_dataset_folder/?dataset_mode=${lastState?.work_mode}`);
             const payload = await response.json();
+            if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
             if (payload.opened) {
                 setMessage(`已開啟資料夾：${payload.path}`);
             } else {

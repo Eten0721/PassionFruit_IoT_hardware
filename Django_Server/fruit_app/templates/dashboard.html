@@ -351,6 +351,8 @@
                 <span class="summary-badge neutral">低頻操作</span>
             </summary>
             <div class="disclosure-content data-management-grid">
+                <p id="dataset-scope" aria-live="polite"></p>
+                <p id="legacy-dataset-location"></p>
                 <div class="counter-control">
                     <label for="counter-input">下一筆資料起始 ID</label>
                     <div class="controls">
@@ -363,7 +365,7 @@
                     <div>
                         <span class="section-kicker">DANGER ZONE</span>
                         <h3 id="danger-zone-title">重置 Dataset</h3>
-                        <p>刪除 temp 與所有分類照片、清空 metadata.csv，並將下一筆 ID 重設為 fruit_001。此動作無法復原。</p>
+                        <p>只重置目前模式的暫存、照片、結果與編號。另一模式及舊資料保留原位。此動作無法復原。</p>
                     </div>
                     <button id="btn-reset-dataset" type="button" class="button danger">重置 Dataset</button>
                 </section>

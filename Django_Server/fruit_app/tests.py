@@ -16,13 +16,13 @@ from . import local_network
 class DataCollectionFlowTests(SimpleTestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.dataset_root = Path(self.temp_dir.name)
-        self.detection_root = self.dataset_root / 'detection_results'
-        self.capture_timing_path = self.dataset_root / 'runtime_config' / 'capture_timing.json'
-        self.motor_command_sequence_path = self.dataset_root / 'runtime_config' / 'motor_command_sequence.json'
+        self.dataset_base = Path(self.temp_dir.name)
+        self.dataset_root = self.dataset_base / 'collection'
+        self.detection_root = self.dataset_base / 'detection' / 'results'
+        self.capture_timing_path = self.dataset_base / 'runtime_config' / 'capture_timing.json'
+        self.motor_command_sequence_path = self.dataset_base / 'runtime_config' / 'motor_command_sequence.json'
         self.settings_override = override_settings(
-            DATASET_ROOT=self.dataset_root,
-            DETECTION_OUTPUT_ROOT=self.detection_root,
+            DATASET_ROOT=self.dataset_base,
             CAPTURE_TIMING_CONFIG_PATH=self.capture_timing_path,
             MOTOR_COMMAND_SEQUENCE_PATH=self.motor_command_sequence_path,
         )
@@ -1158,7 +1158,7 @@ class DataCollectionFlowTests(SimpleTestCase):
 
     def test_capture_timing_migrates_legacy_dataset_file_to_single_runtime_path(self):
         self.capture_timing_path.unlink()
-        legacy_path = self.dataset_root / 'capture_timing.json'
+        legacy_path = self.dataset_base / 'capture_timing.json'
         legacy_payload = {
             'revision': 10,
             'capture_timing': {
@@ -2679,11 +2679,12 @@ class DataCollectionFlowTests(SimpleTestCase):
         image_path.write_bytes(b'jpeg-content')
 
         response = self.client.get('/api/image/fruit_001/img_01.jpg/')
+        self.addCleanup(response.close)
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.streaming)
         self.assertIn('ETag', response)
         self.assertIn('Last-Modified', response)
-        self.assertEqual(response['Cache-Control'], 'private, max-age=3600')
+        self.assertEqual(response['Cache-Control'], 'private, no-cache')
         self.assertEqual(b''.join(response.streaming_content), b'jpeg-content')
         response.close()
 

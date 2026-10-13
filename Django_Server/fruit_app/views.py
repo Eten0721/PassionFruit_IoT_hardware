@@ -136,6 +136,7 @@ CLIENT_TIMING_KEYS = (
 
 APP_STATE = RuntimeState({
     'work_mode': 'collection',
+    'dataset_options_error': None,
     'session_work_mode': 'collection',
     'hardware_mode': 'hardware',
     'session_hardware_mode': 'hardware',
@@ -696,8 +697,8 @@ def dashboard_view(request):
 @require_GET
 def state_api(request):
     _ensure_dataset_structure()
-    _retry_deferred_discards_if_due()
     with STATE_LOCK:
+        _retry_deferred_discards_if_due()
         _check_network_safety()
         _sync_active_state_with_filesystem()
         payload = _state_payload()
@@ -744,6 +745,9 @@ def set_counter_api(request):
         return _json_error('起始 ID 必須大於 0。', status=400)
 
     with STATE_LOCK:
+        mode_error = _request_dataset_mode_error(request)
+        if mode_error is not None:
+            return mode_error
         reason = local_network.NETWORK.request_reason(request, cleanup=True)
         if reason:
             return local_network.network_error(reason)
@@ -1031,14 +1035,32 @@ def collection_options_api(request):
     if data.get('hardware_mode') not in ('hardware', 'photo_only'):
         return _json_error('硬體選項無效。', reason='invalid_hardware_mode')
     with STATE_LOCK:
+        mode_error = _request_dataset_mode_error(request)
+        if mode_error is not None:
+            return mode_error
         reason = local_network.NETWORK.request_reason(request)
         if reason:
             return local_network.network_error(reason)
         reason = _options_disabled_reason()
         if reason:
             return _json_error('目前流程尚未結束，無法切換選項。', status=409, reason=reason)
+        try:
+            _write_recovery_payload(_dataset_options_path(), {
+                'work_mode': data['work_mode'], 'hardware_mode': data['hardware_mode'],
+            })
+        except OSError as exc:
+            return _json_error(f'無法保存模式：{exc}', status=503, reason='dataset_options_persist_failed')
         APP_STATE['work_mode'] = data['work_mode']
         APP_STATE['hardware_mode'] = data['hardware_mode']
+        APP_STATE['session_work_mode'] = data['work_mode']
+        APP_STATE['session_hardware_mode'] = data['hardware_mode']
+        APP_STATE['detection_status'] = 'idle'
+        APP_STATE['detection_result'] = None
+        APP_STATE['detection_error'] = None
+        APP_STATE['discard_cleanup_last_monotonic'] = None
+        APP_STATE['status'] = 'idle'
+        _ensure_dataset_structure()
+        _sync_active_state_with_filesystem()
         APP_STATE['message'] = (
             (
                 '已選擇自動檢測＋純拍攝，等待手機相機就緒。'
@@ -1072,6 +1094,9 @@ def _request_photo_capture(station_index):
 def photo_capture_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
+        mode_error = _request_dataset_mode_error(request)
+        if mode_error is not None:
+            return mode_error
         if APP_STATE.get('hardware_mode') != 'photo_only':
             return _json_error('目前無法開始純拍攝。', status=409, reason='photo_only_required')
         reason = local_network.NETWORK.request_reason(request)
@@ -1128,6 +1153,9 @@ def auto_run_api(request):
         )
 
     with STATE_LOCK:
+        mode_error = _request_dataset_mode_error(request)
+        if mode_error is not None:
+            return mode_error
         _check_network_safety()
         reason = local_network.NETWORK.request_reason(request, cleanup=True)
         if reason:
@@ -1568,6 +1596,9 @@ def esp32_report_api(request):
 def recapture_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
+        mode_error = _request_dataset_mode_error(request)
+        if mode_error is not None:
+            return mode_error
         reason = local_network.NETWORK.request_reason(request)
         if reason:
             return local_network.network_error(reason)
@@ -1730,7 +1761,7 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir):
             image_paths=[
                 Path(fruit_dir) / filename for filename in IMAGE_FILENAMES
             ],
-            output_root=Path(settings.DETECTION_OUTPUT_ROOT),
+            output_root=_detection_output_root(),
             model_paths=dict(settings.DETECTION_MODEL_PATHS),
             model_options=dict(
                 getattr(settings, 'DETECTION_MODEL_OPTIONS', {})
@@ -1977,6 +2008,9 @@ def classify_api(request):
         )
 
     with STATE_LOCK:
+        mode_error = _request_dataset_mode_error(request)
+        if mode_error is not None:
+            return mode_error
         reason = local_network.NETWORK.request_reason(request)
         if reason:
             return local_network.network_error(reason)
@@ -2140,6 +2174,9 @@ def classify_api(request):
 def discard_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
+        mode_error = _request_dataset_mode_error(request)
+        if mode_error is not None:
+            return mode_error
         reason = local_network.NETWORK.request_reason(request, cleanup=True)
         if reason:
             return local_network.network_error(reason)
@@ -2174,11 +2211,20 @@ def discard_api(request):
         _disable_auto_run()
         APP_STATE['auto_run_finishing'] = False
         fruit_dir = _temp_dir() / fruit_id
+        result_dir = (
+            _detection_output_root() / fruit_id
+            if APP_STATE['session_work_mode'] == 'detection' else None
+        )
         operation_token = APP_STATE.begin_dataset_operation('discard', fruit_id)
         APP_STATE['message'] = f'{fruit_id} 正在刪除或隔離。'
 
     try:
+        result_discard = (
+            _discard_temp_fruit(result_dir, fruit_id) if result_dir is not None else None
+        )
         discard_result = _discard_temp_fruit(fruit_dir, fruit_id)
+        if result_discard and result_discard['mode'] != 'deleted':
+            discard_result = result_discard
     except (DatasetFileBusyError, OSError) as exc:
         with STATE_LOCK:
             APP_STATE.finish_dataset_operation(operation_token)
@@ -2200,6 +2246,9 @@ def discard_api(request):
             return _json_error('刪除完成時狀態已變更。', status=409, reason='stale_operation')
         APP_STATE.finish_dataset_operation(operation_token)
         _clear_active_state(message, status='idle')
+        APP_STATE['detection_status'] = 'idle'
+        APP_STATE['detection_result'] = None
+        APP_STATE['detection_error'] = None
         if gate3_waiting:
             APP_STATE['status'] = 'error'
             APP_STATE['auto_run_recovery_reason'] = 'gate3_manual_removal_required'
@@ -2232,6 +2281,9 @@ def discard_api(request):
 def reset_dataset_api(request):
     _ensure_dataset_structure()
     with STATE_LOCK:
+        mode_error = _request_dataset_mode_error(request)
+        if mode_error is not None:
+            return mode_error
         reason = local_network.NETWORK.request_reason(request, cleanup=True)
         if reason:
             return local_network.network_error(reason)
@@ -2275,6 +2327,9 @@ def reset_dataset_api(request):
             return _json_error('重置完成時狀態已變更。', status=409, reason='stale_operation')
         APP_STATE.finish_dataset_operation(operation_token)
         _clear_active_state('dataset 已重置，下一筆資料將從 fruit_001 開始。', status='idle')
+        APP_STATE['detection_status'] = 'idle'
+        APP_STATE['detection_result'] = None
+        APP_STATE['detection_error'] = None
         _reset_sorter_state()
         APP_STATE['capture_token'] = 0
         APP_STATE['transition_trace'] = []
@@ -2287,55 +2342,62 @@ def reset_dataset_api(request):
 
 @require_GET
 def dataset_image_api(request, fruit_id, filename):
-    if not FRUIT_ID_PATTERN.match(fruit_id) or filename not in IMAGE_FILENAMES:
-        raise Http404('image not found')
-
-    image_path = _find_fruit_image(fruit_id, filename)
-    if not image_path:
-        raise Http404('image not found')
-    stat = image_path.stat()
-    etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
-    last_modified = http_date(stat.st_mtime)
-    if request.headers.get('If-None-Match') == etag:
-        response = HttpResponseNotModified()
-    else:
-        response = FileResponse(image_path.open('rb'), content_type='image/jpeg')
-    response['ETag'] = etag
-    response['Last-Modified'] = last_modified
-    response['Cache-Control'] = 'private, max-age=3600'
-    return response
+    _ensure_dataset_structure()
+    with STATE_LOCK:
+        if (not FRUIT_ID_PATTERN.match(fruit_id) or filename not in IMAGE_FILENAMES
+                or request.GET.get('work_mode', APP_STATE['work_mode']) != APP_STATE['work_mode']):
+            raise Http404('image not found')
+        image_path = _find_fruit_image(fruit_id, filename)
+        if not image_path:
+            raise Http404('image not found')
+        stat = image_path.stat()
+        etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+        if request.headers.get('If-None-Match') == etag:
+            response = HttpResponseNotModified()
+        else:
+            response = FileResponse(image_path.open('rb'), content_type='image/jpeg')
+        response['ETag'] = etag
+        response['Last-Modified'] = http_date(stat.st_mtime)
+        response['Cache-Control'] = 'private, no-cache'
+        return response
 
 
 @require_GET
 def detection_image_api(request, fruit_id, filename):
-    if (
-        not FRUIT_ID_PATTERN.match(fruit_id)
-        or Path(filename).name != filename
-        or not re.fullmatch(r'[A-Za-z0-9_.-]+', filename)
-    ):
-        raise Http404('image not found')
-    image_path = Path(settings.DETECTION_OUTPUT_ROOT) / fruit_id / filename
-    if (
-        not image_path.is_file()
-        or image_path.suffix.lower() not in ('.jpg', '.jpeg', '.png')
-    ):
-        raise Http404('image not found')
-    stat = image_path.stat()
-    response = FileResponse(image_path.open('rb'), content_type='image/jpeg')
-    response['ETag'] = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
-    response['Last-Modified'] = http_date(stat.st_mtime)
-    response['Cache-Control'] = 'private, max-age=3600'
-    return response
+    _ensure_dataset_structure()
+    with STATE_LOCK:
+        if (APP_STATE['work_mode'] != 'detection'
+                or request.GET.get('work_mode', 'detection') != 'detection'
+                or not FRUIT_ID_PATTERN.match(fruit_id)
+                or Path(filename).name != filename
+                or not re.fullmatch(r'[A-Za-z0-9_.-]+', filename)):
+            raise Http404('image not found')
+        image_path = _detection_output_root() / fruit_id / filename
+        if (not image_path.is_file()
+                or _is_ignored_reset_path(image_path.parent)
+                or _is_deferred_discard_path(image_path.parent)
+                or image_path.suffix.lower() not in ('.jpg', '.jpeg', '.png')):
+            raise Http404('image not found')
+        stat = image_path.stat()
+        response = FileResponse(image_path.open('rb'), content_type='image/jpeg')
+        response['ETag'] = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+        response['Last-Modified'] = http_date(stat.st_mtime)
+        response['Cache-Control'] = 'private, no-cache'
+        return response
 
 
 @require_GET
 def open_dataset_folder_api(request):
-    dataset_root = _dataset_root()
     _ensure_dataset_structure()
-    if os.name == 'nt' and hasattr(os, 'startfile'):
-        os.startfile(dataset_root)
-        return JsonResponse({'status': 'success', 'path': str(dataset_root), 'opened': True})
-    return JsonResponse({'status': 'success', 'path': str(dataset_root), 'opened': False})
+    with STATE_LOCK:
+        mode_error = _request_dataset_mode_error(request)
+        if mode_error is not None:
+            return mode_error
+        dataset_root = _dataset_root()
+        if os.name == 'nt' and hasattr(os, 'startfile'):
+            os.startfile(dataset_root)
+            return JsonResponse({'status': 'success', 'path': str(dataset_root), 'opened': True})
+        return JsonResponse({'status': 'success', 'path': str(dataset_root), 'opened': False})
 
 
 @csrf_exempt
@@ -2428,6 +2490,7 @@ def reset_runtime_state_for_tests():
             APP_STATE.pop(key, None)
         APP_STATE.update({
             'work_mode': 'collection',
+            'dataset_options_error': None,
             'session_work_mode': 'collection',
             'hardware_mode': 'hardware',
             'session_hardware_mode': 'hardware',
@@ -2512,8 +2575,52 @@ def reset_runtime_state_for_tests():
         _reset_dataset_caches()
 
 
-def _dataset_root():
-    return Path(settings.DATASET_ROOT)
+def _dataset_root(work_mode=None):
+    mode = work_mode or APP_STATE['work_mode']
+    if mode not in ('collection', 'detection'):
+        raise ValueError(f'Invalid dataset work mode: {mode}')
+    return Path(settings.DATASET_ROOT) / mode
+
+
+def _detection_output_root():
+    return _dataset_root('detection') / 'results'
+
+
+def _dataset_options_path():
+    return Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).with_name('dataset_options.json')
+
+
+@cache
+def _restore_dataset_options(path):
+    try:
+        options = json.loads(path.read_text(encoding='utf-8'))
+        if (not isinstance(options, dict)
+                or options.get('work_mode') not in ('collection', 'detection')
+                or options.get('hardware_mode') not in ('hardware', 'photo_only')):
+            raise ValueError('Invalid persisted dataset options')
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as exc:
+        message = f'無法確認資料模式，請修復 {path}：{exc}'
+        APP_STATE['dataset_options_error'] = message
+        APP_STATE['status'] = 'error'
+        if not APP_STATE.get('auto_run_recovery_reason'):
+            APP_STATE['auto_run_recovery_reason'] = 'dataset_options_invalid'
+        APP_STATE['message'] = message
+        return
+    APP_STATE['work_mode'] = APP_STATE['session_work_mode'] = options['work_mode']
+    APP_STATE['hardware_mode'] = APP_STATE['session_hardware_mode'] = options['hardware_mode']
+
+
+def _request_dataset_mode_error(request):
+    if APP_STATE.get('dataset_options_error'):
+        return _json_error(
+            APP_STATE['dataset_options_error'], status=409, reason='dataset_options_invalid'
+        )
+    mode = (request.GET if request.method == 'GET' else _request_data(request)).get('dataset_mode')
+    if mode is not None and mode != APP_STATE['work_mode']:
+        return _json_error('資料模式已變更，請重新確認目前資料區。', status=409, reason='stale_dataset_mode')
+    return None
 
 
 def _no_store_response(response):
@@ -2536,7 +2643,7 @@ def _capture_timing_path():
 
 
 def _legacy_capture_timing_path():
-    return _dataset_root() / 'capture_timing.json'
+    return Path(settings.DATASET_ROOT) / 'capture_timing.json'
 
 
 def _metadata_path():
@@ -2560,7 +2667,9 @@ def _gate3_recovery_path():
 
 
 def _ensure_dataset_structure():
-    _initialise_dataset_structure(_dataset_root())
+    with STATE_LOCK:
+        _restore_dataset_options(_dataset_options_path())
+        _initialise_dataset_structure(_dataset_root())
 
 
 @cache
@@ -2735,10 +2844,7 @@ def _load_counter(root):
 
 
 def _write_counter(next_id):
-    _counter_path().parent.mkdir(parents=True, exist_ok=True)
-    with _counter_path().open('w', encoding='utf-8') as counter_file:
-        json.dump({'next_id': int(next_id)}, counter_file, ensure_ascii=False, indent=2)
-        counter_file.write('\n')
+    _write_recovery_payload(_counter_path(), {'next_id': int(next_id)})
     _load_counter.cache_clear()
 
 
@@ -2902,7 +3008,10 @@ def _next_available_number(start_number):
 
 
 def _fruit_id_exists(fruit_id):
-    if (Path(settings.DETECTION_OUTPUT_ROOT) / fruit_id).exists():
+    if APP_STATE['work_mode'] == 'detection' and (
+        (_detection_output_root() / fruit_id).exists()
+        and not _is_ignored_reset_path(_detection_output_root() / fruit_id)
+    ):
         return True
     temp_fruit_dir = _temp_dir() / fruit_id
     if temp_fruit_dir.exists() and _is_deferred_discard_path(temp_fruit_dir):
@@ -2924,7 +3033,8 @@ def _find_fruit_image(fruit_id, filename):
     candidates = [_temp_dir() / fruit_id / filename]
     candidates.extend(_dataset_root() / label / fruit_id / filename for label in LABELS)
     for candidate in candidates:
-        if candidate.exists() and candidate.is_file():
+        if (candidate.is_file() and not _is_ignored_reset_path(candidate.parent)
+                and not _is_deferred_discard_path(candidate.parent)):
             return candidate
     return None
 
@@ -2941,13 +3051,14 @@ def _load_image_list(root, fruit_id):
         if image_path:
             images.append({
                 'filename': filename,
-                'url': f'/api/image/{fruit_id}/{filename}/?v={int(image_path.stat().st_mtime)}',
+                'url': f'/api/image/{fruit_id}/{filename}/?work_mode={APP_STATE["work_mode"]}&v={image_path.stat().st_mtime_ns}',
             })
     return tuple(images)
 
 
 def _reset_dataset_caches():
     _initialise_dataset_structure.cache_clear()
+    _restore_dataset_options.cache_clear()
     _load_counter.cache_clear()
     _load_image_list.cache_clear()
 
@@ -3257,6 +3368,13 @@ def _fast_path_enabled():
 
 
 def _prepare_fruit_dir(fruit_id, source):
+    if APP_STATE['work_mode'] == 'detection':
+        result_dir = _detection_output_root() / fruit_id
+        if result_dir.exists() and _is_ignored_reset_path(result_dir):
+            warning = _move_reset_leftover_to_pending(result_dir, reason=source)
+            if result_dir.exists():
+                raise CaptureCommandError(warning, reason='reset_leftover_busy')
+            _remove_ignored_reset_path(result_dir)
     fruit_dir = _temp_dir() / fruit_id
     if fruit_dir.exists() and _is_ignored_reset_path(fruit_dir):
         moved_warning = _move_reset_leftover_to_pending(fruit_dir, reason=source)
@@ -3985,7 +4103,7 @@ def _has_unclassified_temp_fruit():
 
 def _completed_photo_only_detection_input(fruit_dir):
     completed = (
-        Path(settings.DETECTION_OUTPUT_ROOT)
+        _detection_output_root()
         / Path(fruit_dir).name
         / 'result.json'
     ).is_file() or (Path(fruit_dir) / '.detection-terminal').is_file()
@@ -4445,7 +4563,7 @@ def _state_payload(extra=None):
         'active_station_index': APP_STATE.get('active_station_index'),
         'station_statuses': APP_STATE.get('station_statuses') or {},
         'capture_time': APP_STATE['capture_time'],
-        'next_fruit_id': _format_fruit_id(_read_counter()),
+        'next_fruit_id': _format_fruit_id(_next_available_number(_read_counter())),
         'labels': LABELS,
         'image_count': IMAGE_COUNT,
         'image_total': image_total,
@@ -4497,6 +4615,8 @@ def _state_payload(extra=None):
         # ``trace`` is a small compatibility alias for early dashboard builds.
         'trace': list(APP_STATE.get('transition_trace') or []),
         'dataset_path': str(_dataset_root()),
+        'legacy_dataset_path': str(Path(settings.DATASET_ROOT)),
+        'legacy_detection_path': str(Path(settings.BASE_DIR) / 'detection_results'),
         'dataset_operation': APP_STATE.dataset_operation_payload(),
         'detection_status': APP_STATE.get('detection_status', 'idle'),
         'detection_result': _detection_result_payload(),
@@ -4541,7 +4661,7 @@ def _detection_result_payload():
     fruit_id = payload.get('fruit_id')
     for image in payload.get('images', {}).values():
         image['artifact_urls'] = {
-            name: f'/api/detection/image/{fruit_id}/{filename}/'
+            name: f'/api/detection/image/{fruit_id}/{filename}/?work_mode=detection'
             for name, filename in image.get('artifacts', {}).items()
         }
     return payload
@@ -4581,6 +4701,8 @@ def _compact_esp32_payload(payload):
 def _restore_capture_options(fruit_dir):
     try:
         options = dataset_store.read_capture_options(fruit_dir)
+        if options['work_mode'] != APP_STATE['work_mode']:
+            raise ValueError('Capture session does not match dataset work mode')
     except (OSError, ValueError) as exc:
         APP_STATE['session_hardware_mode'] = 'hardware'
         APP_STATE['status'] = 'error'
@@ -4669,13 +4791,17 @@ def _sync_active_state_with_filesystem():
         if (
             path.is_dir()
             and FRUIT_ID_PATTERN.match(path.name)
+            and not _is_ignored_reset_path(path)
             and not _is_deferred_discard_path(path)
-            and not _completed_photo_only_detection_input(path)
         )
     )
     non_empty_dirs = []
+    terminal_dirs = []
     removed_empty = False
     for fruit_dir in temp_fruit_dirs:
+        if _completed_photo_only_detection_input(fruit_dir):
+            terminal_dirs.append(fruit_dir)
+            continue
         image_total = _temp_image_count(fruit_dir)
         if image_total == 0:
             try:
@@ -4686,6 +4812,9 @@ def _sync_active_state_with_filesystem():
                 APP_STATE['message'] = f'空的暫存資料夾暫時刪不掉，將在之後自動重用或再清理。{exc}'
         else:
             non_empty_dirs.append(fruit_dir)
+
+    if not non_empty_dirs and terminal_dirs and APP_STATE.get('detection_result') is None:
+        non_empty_dirs = [max(terminal_dirs, key=lambda path: _fruit_number(path.name))]
 
     if len(non_empty_dirs) > 1:
         fruit_dir = non_empty_dirs[0]
@@ -4718,7 +4847,7 @@ def _sync_active_state_with_filesystem():
     _restore_capture_options(fruit_dir)
     if completed and APP_STATE['session_work_mode'] == 'detection':
         restored = detection.load_result(
-            Path(settings.DETECTION_OUTPUT_ROOT), fruit_dir.name
+            _detection_output_root(), fruit_dir.name
         )
         if restored is None:
             image_paths = [fruit_dir / name for name in IMAGE_FILENAMES]
@@ -4726,7 +4855,7 @@ def _sync_active_state_with_filesystem():
                 restored = detection.save_interrupted_result(
                     fruit_id=fruit_dir.name,
                     image_paths=image_paths,
-                    output_root=Path(settings.DETECTION_OUTPUT_ROOT),
+                    output_root=_detection_output_root(),
                 )
             except OSError as exc:
                 save_error = f'{type(exc).__name__}: {exc}'
@@ -5133,7 +5262,10 @@ def _reset_dataset_contents():
     moved_paths = []
     ignored_paths = []
     reset_id = datetime.now().strftime('reset_%Y%m%d_%H%M%S')
-    for parent in [_temp_dir(), *(_dataset_root() / label for label in LABELS)]:
+    parents = [_temp_dir(), *(_dataset_root() / label for label in LABELS)]
+    if APP_STATE['work_mode'] == 'detection':
+        parents.append(_detection_output_root())
+    for parent in parents:
         parent.mkdir(parents=True, exist_ok=True)
         for child in parent.iterdir():
             result = _remove_or_archive_reset_path(child, reset_id)

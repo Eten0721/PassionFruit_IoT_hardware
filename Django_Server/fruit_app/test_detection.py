@@ -29,7 +29,7 @@ class DetectionModelSettingsTests(SimpleTestCase):
 class DetectionFlowTests(SimpleTestCase):
     def setUp(self):
         existing.DataCollectionFlowTests.setUp(self)
-        self.detection_root = self.dataset_root / 'detection-results'
+        self.dataset_root = self.dataset_base / 'detection'
         model_root = self.dataset_root / 'models'
         paths = {
             role: model_root / f'{role}.pt'
@@ -39,7 +39,6 @@ class DetectionFlowTests(SimpleTestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()
         self.detection_settings = override_settings(
-            DETECTION_OUTPUT_ROOT=self.detection_root,
             DETECTION_MODEL_PATHS={
                 role: str(path) for role, path in paths.items()
             },
@@ -345,7 +344,7 @@ class DetectionFlowTests(SimpleTestCase):
     @mock.patch(
         'fruit_app.detection.execute_model_batch', side_effect=_external_result
     )
-    def test_completed_photo_detection_can_clear_temp_without_deleting_result(
+    def test_completed_photo_detection_discards_its_input_and_result(
         self, _execute
     ):
         fruit_id = self._start_detection().json()['active_fruit_id']
@@ -358,7 +357,7 @@ class DetectionFlowTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200, response.content)
         self.assertFalse((self.dataset_root / 'temp' / fruit_id).exists())
-        self.assertTrue((self.detection_root / fruit_id / 'result.json').is_file())
+        self.assertFalse((self.detection_root / fruit_id).exists())
 
     @mock.patch('fruit_app.detection.execute_model_batch')
     def test_skipped_model_is_incomplete(self, execute):

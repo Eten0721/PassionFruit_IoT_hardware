@@ -86,11 +86,10 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-# 百香果資料蒐集輸出根目錄。
+# 新資料按 collection／detection 分區，根目錄的歷史資料保留原位。
 DATASET_ROOT = BASE_DIR / 'dataset'
 
-# Automatic inspection stays separate from the manually labelled Dataset.
-DETECTION_OUTPUT_ROOT = BASE_DIR / 'detection_results'
+# Detection results live inside DATASET_ROOT / 'detection' / 'results'.
 DETECTION_MODEL_ROOT = BASE_DIR / 'models'
 DETECTION_MODEL_PATHS = {
     'roi': str(DETECTION_MODEL_ROOT / 'ROI.pt'),

@@ -1,10 +1,12 @@
 # 目前狀態
 
-更新日期：2026-10-12
+更新日期：2026-10-13
 
 本文件是可覆寫的目前快照。完成歷史由 Git、tag 與 release 保存；未完成工作的詳細規格與討論以 GitHub Issues 為準。
 
 ## 現行穩定功能
+
+- Issue [#29](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/29) 已分離蒐集與檢測資料區、編號、結果及清理範圍，保留所有舊資料原位；模式可跨重啟恢復，舊頁面請求與同編號照片不會混用分區。自動化驗證結果與人工驗收準備見 [資料分區驗收](acceptance/issue-29-dataset-modes.md)；人工操作尚未驗收。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#資料分區)。
 
 - Issue [#26](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/26) 已接入安全閒置 BOOT 單次按鍵配網、本機 SSID 掃描與設定頁、取得 IP 後保存 NVS、設定頁手動退出 AP 並保留 STA，以及 Dashboard 配網狀態。正式 Firmware 不再依賴編譯時的目標 Wi-Fi；中央拒絕與既有安全鎖仍阻擋配網，安全閒置的 Django 不可達情境可由本機重新設定。自動測試與編譯不代替實機驗收；BOOT 候選腳位、換網與斷電保存仍待操作員驗證。完整契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
 
