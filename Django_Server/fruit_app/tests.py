@@ -2648,7 +2648,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             client = Client()
             result['response'] = client.post(
                 '/api/classify/',
-                data=json.dumps({'label': '上等'}),
+                data=json.dumps({'dataset_mode': 'collection', 'label': '上等'}),
                 content_type='application/json',
             )
 
@@ -2678,7 +2678,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         image_path = fruit_dir / 'img_01.jpg'
         image_path.write_bytes(b'jpeg-content')
 
-        response = self.client.get('/api/image/fruit_001/img_01.jpg/')
+        response = self.client.get('/api/image/fruit_001/img_01.jpg/?work_mode=collection')
         self.addCleanup(response.close)
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.streaming)
@@ -2686,10 +2686,9 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn('Last-Modified', response)
         self.assertEqual(response['Cache-Control'], 'private, no-cache')
         self.assertEqual(b''.join(response.streaming_content), b'jpeg-content')
-        response.close()
 
         cached = self.client.get(
-            '/api/image/fruit_001/img_01.jpg/',
+            '/api/image/fruit_001/img_01.jpg/?work_mode=collection',
             HTTP_IF_NONE_MATCH=response['ETag'],
         )
         self.assertEqual(cached.status_code, 304)
@@ -2968,7 +2967,7 @@ class DataCollectionFlowTests(SimpleTestCase):
     def _post_json(self, url, payload=None):
         return self.client.post(
             url,
-            data=json.dumps(payload or {}),
+            data=json.dumps({'dataset_mode': views.APP_STATE['work_mode'], **(payload or {})}),
             content_type='application/json',
         )
 

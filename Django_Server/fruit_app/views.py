@@ -1672,6 +1672,9 @@ def capture_started_api(request):
             return local_network.network_error(reason)
         if not _photo_only_session() and _network_hardware_disabled_reason():
             return local_network.network_error(_network_hardware_disabled_reason())
+        options_error = _dataset_options_error_response()
+        if options_error is not None:
+            return options_error
         fruit_id = data.get('fruit_id')
         capture_token = _safe_int(data.get('capture_token'))
         station_index = _safe_int(data.get('station_index'))
@@ -1847,6 +1850,9 @@ def upload_images_api(request):
             return local_network.network_error(reason)
         if not _photo_only_session() and _network_hardware_disabled_reason():
             return local_network.network_error(_network_hardware_disabled_reason())
+        options_error = _dataset_options_error_response()
+        if options_error is not None:
+            return options_error
         active_fruit_id = APP_STATE['active_fruit_id']
         if not active_fruit_id:
             return _json_error('目前沒有等待上傳的 fruit 資料夾。', status=409)
@@ -2345,7 +2351,7 @@ def dataset_image_api(request, fruit_id, filename):
     _ensure_dataset_structure()
     with STATE_LOCK:
         if (not FRUIT_ID_PATTERN.match(fruit_id) or filename not in IMAGE_FILENAMES
-                or request.GET.get('work_mode', APP_STATE['work_mode']) != APP_STATE['work_mode']):
+                or request.GET.get('work_mode') != APP_STATE['work_mode']):
             raise Http404('image not found')
         image_path = _find_fruit_image(fruit_id, filename)
         if not image_path:
@@ -2367,7 +2373,7 @@ def detection_image_api(request, fruit_id, filename):
     _ensure_dataset_structure()
     with STATE_LOCK:
         if (APP_STATE['work_mode'] != 'detection'
-                or request.GET.get('work_mode', 'detection') != 'detection'
+                or request.GET.get('work_mode') != 'detection'
                 or not FRUIT_ID_PATTERN.match(fruit_id)
                 or Path(filename).name != filename
                 or not re.fullmatch(r'[A-Za-z0-9_.-]+', filename)):
@@ -2612,13 +2618,18 @@ def _restore_dataset_options(path):
     APP_STATE['hardware_mode'] = APP_STATE['session_hardware_mode'] = options['hardware_mode']
 
 
+def _dataset_options_error_response():
+    if not APP_STATE.get('dataset_options_error'):
+        return None
+    return _json_error(APP_STATE['dataset_options_error'], status=409, reason='dataset_options_invalid')
+
+
 def _request_dataset_mode_error(request):
-    if APP_STATE.get('dataset_options_error'):
-        return _json_error(
-            APP_STATE['dataset_options_error'], status=409, reason='dataset_options_invalid'
-        )
+    options_error = _dataset_options_error_response()
+    if options_error is not None:
+        return options_error
     mode = (request.GET if request.method == 'GET' else _request_data(request)).get('dataset_mode')
-    if mode is not None and mode != APP_STATE['work_mode']:
+    if mode != APP_STATE['work_mode']:
         return _json_error('資料模式已變更，請重新確認目前資料區。', status=409, reason='stale_dataset_mode')
     return None
 
@@ -3119,6 +3130,8 @@ def _append_metadata(fruit_id, label, capture_time, relative_path, note, fruit_d
 
 
 def _create_capture_session(source):
+    if APP_STATE.get('dataset_options_error'):
+        raise CaptureCommandError(APP_STATE['dataset_options_error'], reason='dataset_options_invalid')
     if not _camera_is_ready():
         raise CaptureCommandError('相機尚未就緒。', reason='camera_not_ready')
     if APP_STATE.get('hardware_mode') == 'photo_only':

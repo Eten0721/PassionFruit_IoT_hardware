@@ -1571,8 +1571,13 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     async function openDatasetFolder() {
+        if (!lastState?.work_mode) {
+            setMessage('尚未取得目前資料區，請稍候再開啟資料夾。');
+            return;
+        }
         try {
-            const response = await fetch(`/api/open_dataset_folder/?dataset_mode=${lastState?.work_mode}`);
+            const params = new URLSearchParams({ dataset_mode: lastState.work_mode });
+            const response = await fetch(`/api/open_dataset_folder/?${params}`);
             const payload = await response.json();
             if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
             if (payload.opened) {

@@ -206,3 +206,43 @@ class DatasetModeTests(SimpleTestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()['reason'], 'dataset_options_invalid')
         self.assertEqual(path.read_text(encoding='utf-8'), '{broken')
+
+    def test_requests_without_mode_are_treated_as_stale(self):
+        self._select('detection')
+        response = self.client.post(
+            '/api/set_counter/', data=json.dumps({'start_id': 9}), content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'stale_dataset_mode')
+        self.assertEqual(self.client.get('/api/open_dataset_folder/').status_code, 409)
+        self.assertEqual(self.client.get('/api/state/').json()['next_fruit_id'], 'fruit_001')
+        folder = self.dataset_base / 'detection' / 'temp' / 'fruit_001'
+        folder.mkdir(parents=True)
+        (folder / 'img_01.jpg').write_bytes(b'detection')
+        self.assertEqual(self.client.get('/api/image/fruit_001/img_01.jpg/').status_code, 404)
+        result = self.dataset_base / 'detection' / 'results' / 'fruit_001'
+        result.mkdir(parents=True)
+        (result / 'img_01_original.jpg').write_bytes(b'detection')
+        self.assertEqual(self.client.get('/api/detection/image/fruit_001/img_01_original.jpg/').status_code, 404)
+        response = self.client.get('/api/detection/image/fruit_001/img_01_original.jpg/?work_mode=detection')
+        self.assertEqual(response.status_code, 200)
+        response.close()
+
+    def test_corrupt_mode_record_blocks_capture_and_upload(self):
+        self._select('collection')
+        self.client.get('/api/camera/state/?camera_ready=1')
+        started = self._post_json('/api/photo_capture/').json()
+        with views.STATE_LOCK:
+            views.APP_STATE['dataset_options_error'] = 'broken record'
+        upload = self._upload_station(started['active_fruit_id'], started['capture_token'], 1)
+        self.assertEqual(upload.status_code, 409)
+        self.assertEqual(upload.json()['reason'], 'dataset_options_invalid')
+        capture_started = self.client.post('/api/capture_started/', data=json.dumps({
+            'fruit_id': started['active_fruit_id'], 'capture_token': started['capture_token'], 'station_index': 1,
+        }), content_type='application/json')
+        self.assertEqual(capture_started.status_code, 409)
+        self.assertEqual(capture_started.json()['reason'], 'dataset_options_invalid')
+        self.assertFalse((self.dataset_base / 'collection' / 'temp' / started['active_fruit_id'] / 'img_01.jpg').exists())
+        with views.STATE_LOCK, self.assertRaises(views.CaptureCommandError) as raised:
+            views._create_capture_session(source='esp32')
+        self.assertEqual(raised.exception.reason, 'dataset_options_invalid')

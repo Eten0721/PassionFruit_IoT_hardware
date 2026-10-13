@@ -3,7 +3,7 @@ import json
 from unittest import mock
 
 from django.test import SimpleTestCase
-from . import local_network, tests as existing
+from . import local_network, tests as existing, views
 
 
 class NetworkOnboardingTests(SimpleTestCase):
@@ -35,7 +35,8 @@ class NetworkOnboardingTests(SimpleTestCase):
         self.addCleanup(patcher.stop)
 
     def post(self, url, payload=None, **kwargs):
-        return self.client.post(url, json.dumps(payload or {}), content_type='application/json', **kwargs)
+        payload = {'dataset_mode': views.APP_STATE['work_mode'], **(payload or {})}
+        return self.client.post(url, json.dumps(payload), content_type='application/json', **kwargs)
 
     def select(self):
         return self.post('/api/network/', {'interface_id': '7', 'ipv4': '192.168.50.10'})
