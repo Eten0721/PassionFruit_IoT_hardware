@@ -1908,6 +1908,133 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir, session):
         )
 
 
+MANUAL_GRADE_MESSAGES = {
+    'not_detection_mode': '目前不是自動檢測模式。',
+    'no_detection_result': '目前沒有待人工處理的檢測結果。',
+    'dataset_busy': '已有資料操作進行中，請稍後再試。',
+    'network_recovery_required': '請先完成網路安全復原。',
+    'hardware_takeover_pending': (
+        '使用硬體的人工接手放行尚未接通；Gate 3 維持關閉，請依安全復原提示處理。'
+    ),
+    'result_not_saved': '本輪檢測結果尚未保存成功，無法人工接手；請刪除本輪重拍。',
+    'already_manual_graded': '本輪已完成人工判級。',
+    'not_needs_review': '本輪已由模型判級，不需人工接手。',
+    'stale_detection_result': '畫面上的檢測結果已變更，請重新確認本輪照片。',
+    'result_not_found': '找不到本輪檢測結果檔，無法人工接手。',
+}
+
+
+def _manual_grade_disabled_reason():
+    """Why the current detection result cannot take a manual grade, if any."""
+    if APP_STATE['work_mode'] != 'detection':
+        return 'not_detection_mode'
+    result = APP_STATE.get('detection_result')
+    if not result:
+        return 'no_detection_result'
+    if APP_STATE.get('dataset_operation'):
+        return 'dataset_busy'
+    if APP_STATE.get('network_recovery'):
+        return 'network_recovery_required'
+    if result.get('hardware_mode') != 'photo_only':
+        return 'hardware_takeover_pending'
+    if (result.get('storage') or {}).get('status') != 'saved':
+        return 'result_not_saved'
+    classification = result.get('classification') or {}
+    if classification.get('source') == detection.MANUAL_SOURCE:
+        return 'already_manual_graded'
+    if classification.get('status') != 'needs_review':
+        return 'not_needs_review'
+    return None
+
+
+@csrf_exempt
+@require_POST
+@network_required
+def manual_grade_api(request):
+    """Operator grade for a photo-only round the model could not grade."""
+    data = _request_data(request)
+    label = data.get('label')
+    if label not in LABELS:
+        return _json_error(
+            '分類必須是上等、中等、下等或加工。', status=400, reason='invalid_label',
+        )
+    grade = grading.grade_for_label(label)
+    with STATE_LOCK:
+        mode_error = _request_dataset_mode_error(request)
+        if mode_error is not None:
+            return mode_error
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
+        current = APP_STATE.get('detection_result') or {}
+        if (
+            current
+            and (data.get('fruit_id') != current.get('fruit_id')
+                 or data.get('result_id') != current.get('result_id'))
+        ):
+            reason = 'stale_detection_result'
+        else:
+            reason = _manual_grade_disabled_reason()
+        duplicate = reason == 'already_manual_graded' and (
+            current.get('classification') or {}
+        ).get('label') == label
+        if reason and not duplicate:
+            return _json_error(
+                MANUAL_GRADE_MESSAGES[reason], status=409, reason=reason,
+            )
+        fruit_id = current['fruit_id']
+        operation_token = APP_STATE.begin_dataset_operation(
+            'manual_grade', fruit_id,
+        )
+
+    try:
+        outcome = detection.apply_manual_grade(
+            output_root=_detection_output_root(),
+            summary_path=_detection_summary_path(),
+            fruit_id=fruit_id,
+            result_id=data['result_id'],
+            grade=grade,
+        )
+    finally:
+        with STATE_LOCK:
+            APP_STATE.finish_dataset_operation(operation_token)
+
+    if not outcome['ok']:
+        return _manual_grade_failure_response(outcome)
+    with STATE_LOCK:
+        if (APP_STATE.get('detection_result') or {}).get('result_id') == data['result_id']:
+            APP_STATE['detection_result'] = outcome['result']
+            APP_STATE['detection_error'] = None
+            APP_STATE['message'] = (
+                f'{fruit_id} 已人工判為「{label}」並更新檢測紀錄；'
+                '原檢測失敗資訊仍保留。純拍攝不啟動硬體或下一輪。'
+            )
+        _record_transition(
+            'detection_manual_graded', fruit_id=fruit_id,
+            details={'label': label, 'duplicate': outcome['duplicate']},
+        )
+        return JsonResponse(_state_payload(extra={
+            'manual_grade_saved': True,
+            'duplicate': outcome['duplicate'],
+            'fruit_id': fruit_id,
+        }))
+
+
+def _manual_grade_failure_response(outcome):
+    reason = outcome['reason']
+    if reason not in ('result_json_save_failed', 'summary_save_failed'):
+        return _json_error(MANUAL_GRADE_MESSAGES[reason], status=409, reason=reason)
+    message = f'人工判級保存失敗，本輪維持待人工處理：{outcome["detail"]}'
+    if outcome.get('rollback_error'):
+        # result.json already holds the grade; only the same grade resyncs it.
+        message = (
+            f'人工判級已寫入 result.json，但總表保存與還原都失敗：'
+            f'{outcome["detail"]}；{outcome["rollback_error"]}。'
+            '請排除磁碟問題後以同一等級重送，以同步總表。'
+        )
+    return _json_error(message, status=503, reason=reason)
+
+
 def _saved_detection_result(fruit_id):
     """Return the durable result only when its JSON and summary were saved."""
     result = detection.load_result(_detection_output_root(), fruit_id)
@@ -4673,6 +4800,7 @@ def _state_payload(extra=None):
         and classify_disabled_reason is None
     )
     discardable_fruit_id = _discardable_fruit_id()
+    manual_grade_disabled_reason = _manual_grade_disabled_reason()
     can_discard = bool(discardable_fruit_id) and not is_uploading and not dataset_busy
     gate3_manual_removal_required = _gate3_manual_removal_required()
     can_recapture = not _photo_only_session() and not gate3_manual_removal_required and not dataset_busy and bool(active_fruit_id) and APP_STATE['status'] in (
@@ -4770,6 +4898,8 @@ def _state_payload(extra=None):
         'detection_progress': _with_artifact_urls(APP_STATE.get('detection_progress')),
         'photo_detection_interval_ms': round(PHOTO_DETECTION_INTERVAL_SECONDS * 1000),
         'detection_error': APP_STATE.get('detection_error'),
+        'can_manual_grade': manual_grade_disabled_reason is None,
+        'manual_grade_disabled_reason': manual_grade_disabled_reason,
         **_sorter_state_payload(),
     }
     if extra:
@@ -4791,6 +4921,7 @@ def _state_payload(extra=None):
     if not network['selected']:
         payload['camera_ready'] = False
         for key in ('can_change_options', 'can_start_photo_capture', 'can_classify',
+                    'can_manual_grade',
                     'can_recapture', 'can_test_feeder', 'can_start_auto_run',
                     'can_confirm_feeder_calibration'):
             payload[key] = False

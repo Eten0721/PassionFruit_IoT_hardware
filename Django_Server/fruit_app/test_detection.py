@@ -1013,3 +1013,230 @@ class DetectionFlowTests(SimpleTestCase):
         self.assertFalse(state['detection_result']['complete'])
         self.assertIsNone(state['detection_progress'])
         self.assertEqual(execute.call_count, 1)
+
+    # --- Manual takeover of a needs-review round (#32) ---
+
+    def _run_needs_review_round(self):
+        reports, artifacts = self._external_result(
+            [Path(f'img_{index:02d}.jpg') for index in range(1, 4)], {}
+        )
+        reports[1]['roi'] = {'status': 'error', 'reason': 'roi_not_detected'}
+        reports[1]['models'] = {
+            role: {'status': 'skipped', 'reason': 'roi_unavailable'}
+            for role in ('color', 'wrinkle', 'defect')
+        }
+        artifacts[1] = {}
+        with mock.patch(
+            'fruit_app.detection.execute_model_batch',
+            return_value=(reports, artifacts),
+        ):
+            fruit_id, state = self._run_photo_round()
+        self.assertEqual(
+            state['detection_result']['classification']['status'], 'needs_review',
+        )
+        return fruit_id, state
+
+    def _manual_grade(self, state, label, **overrides):
+        result = state['detection_result']
+        return self._post_json('/api/detection/manual_grade/', {
+            'fruit_id': result['fruit_id'],
+            'result_id': result['result_id'],
+            'label': label,
+            **overrides,
+        })
+
+    def _saved_result(self, fruit_id):
+        return json.loads(
+            (self.detection_root / fruit_id / 'result.json').read_text('utf-8')
+        )
+
+    def test_manual_grade_completes_needs_review_round_with_failure_evidence(self):
+        expected = {'上等': (3, 'high'), '中等': (2, 'medium'),
+                    '下等': (1, 'low'), '加工': (0, 'processing')}
+        fruit_ids = []
+        for label, (grade, code) in expected.items():
+            with self.subTest(label=label):
+                fruit_id, state = self._run_needs_review_round()
+                fruit_ids.append(fruit_id)
+                self.assertTrue(state['can_manual_grade'])
+                original = state['detection_result']
+
+                response = self._manual_grade(state, label)
+
+                self.assertEqual(response.status_code, 200, response.content)
+                self.assertFalse(response.json()['duplicate'])
+                saved = self._saved_result(fruit_id)
+                self.assertEqual(saved['result_id'], original['result_id'])
+                classification = saved['classification']
+                self.assertEqual(classification['status'], 'graded')
+                self.assertEqual(classification['source'], 'manual')
+                self.assertEqual(classification['grade'], grade)
+                self.assertEqual(classification['label'], label)
+                self.assertEqual(classification['code'], code)
+                self.assertTrue(classification['decided_at'])
+                # The model's own outcome and failure evidence stay intact.
+                self.assertEqual(
+                    saved['model_classification'], original['classification'],
+                )
+                self.assertEqual(saved['inference'], original['inference'])
+                self.assertEqual(saved['inference']['status'], 'failed')
+                self.assertEqual(saved['images'], {
+                    name: {key: value for key, value in image.items()
+                           if key != 'artifact_urls'}
+                    for name, image in original['images'].items()
+                })
+                self.assertEqual(
+                    saved['images']['img_02.jpg']['grade']['reason'],
+                    'roi:roi_not_detected',
+                )
+                self.assertTrue(
+                    (self.detection_root / fruit_id / 'img_02_original.jpg').is_file()
+                )
+                self.assertFalse(saved['complete'])
+                self.assertEqual(saved['status'], 'manual_completed')
+                self.assertEqual(saved['reason'], 'detection_incomplete')
+                self.assertEqual(saved['storage']['status'], 'saved')
+
+                state = self.client.get('/api/state/').json()
+                self.assertEqual(state['detection_result']['classification'],
+                                 classification)
+                self.assertFalse(state['can_manual_grade'])
+                self.assertEqual(
+                    state['manual_grade_disabled_reason'], 'already_manual_graded',
+                )
+                self.assertIsNone(state['active_fruit_id'])
+                self.assertFalse(state['capture_requested'])
+                self.assertEqual(state['motor_command']['command'], 'none')
+
+        rows = {row['fruit_id']: row for row in self._summary_rows()}
+        self.assertEqual(list(rows), fruit_ids)
+        for fruit_id, (label, (grade, code)) in zip(fruit_ids, expected.items()):
+            row = rows[fruit_id]
+            self.assertEqual(row['classification_source'], 'manual')
+            self.assertEqual(row['classification_status'], 'graded')
+            self.assertEqual(row['result_status'], 'manual_completed')
+            self.assertEqual(row['final_grade'], str(grade))
+            self.assertEqual(row['final_label'], label)
+            self.assertEqual(row['final_code'], code)
+            self.assertEqual(row['reason'], 'detection_incomplete')
+            self.assertEqual(row['view_02_grade'], '')
+        collection = self.dataset_base / 'collection'
+        self.assertEqual(list(collection.rglob('fruit_*')), [])
+
+    def test_manual_grade_rejects_stale_duplicate_and_ineligible_requests(self):
+        fruit_id, state = self._run_needs_review_round()
+
+        invalid = self._manual_grade(state, '特等')
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(invalid.json()['reason'], 'invalid_label')
+        stale_id = self._manual_grade(state, '中等', result_id='0' * 32)
+        self.assertEqual(stale_id.status_code, 409)
+        self.assertEqual(stale_id.json()['reason'], 'stale_detection_result')
+        wrong_fruit = self._manual_grade(state, '中等', fruit_id='fruit_999')
+        self.assertEqual(wrong_fruit.status_code, 409)
+        self.assertEqual(wrong_fruit.json()['reason'], 'stale_detection_result')
+        stale_mode = self._manual_grade(state, '中等', dataset_mode='collection')
+        self.assertEqual(stale_mode.json()['reason'], 'stale_dataset_mode')
+        self.assertEqual(
+            self._saved_result(fruit_id)['classification']['status'],
+            'needs_review',
+        )
+
+        self.assertEqual(self._manual_grade(state, '中等').status_code, 200)
+        repeat = self._manual_grade(state, '中等')
+        self.assertEqual(repeat.status_code, 200)
+        self.assertTrue(repeat.json()['duplicate'])
+        changed = self._manual_grade(state, '加工')
+        self.assertEqual(changed.status_code, 409)
+        self.assertEqual(changed.json()['reason'], 'already_manual_graded')
+        self.assertEqual(self._saved_result(fruit_id)['classification']['label'], '中等')
+        self.assertEqual(len(self._summary_rows()), 1)
+
+        # A newer round makes the earlier result stale for this screen.
+        with mock.patch(
+            'fruit_app.detection.execute_model_batch',
+            side_effect=self._external_result,
+        ):
+            second_id, second = self._run_photo_round()
+        self.assertEqual(second['detection_result']['classification']['source'],
+                         'model')
+        self.assertFalse(second['can_manual_grade'])
+        self.assertEqual(second['manual_grade_disabled_reason'], 'not_needs_review')
+        model_graded = self._manual_grade(second, '加工')
+        self.assertEqual(model_graded.status_code, 409)
+        self.assertEqual(model_graded.json()['reason'], 'not_needs_review')
+        old = self._manual_grade(state, '加工')
+        self.assertEqual(old.status_code, 409)
+        self.assertEqual(old.json()['reason'], 'stale_detection_result')
+        self.assertEqual(
+            self._saved_result(second_id)['classification']['source'], 'model',
+        )
+        self.assertEqual(len(self._summary_rows()), 2)
+
+    def test_manual_grade_save_failures_keep_round_needs_review(self):
+        fruit_id, state = self._run_needs_review_round()
+        before_rows = self._summary_rows()
+
+        with mock.patch(
+            'fruit_app.detection._write_summary_rows',
+            side_effect=OSError('disk full'),
+        ):
+            csv_failed = self._manual_grade(state, '下等')
+        self.assertEqual(csv_failed.status_code, 503)
+        self.assertEqual(csv_failed.json()['reason'], 'summary_save_failed')
+        self.assertIn('disk full', csv_failed.json()['message'])
+        self.assertEqual(
+            self._saved_result(fruit_id)['classification']['status'],
+            'needs_review',
+        )
+        self.assertEqual(self._summary_rows(), before_rows)
+
+        with mock.patch(
+            'fruit_app.detection._atomic_json',
+            side_effect=OSError('read-only'),
+        ):
+            json_failed = self._manual_grade(state, '下等')
+        self.assertEqual(json_failed.status_code, 503)
+        self.assertEqual(json_failed.json()['reason'], 'result_json_save_failed')
+        self.assertEqual(self._summary_rows(), before_rows)
+
+        state = self.client.get('/api/state/').json()
+        self.assertTrue(state['can_manual_grade'])
+        self.assertEqual(
+            state['detection_result']['classification']['status'], 'needs_review',
+        )
+        self.assertEqual(self._manual_grade(state, '下等').status_code, 200)
+        rows = self._summary_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['classification_source'], 'manual')
+
+    @mock.patch('fruit_app.detection.execute_model_batch')
+    def test_hardware_needs_review_keeps_gate3_lock_until_hardware_ticket(
+        self, execute,
+    ):
+        reports, artifacts = self._external_result(
+            [Path(f'img_{index:02d}.jpg') for index in range(1, 4)], {}
+        )
+        reports[0]['models']['defect'] = {
+            'status': 'failed', 'reason': 'inference_failed',
+        }
+        artifacts[0].pop('defect_annotated')
+        execute.return_value = reports, artifacts
+        fruit_id = self._start_hardware_detection()
+        self._upload_hardware_stations(fruit_id)
+        state = self._wait_for_detection()
+
+        self.assertFalse(state['can_manual_grade'])
+        self.assertEqual(
+            state['manual_grade_disabled_reason'], 'hardware_takeover_pending',
+        )
+        response = self._manual_grade(state, '上等')
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'hardware_takeover_pending')
+        state = self.client.get('/api/state/').json()
+        self.assertTrue(state['gate3_manual_removal_required'])
+        self.assertEqual(state['motor_command']['command'], 'none')
+        self.assertEqual(
+            self._saved_result(fruit_id)['classification']['status'],
+            'needs_review',
+        )

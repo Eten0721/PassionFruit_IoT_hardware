@@ -415,6 +415,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 - 每張先判斷加工／非加工，再將非加工分為其餘三級；整顆取三張預測最低級距，`0／1／2／3` 對應加工／下等／中等／上等，再轉為既有 canonical code。沿用 [ADR-0012](adr/0012-defect-ratio-ai-contract.md)：未偵測瑕疵為 `0`，必要 ROI／推論失敗為 `null` 並待覆核，不補零硬判級距。
 - 部分失敗仍保留已取得原圖、成功產物與具體原因；無法產生的裁切或標示圖不建立，保存失敗不得顯示存檔成功。硬體尚未取得有效分類或資料尚未提交時，不得放行 Gate 3 或開始下一顆。
 - 無法取得完整模型判級時，標記「待人工處理」並允許操作員檢查照片後人工選級，再經相同的資料提交與安全分類邊界完成分槽；保留原推論失敗原因與模型輸出，另記錄最終分類來源為人工，不將人工結果偽裝成模型成功。人工接手仍屬檢測紀錄，不搬入人工蒐集 Dataset；純拍攝的人工接手也不得建立硬體命令。
+- 純拍攝人工接手使用 `POST /api/detection/manual_grade/`，附 `dataset_mode`、目前畫面的 `fruit_id`、`result_id` 與 `label`（上等／中等／下等／加工）；`/api/state/` 以 `can_manual_grade` 與 `manual_grade_disabled_reason` 表示可否接手。只接受目前 `detection_result`、已保存且 `needs_review` 的同一 `result_id`；不符或已開始新一輪回 `409 stale_detection_result`，模型已判級回 `409 not_needs_review`，已人工判為他級回 `409 already_manual_graded`，同級重送回 `200` 與 `duplicate=true` 且只重新同步該列。JSON 或總表保存失敗回 `503 result_json_save_failed／summary_save_failed`，JSON 還原為原紀錄並維持待人工處理。成功後維持 idle，不建立 motor command、不自動開始下一輪。使用硬體的人工接手放行尚未接通，回 `409 hardware_takeover_pending` 並維持 Gate 3 安全鎖。
 - 使用硬體的目標為「三站拍攝 → YOLO → XGBoost → 保存 → `classify_fruit` → 下一顆」。資料提交後才執行實體分類，硬體失敗不回滾結果；只有相符的 sorter 完成回報與全部安全條件成立，才允許下一次送料。純拍攝維持單輪，完成後由操作員再按開始，不建立實體命令。
 - Django／ESP32 重啟、重複上傳或 terminal report 不得重播實體動作；資料刪除不能代表實體果實已移除，仍須遵守既有人工安全復原契約。
 
@@ -424,18 +425,19 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 - 每顆檢測果實有獨立目錄，保存原圖、成功的 ROI 框選／遮罩／灰階 CLAHE／局部瑕疵標示圖及 `result.json`。JSON 是 Dashboard 與 LINE 共用的單顆詳細結果，不把模型檔當成結果檔傳送。
 - `result.json` 的 `contract_version` 為 `1`；`result_id` 於本輪開始時隨機產生並寫入 `.capture-session.json`，重啟沿用、不依賴可重設的流水號。頂層另有 `fruit_id`、`hardware_mode`、`capture_time`、`completed_at` 與下列分開的狀態：
   - `inference`：`completed／failed` 與原因（`detection_incomplete`、`artifact_save_failed`、`service_restarted`）。
-  - `classification`：`graded` 或 `needs_review`，含 `grade`（`0～3`）、`label`、canonical `code`、`source`（模型為 `model`，未判級為 `null`）、`worst_view` 與 `reason`。
+  - `classification`：最終分類，`graded` 或 `needs_review`，含 `grade`（`0～3`）、`label`、canonical `code`、`source`（模型為 `model`，人工接手為 `manual`，未判級為 `null`）、`worst_view` 與 `reason`；人工接手另含 `decided_at`。
+  - `model_classification`：僅人工接手後存在，原封保存模型當時的 `needs_review` 分類與原因；`inference`、`images` 與各視角 `grade` 不因人工判級改寫。
   - `storage`：`saved／failed`、原因及 JSON／CSV 相對位置；`sorting`：純拍攝為 `skipped`，硬體模式目前為 `not_started`。
   - `model`：YOLO 檔名，以及兩個 XGBoost 檔名、SHA-256、xgboost 版本與第一階段門檻。
   - `images.<img_0N.jpg>`：ROI、各模型結果、`artifacts` 檔名，以及 `grade` 內的 16 個特徵、第一階段機率、第二階段機率、單張等級或 `unavailable` 與具體原因（如 `roi:roi_not_detected`）。
-- 頂層 `complete` 只在推論完整、整顆已判級且 JSON／CSV 都保存成功時為真；任一保存失敗記為 `storage.status=failed`，不顯示為完成。
+- 頂層 `complete` 只在推論完整、模型已判級且 JSON／CSV 都保存成功時為真；任一保存失敗記為 `storage.status=failed`，不顯示為完成。人工接手保存成功時 `status=manual_completed`、`complete=false`，`reason` 保留原推論或判級失敗原因。
 - `detection_summary.csv`（UTF-8 BOM）每顆一列，以 `result_id` 去重，重試與重啟只取代同列：
 
   ```csv
   result_id,fruit_id,capture_time,completed_at,hardware_mode,result_status,classification_status,reason,view_01_grade,view_02_grade,view_03_grade,final_grade,final_label,final_code,classification_source,model_version,result_json
   ```
 
-  `result_status` 等於 JSON 頂層 `status`（只有 `complete` 時為 `completed`），`classification_status` 為分類狀態，`reason` 取頂層原因、否則取分類原因；未判級的等級欄位留空；`model_version` 為兩個模型 SHA-256 前 12 碼；`result_json` 相對於檢測分區。失敗輪次也留紀錄，完整特徵由 JSON 保存。原圖與所有執行產物均不納入 Git。
+  `result_status` 等於 JSON 頂層 `status`（只有 `complete` 時為 `completed`，人工接手為 `manual_completed`），`classification_status` 為分類狀態，`reason` 取頂層原因、否則取分類原因；未判級的等級欄位留空；`model_version` 為兩個模型 SHA-256 前 12 碼；`result_json` 相對於檢測分區。失敗輪次也留紀錄，完整特徵由 JSON 保存。原圖與所有執行產物均不納入 Git。
 - LINE 對接交付程式已使用的 Messaging API，目標收件對象為模擬農夫群組的畢專群組；綁定與實際收件對象尚未驗證。只對最終等級為加工的果實通知，正文使用農夫可理解的等級、時間、果實識別與實際成功偵測的瑕疵，並附圖片；不放 grade code、模型 confidence 或程式欄位。疑似病害須保留「疑似」，不得把觀察項目宣稱為 XGBoost 判為加工的因果解釋；無可用瑕疵結果時如實表達，不捏造原因。
 - 通知附圖將三個視角的瑕疵標示圖合成一張，標示照片編號與中文瑕疵名稱；某張檢測失敗時使用已取得原圖並標明「未完成檢測」，不得產生虛構標示。採用 Cloudinary 免費方案提供通知合成圖的 HTTPS 網址，只上傳通知所需合成圖，完整原圖與檢測資料留在本機；雲端圖片保留至畢專展示結束，再由操作員手動清理，不新增自動刪除。清理後舊通知附圖可能無法重新載入，本機資料不受影響。
 - 人工判為加工同樣列入通知，文字明示「人工判為加工等級」，只列已有的有效瑕疵觀察；沒有可用檢測結果時如實說明。推論失敗而尚無人工判級的紀錄不發加工通知。
@@ -449,7 +451,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 - 「確認本次使用的網路」下方新增操作摺疊列，收納目前流程、模式選項、啟動條件、開始／重新拍攝／跳過或刪除，以及人工分類。收合時仍在該列保留開始／重新拍攝／跳過等主要操作；按鈕可用性沿用狀態與安全限制，運轉時保留優雅暫停。
 - 移除獨立「三張原圖預覽」區塊；自動檢測每張原圖保存後先顯示於對應 ROI 格，待該張 ROI 產物可用才替換，未完成時明示等待／處理中，不把原圖冒充 ROI 結果。
-- 蒐集模式沿用左側同一展示區，只顯示三張原圖，隱藏未執行的模型格與自動分類結果；人工級距按鈕留在操作摺疊區。自動檢測無法判級時，該區開放人工接手，且右側的待人工處理提示在收合操作區後仍須可見。
+- 蒐集模式沿用左側同一展示區，只顯示三張原圖，隱藏未執行的模型格與自動分類結果；人工級距按鈕留在操作摺疊區。自動檢測無法判級時，右側結果卡顯示失敗原因並開放人工四級按鈕，收合操作區後仍可見；人工完成後顯示「等級（人工判定）」與保留的原失敗原因。
 - 檢測執行中，`/api/state/` 的 `detection_progress` 提供最後完成的 `stage`（`originals／roi／color／wrinkle／defect`）與各張已保存產物、`artifact_urls` 及模型狀態；只在對應產物原子保存後更新，最終結果寫入 `detection_result` 時清空。畫面依此逐步替換，不以動畫推測完成。
 - 「四模型檢測結果」移至原手機預覽所在的左側主區，以三張照片分組、各列 ROI／color／wrinkle／defect，共十二格；成功產物逐步更新，有跳過、缺失或失敗時不得顯示整輪完整成功。
 - 手機即時畫面移至右側原流程操作位置；整顆分類結果也放在檢測區右手邊，以醒目級距文字區分等待、有效結果與待覆核，不只靠顏色表示。

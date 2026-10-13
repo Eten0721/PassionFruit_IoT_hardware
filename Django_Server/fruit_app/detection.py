@@ -28,6 +28,7 @@ ARTIFACT_NAMES = (
 MODEL_ROLES = ('roi', 'color', 'wrinkle', 'defect')
 DEFECT_CLASSES = {'abrasion', 'anthracnose', 'insect_bite', 'insect_track'}
 CONTRACT_VERSION = 1
+MANUAL_SOURCE = 'manual'
 SUMMARY_FIELDS = [
     'result_id', 'fruit_id', 'capture_time', 'completed_at', 'hardware_mode',
     'result_status', 'classification_status', 'reason', 'view_01_grade', 'view_02_grade', 'view_03_grade',
@@ -525,19 +526,98 @@ def _finalise(
 
 
 def _set_overall_status(result: dict) -> None:
+    """``complete`` means a fully saved model result; a manual grade never is."""
     inference = result['inference']
     classification = result['classification']
     storage = result['storage']
+    saved = storage['status'] == 'saved'
+    if classification.get('source') == MANUAL_SOURCE and saved:
+        # Keep the original failure visible next to the operator's grade.
+        result['complete'] = False
+        result['status'] = 'manual_completed'
+        result['reason'] = (
+            inference['reason']
+            or (result.get('model_classification') or {}).get('reason')
+        )
+        return
     complete = (
         inference['status'] == 'completed'
         and classification['status'] == 'graded'
-        and storage['status'] == 'saved'
+        and saved
     )
     result['complete'] = complete
     result['status'] = 'completed' if complete else 'failed'
     result['reason'] = None if complete else (
         inference['reason'] or classification['reason'] or storage['reason']
     )
+
+
+def apply_manual_grade(
+    *, output_root: Path, summary_path: Path, fruit_id: str, result_id: str,
+    grade: int,
+) -> dict:
+    """Record an operator grade on a saved needs-review result of this round.
+
+    The model's classification moves unchanged to ``model_classification``;
+    images, inference failure and storage locations are kept. JSON and the
+    summary row change together or not at all. An identical repeat is a
+    duplicate that only re-syncs the summary row.
+    """
+    if grade not in range(len(grading.GRADES)):
+        raise ValueError(f'人工等級必須是 0～3：{grade!r}')
+    result = load_result(output_root, fruit_id)
+    if result is None:
+        return {'ok': False, 'reason': 'result_not_found'}
+    if result.get('result_id') != result_id:
+        return {'ok': False, 'reason': 'stale_detection_result'}
+    if (result.get('storage') or {}).get('status') != 'saved':
+        return {'ok': False, 'reason': 'result_not_saved'}
+    classification = result['classification']
+    if classification.get('source') == MANUAL_SOURCE:
+        if classification.get('grade') != grade:
+            return {'ok': False, 'reason': 'already_manual_graded'}
+        try:
+            upsert_summary(Path(summary_path), result)
+        except Exception as error:
+            return _save_failure('summary_save_failed', error)
+        return {'ok': True, 'duplicate': True, 'result': result}
+    if classification.get('status') != 'needs_review':
+        return {'ok': False, 'reason': 'not_needs_review'}
+
+    label, code = grading.grade_label(grade)
+    updated = copy.deepcopy(result)
+    updated['model_classification'] = classification
+    updated['classification'] = {
+        'status': 'graded', 'grade': grade, 'label': label, 'code': code,
+        'source': MANUAL_SOURCE, 'worst_view': None, 'reason': None,
+        'decided_at': _now(),
+    }
+    _set_overall_status(updated)
+    json_path = Path(output_root) / fruit_id / 'result.json'
+    try:
+        _atomic_json(json_path, updated)
+    except OSError as error:
+        return _save_failure('result_json_save_failed', error)
+    try:
+        upsert_summary(Path(summary_path), updated)
+    except Exception as error:
+        failure = _save_failure('summary_save_failed', error)
+        try:
+            _atomic_json(json_path, result)
+        except OSError as rollback_error:
+            # The JSON now runs ahead of the CSV; an identical retry resyncs.
+            failure['rollback_error'] = (
+                f'{type(rollback_error).__name__}: {rollback_error}'
+            )
+        return failure
+    return {'ok': True, 'duplicate': False, 'result': updated}
+
+
+def _save_failure(reason: str, error: Exception) -> dict:
+    return {
+        'ok': False, 'reason': reason,
+        'detail': f'{type(error).__name__}: {error}',
+    }
 
 
 def run_and_save(

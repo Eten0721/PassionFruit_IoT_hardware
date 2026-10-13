@@ -6,9 +6,11 @@
 
 ## 現行穩定功能
 
-- Issue [#31](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/31) 已套用檢測主畫面：網路確認下方為可收合的操作列，收合時仍保留開始／重新拍攝／跳過及阻擋原因；左側三張各四格依後端 `detection_progress` 逐步由原圖替換為真實產物，右側為醒目整顆結果與手機預覽，蒐集模式同區只顯示三張原圖。自動檢測純拍攝的照片間隔依 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#純拍攝-api-契約) 執行。待人工處理的人工接手與通知開關尚未實作；自動化測試與瀏覽器檢查已通過，操作員人工驗收尚未進行。
+- Issue [#32](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/32) 已讓純拍攝自動檢測在無法判級時，由操作員於右側結果卡人工選級；人工等級與原模型分類分開保存在同顆 `result.json`，總表同列改為 `manual_completed`／`manual`，不建立硬體命令或下一輪。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#檢測與判級)，驗證與操作步驟見 [人工接手驗收](acceptance/issue-32-manual-takeover.md)。使用硬體的人工接手放行仍待 Issue [#33](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/33)；操作員人工驗收尚未進行。
 
-- Issue [#30](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/30) 已在 YOLO 後接入兩階段 XGBoost 判級，保存單顆 `result.json` 與檢測總表，現有檢測區顯示單張與整顆等級；契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#檢測與判級)。真實模型與交付範例比對一致，但訓練資料證據不足；結果與限制見 [XGBoost 判級驗收](acceptance/issue-30-xgboost-grading.md)，操作員已於 2026-10-14 完成人工驗收。硬體模式判級後仍保持 Gate 3 人工復原，實體分槽、人工接手與通知由後續 Issues 處理。
+- Issue [#31](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/31) 已套用檢測主畫面：網路確認下方為可收合的操作列，收合時仍保留開始／重新拍攝／跳過及阻擋原因；左側三張各四格依後端 `detection_progress` 逐步由原圖替換為真實產物，右側為醒目整顆結果與手機預覽，蒐集模式同區只顯示三張原圖。自動檢測純拍攝的照片間隔依 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#純拍攝-api-契約) 執行。通知開關尚未實作；自動化測試與瀏覽器檢查已通過，操作員人工驗收尚未進行。
+
+- Issue [#30](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/30) 已在 YOLO 後接入兩階段 XGBoost 判級，保存單顆 `result.json` 與檢測總表，現有檢測區顯示單張與整顆等級；契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#檢測與判級)。真實模型與交付範例比對一致，但訓練資料證據不足；結果與限制見 [XGBoost 判級驗收](acceptance/issue-30-xgboost-grading.md)，操作員已於 2026-10-14 完成人工驗收。硬體模式判級後仍保持 Gate 3 人工復原，實體分槽、硬體人工接手與通知由後續 Issues 處理。
 
 - Issue [#29](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/29) 已分離蒐集與檢測資料區、編號、結果及清理範圍，保留所有舊資料原位；模式可跨重啟恢復，舊頁面請求與同編號照片不會混用分區。自動化驗證結果與人工驗收準備見 [資料分區驗收](acceptance/issue-29-dataset-modes.md)；人工操作尚未驗收。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#資料分區)。
 

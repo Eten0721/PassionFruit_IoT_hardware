@@ -38,6 +38,9 @@ const remoteVideo = document.getElementById('remote-video');
     const detectionGrade = document.getElementById('detection-grade');
     const gradeDetail = document.getElementById('detection-grade-detail');
     const viewGrades = document.getElementById('detection-view-grades');
+    const manualGradePanel = document.getElementById('manual-grade-panel');
+    const manualGradeGuidance = document.getElementById('manual-grade-guidance');
+    const manualGradeButtons = Array.from(document.querySelectorAll('.manual-grade-button'));
     const stageChips = document.getElementById('stage-chips');
     const operationModeSummary = document.getElementById('operation-mode-summary');
     const actionGuidance = document.getElementById('action-guidance');
@@ -810,6 +813,11 @@ const remoteVideo = document.getElementById('remote-video');
         dataset_operation_in_progress: '資料處理中',
         detection_in_progress: '檢測進行中',
         detection_mode: '自動檢測由模型判級，不開放人工分類',
+        hardware_takeover_pending: '使用硬體的人工接手放行尚未接通，Gate 3 維持關閉',
+        network_recovery_required: '待完成網路安全復原',
+        result_not_saved: '檢測結果尚未保存成功',
+        dataset_busy: '資料處理中',
+        no_detection_result: '沒有待處理的檢測結果',
         feed_arrival_unconfirmed: '送料到位尚未確認',
         gate3_manual_removal_required: 'Gate 3 待人工安全復原',
         network_selection_required: '尚未確認本次使用的網路',
@@ -1086,8 +1094,12 @@ const remoteVideo = document.getElementById('remote-video');
         chips.push(progressChip('四模型', modelsDone, modelsFailed, running, finished));
         const grade = gradeCardModel(data);
         chips.push({
-            label: grade.state === 'graded' ? `分類完成：${grade.title}` : grade.state === 'review' ? '待人工處理' : '分類',
-            state: grade.state === 'graded' ? 'done' : grade.state === 'review' ? 'failed' : running ? 'active' : 'waiting',
+            label: grade.state === 'graded' || grade.state === 'manual'
+                ? `分類完成：${grade.title}`
+                : grade.state === 'review' ? '待人工處理' : '分類',
+            state: grade.state === 'graded' || grade.state === 'manual'
+                ? 'done'
+                : grade.state === 'review' ? 'failed' : running ? 'active' : 'waiting',
         });
         return chips;
     }
@@ -1141,6 +1153,14 @@ const remoteVideo = document.getElementById('remote-video');
         }
         const classification = result.classification || {};
         const storage = result.storage || {};
+        if (classification.status === 'graded' && classification.source === 'manual') {
+            const failure = result.reason || (result.model_classification || {}).reason || '未知原因';
+            return {
+                state: 'manual',
+                title: `${classification.label}（人工判定）`,
+                detail: `模型無法判級，由操作員人工判定並已保存；原檢測失敗原因保留：${failure}`,
+            };
+        }
         if (storage.status === 'failed') {
             return { state: 'review', title: '待人工處理', detail: `結果保存失敗，不視為完成：${storage.reason}` };
         }
@@ -1182,6 +1202,23 @@ const remoteVideo = document.getElementById('remote-video');
         setTextIfChanged(detectionGrade, grade.title);
         setTextIfChanged(gradeDetail, grade.detail);
         setTextIfChanged(viewGrades, viewGradesText(data));
+        renderManualGrade(data, grade);
+    }
+
+    function renderManualGrade(data, grade) {
+        const reason = data.manual_grade_disabled_reason;
+        // Shown in the always-visible result card, so collapsing the
+        // operation bar never hides a round waiting for the operator.
+        manualGradePanel.hidden = grade.state !== 'review'
+            || !data.detection_result
+            || ['not_detection_mode', 'already_manual_graded', 'not_needs_review'].includes(reason);
+        manualGradeButtons.forEach((button) => {
+            button.disabled = Boolean(controlActionInFlight) || !data.can_manual_grade;
+            button.title = data.can_manual_grade ? '' : `無法人工判級：${reasonText(reason)}`;
+        });
+        setTextIfChanged(manualGradeGuidance, data.can_manual_grade
+            ? '檢查左側三張照片與失敗原因後選擇等級；人工結果與模型輸出分開保存。'
+            : `目前無法人工判級：${reasonText(reason)}`);
     }
 
     function actionGuidanceItems(data, photoOnly) {
@@ -1789,6 +1826,31 @@ const remoteVideo = document.getElementById('remote-video');
         }
     }
 
+    async function manualGrade(label) {
+        const actionButton = manualGradeButtons.find((button) => button.dataset.label === label);
+        const result = lastState && lastState.detection_result;
+        if (!result || !beginControlAction('manual_grade', actionButton)) {
+            return;
+        }
+        try {
+            const payload = await postJson('/api/detection/manual_grade/', {
+                label,
+                fruit_id: result.fruit_id,
+                result_id: result.result_id,
+            });
+            lastState = payload;
+            renderState(payload);
+            setMessage(payload.duplicate
+                ? `${payload.fruit_id} 已是人工判定「${label}」，未重複寫入紀錄。`
+                : `${payload.fruit_id} 已人工判為「${label}」並更新同顆檢測紀錄。`);
+        } catch (error) {
+            setMessage(`人工判級失敗：${error.message}`);
+        } finally {
+            endControlAction(actionButton);
+            await refreshState();
+        }
+    }
+
     async function discardCurrent() {
         const fruitId = lastState && (
             lastState.discardable_fruit_id || lastState.active_fruit_id
@@ -1978,6 +2040,9 @@ const remoteVideo = document.getElementById('remote-video');
     imageDialog.addEventListener('close', () => {
         imageDialogImage.removeAttribute('src');
         imageDialogImage.src = '';
+    });
+    manualGradeButtons.forEach((button) => {
+        button.addEventListener('click', () => manualGrade(button.dataset.label));
     });
     classifyButtons.forEach((button) => {
         button.addEventListener('click', () => classify(button.dataset.label));

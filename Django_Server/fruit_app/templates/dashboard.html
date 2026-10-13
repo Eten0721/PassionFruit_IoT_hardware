@@ -166,6 +166,16 @@
                 <p id="detection-grade" class="detection-grade" data-state="waiting" aria-live="polite">等待判定</p>
                 <p id="detection-grade-detail" class="grade-detail">三張照片完成後進行檢測與分類</p>
                 <p id="detection-view-grades" class="grade-views">尚無視角等級</p>
+                <fieldset id="manual-grade-panel" class="manual-grade-panel" hidden>
+                    <legend>人工接手判級</legend>
+                    <p id="manual-grade-guidance">檢查左側三張照片與失敗原因後選擇等級；人工結果與模型輸出分開保存。</p>
+                    <div class="button-row" aria-label="人工判級等級">
+                        <button type="button" class="button label manual-grade-button" data-label="上等">上等</button>
+                        <button type="button" class="button label manual-grade-button" data-label="中等">中等</button>
+                        <button type="button" class="button label manual-grade-button" data-label="下等">下等</button>
+                        <button type="button" class="button label manual-grade-button" data-label="加工">加工</button>
+                    </div>
+                </fieldset>
             </section>
 
             <section class="panel camera-panel" aria-labelledby="camera-panel-title">

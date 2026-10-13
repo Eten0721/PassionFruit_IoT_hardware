@@ -57,6 +57,13 @@ def grade_label(grade: int) -> tuple[str, str]:
     return GRADES[grade]
 
 
+def grade_for_label(label: str) -> int:
+    for grade, (name, _code) in enumerate(GRADES):
+        if name == label:
+            return grade
+    raise ValueError(f'未知的等級名稱：{label!r}')
+
+
 def combine(p_nonzero: float, stage2_probabilities) -> int:
     """Stage 1 routes processing fruit; stage 2 classes 0/1/2 are grades 1/2/3."""
     if p_nonzero < STAGE1_THRESHOLD:

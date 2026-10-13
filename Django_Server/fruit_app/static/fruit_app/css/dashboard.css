@@ -1513,6 +1513,30 @@ textarea {
     color: var(--danger);
 }
 
+.grade-panel[data-state="manual"] {
+    border-color: #b45309;
+}
+
+.manual-grade-panel {
+    display: grid;
+    gap: 8px;
+    margin: 6px 0 0;
+    padding: 10px 0 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+}
+
+.manual-grade-panel legend {
+    padding: 0;
+    font-weight: 750;
+}
+
+.manual-grade-panel p {
+    margin: 0;
+    color: var(--text-soft);
+    font-size: 13px;
+}
+
 .grade-detail,
 .grade-views {
     margin: 0;
