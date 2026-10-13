@@ -45,9 +45,15 @@ class DetectionFlowTests(SimpleTestCase):
             },
         )
         self.detection_settings.enable()
+        # Rounds advance on the next camera poll; interval tests restore 1 s.
+        self.photo_interval = mock.patch.object(
+            views, 'PHOTO_DETECTION_INTERVAL_SECONDS', 0,
+        )
+        self.photo_interval.start()
 
     def tearDown(self):
         self._wait_for_detection()
+        self.photo_interval.stop()
         self.detection_settings.disable()
         existing.DataCollectionFlowTests.tearDown(self)
 
@@ -835,3 +841,140 @@ class DetectionFlowTests(SimpleTestCase):
             if thread.name == f'detection-{fruit_id}':
                 thread.join(2)
         self.assertEqual(len(self._summary_rows()), 1)
+
+    @mock.patch(
+        'fruit_app.detection.execute_model_batch', side_effect=_external_result
+    )
+    def test_photo_detection_waits_one_second_after_each_saved_photo(self, _execute):
+        clock = [time.monotonic()]
+        with mock.patch.object(views, 'PHOTO_DETECTION_INTERVAL_SECONDS', 1.0), \
+                mock.patch('fruit_app.views.time.monotonic', side_effect=lambda: clock[0]):
+            fruit_id = self._start_detection().json()['active_fruit_id']
+            for station in (1, 2):
+                token = self.client.get('/api/camera/state/').json()['capture_token']
+                saved = self._upload_station(fruit_id, token, station)
+                self.assertEqual(saved.status_code, 200)
+                self.assertEqual(saved.json()['status'], 'photo_interval')
+                self.assertEqual(saved.json()['motor_command']['command'], 'none')
+
+                clock[0] += 0.999
+                waiting = self.client.get('/api/camera/state/').json()
+                self.assertFalse(waiting['capture_requested'])
+                self.assertEqual(waiting['capture_token'], token)
+                early = self._upload_station(fruit_id, token, station + 1)
+                self.assertEqual(early.status_code, 409)
+                self.assertEqual(early.json()['reason'], 'station_mismatch')
+                state = self.client.get('/api/state/').json()
+                self.assertEqual(state['status'], 'photo_interval')
+                self.assertEqual(state['image_total'], station)
+
+                clock[0] += 0.001
+                if station == 2:
+                    # The dashboard poll alone also releases the due request.
+                    released = self.client.get('/api/state/').json()
+                    self.assertTrue(released['capture_requested'])
+                    self.assertEqual(released['status'], 'waiting_camera')
+                due = self.client.get('/api/camera/state/').json()
+                self.assertTrue(due['capture_requested'])
+                self.assertEqual(due['station_index'], station + 1)
+                self.assertNotEqual(due['capture_token'], token)
+                stale = self._upload_station(fruit_id, token, station + 1)
+                self.assertEqual(stale.status_code, 409)
+
+            token = self.client.get('/api/camera/state/').json()['capture_token']
+            last = self._upload_station(fruit_id, token, 3)
+            self.assertEqual(last.status_code, 200)
+            self.assertIn(last.json()['detection_status'], ('pending', 'running'))
+            duplicate = self._upload_station(fruit_id, token, 3)
+            self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(self._wait_for_detection()['detection_status'], 'completed')
+        self.assertFalse(self.motor_command_sequence_path.exists())
+
+    def test_hardware_detection_has_no_photo_interval(self):
+        with mock.patch.object(views, 'PHOTO_DETECTION_INTERVAL_SECONDS', 1.0):
+            fruit_id = self._start_hardware_detection()
+            command = self._esp32_command()
+            ready = self._report(
+                'station_1_ready', station_index=1,
+                command_id=command['command_id'],
+            )
+            uploaded = self._upload_station(
+                fruit_id, ready.json()['capture_token'], 1,
+            )
+        self.assertEqual(uploaded.status_code, 200)
+        self.assertEqual(uploaded.json()['status'], 'waiting_motor')
+        self.assertEqual(uploaded.json()['motor_command']['command'], 'release_gate')
+
+    def test_discard_during_photo_interval_ends_round_without_next_request(self):
+        clock = [time.monotonic()]
+        with mock.patch.object(views, 'PHOTO_DETECTION_INTERVAL_SECONDS', 1.0), \
+                mock.patch('fruit_app.views.time.monotonic', side_effect=lambda: clock[0]):
+            fruit_id = self._start_detection().json()['active_fruit_id']
+            token = self.client.get('/api/camera/state/').json()['capture_token']
+            self.assertEqual(self._upload_station(fruit_id, token, 1).status_code, 200)
+            discarded = self._post_json('/api/discard/', {
+                'fruit_id': fruit_id, 'capture_token': token,
+            })
+            self.assertEqual(discarded.status_code, 200, discarded.content)
+            clock[0] += 5
+            camera = self.client.get('/api/camera/state/').json()
+        self.assertFalse(camera['capture_requested'])
+        self.assertIsNone(camera['active_fruit_id'])
+
+    @mock.patch('fruit_app.detection.execute_model_batch')
+    def test_running_detection_publishes_real_stage_artifacts(self, execute):
+        roi_done = threading.Event()
+        release = threading.Event()
+
+        def staged(image_paths, model_paths, *, on_stage=None, **kwargs):
+            reports, artifacts = self._external_result(image_paths, model_paths)
+            partial_reports = [
+                {**report, 'models': {}} for report in reports
+            ]
+            partial_reports[1]['roi'] = {
+                'status': 'error', 'reason': 'roi_not_detected',
+            }
+            partial_artifacts = [
+                {'roi_annotated': item['roi_annotated']}
+                for item in artifacts
+            ]
+            partial_artifacts[1] = {}
+            on_stage('roi', partial_reports, partial_artifacts)
+            roi_done.set()
+            release.wait(2)
+            reports[1]['roi'] = partial_reports[1]['roi']
+            reports[1]['models'] = {
+                role: {'status': 'skipped', 'reason': 'roi_unavailable'}
+                for role in ('color', 'wrinkle', 'defect')
+            }
+            artifacts[1] = {}
+            return reports, artifacts
+
+        execute.side_effect = staged
+        fruit_id = self._start_detection().json()['active_fruit_id']
+        self._upload_three(fruit_id)
+        self.assertTrue(roi_done.wait(2))
+
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(state['detection_status'], 'running')
+        self.assertIsNone(state['detection_result'])
+        progress = state['detection_progress']
+        self.assertEqual(progress['stage'], 'roi')
+        first = progress['images']['img_01.jpg']
+        self.assertEqual(first['roi']['status'], 'ok')
+        self.assertIn('roi_annotated', first['artifact_urls'])
+        self.assertNotIn('masked_roi', first['artifact_urls'])
+        artifact = self.client.get(first['artifact_urls']['roi_annotated'])
+        self.assertEqual(artifact.status_code, 200)
+        artifact.close()
+        second = progress['images']['img_02.jpg']
+        self.assertEqual(second['roi']['reason'], 'roi_not_detected')
+        self.assertNotIn('roi_annotated', second['artifact_urls'])
+        self.assertIn('original', second['artifact_urls'])
+
+        release.set()
+        state = self._wait_for_detection()
+        self.assertEqual(state['detection_status'], 'failed')
+        self.assertFalse(state['detection_result']['complete'])
+        self.assertIsNone(state['detection_progress'])
+        self.assertEqual(execute.call_count, 1)

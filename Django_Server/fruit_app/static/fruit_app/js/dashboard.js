@@ -21,32 +21,28 @@ const remoteVideo = document.getElementById('remote-video');
     const sorterFruitEl = document.getElementById('sorter-fruit');
     const sorterLabelEl = document.getElementById('sorter-label');
     const sorterErrorEl = document.getElementById('sorter-error');
-    const stationStatusEls = [
-        document.getElementById('station-1-status'),
-        document.getElementById('station-2-status'),
-        document.getElementById('station-3-status'),
-    ];
-    const stationCards = [1, 2, 3].map((index) => document.getElementById(`station-card-${index}`));
-    const stationImages = [1, 2, 3].map((index) => document.getElementById(`station-image-${index}`));
-    const stationFilenames = [1, 2, 3].map((index) => document.getElementById(`station-filename-${index}`));
-    const stationProgressLabel = document.getElementById('station-progress-label');
     const errorReasonEl = document.getElementById('error-reason');
     const rawStateLabelEl = document.getElementById('raw-state-label');
     const stateBadge = document.getElementById('state-badge');
-    const thumbnailEmpty = document.getElementById('thumbnail-empty');
     const counterInput = document.getElementById('counter-input');
     const noteInput = document.getElementById('note');
     const classifyButtons = Array.from(document.querySelectorAll('.classify-button'));
     const workModeSelect = document.getElementById('work-mode');
     const hardwareModeSelect = document.getElementById('hardware-mode');
     const classificationPanel = document.getElementById('classification-panel');
-    const detectionPanel = document.getElementById('detection-panel');
+    const classificationGuidance = document.getElementById('classification-guidance');
+    const detectionTitle = document.getElementById('detection-title');
     const detectionResults = document.getElementById('detection-results');
     const detectionSummary = document.getElementById('detection-summary');
+    const gradePanel = document.getElementById('grade-panel');
     const detectionGrade = document.getElementById('detection-grade');
+    const gradeDetail = document.getElementById('detection-grade-detail');
+    const viewGrades = document.getElementById('detection-view-grades');
+    const stageChips = document.getElementById('stage-chips');
+    const operationModeSummary = document.getElementById('operation-mode-summary');
+    const actionGuidance = document.getElementById('action-guidance');
     const optionsGuidance = document.getElementById('options-guidance');
     const autoRunButton = document.getElementById('btn-auto-run');
-    const autoRunGuidance = document.getElementById('auto-run-guidance');
     const recaptureButton = document.getElementById('btn-recapture');
     const discardButton = document.getElementById('btn-discard');
     const resetDatasetButton = document.getElementById('btn-reset-dataset');
@@ -112,8 +108,9 @@ const remoteVideo = document.getElementById('remote-video');
     let statePollTimer = null;
     let webrtcPollTimer = null;
     let lastState = null;
-    let lastThumbnailManifest = '';
-    let lastDetectionManifest = '';
+    let lastBoardManifest = '';
+    let lastChipFingerprint = '';
+    let lastActionGuidance = '';
     let timingInputsDirty = false;
     let feederSettingsDirty = false;
     let timingUpdateInFlight = false;
@@ -470,16 +467,14 @@ const remoteVideo = document.getElementById('remote-video');
         workModeSelect.disabled = Boolean(controlActionInFlight) || !data.can_change_options;
         esp32Indicator.hidden = photoOnly;
         feederSensorIndicator.hidden = photoOnly;
-        stationCards.forEach((card, index) => {
-            setTextIfChanged(card.querySelector('.station-card-heading span'),
-                `第 ${index + 1} ${photoOnly ? '張' : '站'}`);
-        });
         hardwareModeSelect.disabled = Boolean(controlActionInFlight) || !data.can_change_options;
         classificationPanel.hidden = detectionMode;
-        detectionPanel.hidden = !detectionMode;
+        gradePanel.hidden = !detectionMode;
+        setTextIfChanged(detectionTitle, detectionMode ? '四模型檢測結果' : '三張原圖');
+        setTextIfChanged(operationModeSummary,
+            `工作模式：${detectionMode ? '自動檢測' : '蒐集模式'}／硬體選項：${photoOnly ? '純拍攝' : '使用硬體'}`);
         setTextIfChanged(optionsGuidance, data.options_disabled_reason
-            ? `目前無法切換：${data.options_disabled_reason}` : '開始後，本輪選項固定。');
-        recaptureButton.hidden = photoOnly;
+            ? `目前無法切換：${reasonText(data.options_disabled_reason)}` : '開始後，本輪選項固定。');
         setTextIfChanged(activeFruitEl, data.active_fruit_id || '無暫存資料');
         setTextIfChanged(nextFruitEl, data.next_fruit_id || 'fruit_001');
         setTextIfChanged(
@@ -519,12 +514,10 @@ const remoteVideo = document.getElementById('remote-video');
         renderReadiness(data);
         renderOperatorAlert(data.operator_alert);
         setMessage(data.message || '');
-        renderStationStatuses(data.station_statuses || {}, data.active_station_index, status);
-        setTextIfChanged(thumbnailEmpty, photoOnly
-            ? '手機相機就緒後，按「拍攝本輪三張」自動保存三張原圖。'
-            : '開始自動運轉後，HC-SR04 會啟動三閘門流程，手機每站上傳 1 張照片。');
-        renderThumbnails(images, photoOnly);
-        renderDetection(data);
+        setTextIfChanged(detectionSummary, detectionSummaryText(data));
+        renderStageChips(data);
+        renderBoard(data);
+        renderGradeCard(data);
         setTextIfChanged(document.getElementById('dataset-scope'),
             `目前資料區：${data.work_mode === 'detection' ? '自動檢測' : '蒐集'}｜${data.dataset_path}`);
         setTextIfChanged(document.getElementById('legacy-dataset-location'),
@@ -539,6 +532,9 @@ const remoteVideo = document.getElementById('remote-video');
                 || data.sorter_busy
                 || !data.can_classify;
         });
+        setTextIfChanged(classificationGuidance, data.classify_disabled_reason
+            ? `目前無法分類：${reasonText(data.classify_disabled_reason)}`
+            : '確認三張照片後，將目前資料提交到對應等級。');
         discardButton.disabled = Boolean(controlActionInFlight)
             || classificationInFlight
             || !data.can_discard;
@@ -569,10 +565,10 @@ const remoteVideo = document.getElementById('remote-video');
                 || !data.can_start_auto_run
                 || timingInputsDirty;
         }
-        setTextIfChanged(autoRunGuidance, autoRunGuidanceText(data));
         recaptureButton.disabled = Boolean(controlActionInFlight)
             || data.sorter_busy
             || !data.can_recapture;
+        renderActionGuidance(data, photoOnly);
         resetDatasetButton.disabled = Boolean(controlActionInFlight) || !data.can_reset_dataset;
         setCounterButton.disabled = Boolean(controlActionInFlight);
     }
@@ -593,6 +589,7 @@ const remoteVideo = document.getElementById('remote-video');
             detection_running: '檢測中',
             detection_completed: '檢測完成',
             detection_failed: '檢測未完整',
+            photo_interval: '等待下一張',
             incomplete: '照片不完整',
             multiple_temp: '暫存衝突',
             error: '需要處理',
@@ -681,7 +678,7 @@ const remoteVideo = document.getElementById('remote-video');
         if (data.hardware_mode === 'photo_only') {
             const reason = data.photo_capture_disabled_reason;
             return reason
-                ? `目前無法開始：${reason}。本輪完成後請分類或刪除。`
+                ? `目前無法開始：${reasonText(reason)}。本輪完成後請分類或刪除。`
                 : '按一次自動拍三張；每張保存成功才拍下一張。果實需自行擺位，三張不保證不同視角。';
         }
         if (data.auto_run_enabled) {
@@ -697,7 +694,7 @@ const remoteVideo = document.getElementById('remote-video');
         }
         const reason = data.auto_run_disabled_reason;
         return reason
-            ? `目前無法開始：${reason}`
+            ? `目前無法開始：${reasonText(reason)}`
             : '所有啟動條件已就緒，可以開始正式自動運轉。';
     }
 
@@ -744,65 +741,6 @@ const remoteVideo = document.getElementById('remote-video');
         return labels[status] || status || '閒置';
     }
 
-    function renderStationStatuses(stationStatuses, activeStationIndex, status) {
-        let completed = 0;
-        stationStatusEls.forEach((element, index) => {
-            const stationIndex = index + 1;
-            const captured = stationStatuses[String(stationIndex)] === 'captured';
-            const active = !captured
-                && Number(activeStationIndex) === stationIndex
-                && !['idle', 'uploaded', 'classified'].includes(status);
-            const label = captured ? '已完成' : active ? '進行中' : '等待';
-            const tone = captured ? 'completed' : active ? 'active' : 'pending';
-            completed += captured ? 1 : 0;
-            setTextIfChanged(element, label);
-            stationCards[index].dataset.state = tone;
-        });
-        setTextIfChanged(stationProgressLabel, `${completed}／3 完成`);
-    }
-
-    function renderThumbnails(images, photoOnly = false) {
-        const captureUnit = photoOnly ? '張' : '站';
-        const manifest = JSON.stringify(images.map((image) => [image.filename, image.url]));
-        if (manifest === lastThumbnailManifest) {
-            return;
-        }
-        lastThumbnailManifest = manifest;
-        stationCards.forEach((card, index) => {
-            const imageElement = stationImages[index];
-            imageElement.removeAttribute('src');
-            imageElement.src = '';
-            imageElement.alt = '';
-            imageElement.hidden = true;
-            card.querySelector('.station-placeholder').hidden = false;
-            card.disabled = true;
-            card.onclick = null;
-            card.setAttribute('aria-label', `第 ${index + 1} ${captureUnit}尚未拍攝`);
-            setTextIfChanged(stationFilenames[index], '等待照片');
-        });
-        thumbnailEmpty.hidden = Boolean(images.length);
-        if (!images.length) {
-            closeImagePreview();
-        }
-        images.forEach((image, imageIndex) => {
-            const filenameMatch = String(image.filename || '').match(/img_0?([1-3])/i);
-            const stationIndex = filenameMatch ? Number(filenameMatch[1]) - 1 : imageIndex;
-            if (stationIndex < 0 || stationIndex >= stationCards.length) {
-                return;
-            }
-            const card = stationCards[stationIndex];
-            const imageElement = stationImages[stationIndex];
-            imageElement.src = image.url;
-            imageElement.alt = `第 ${stationIndex + 1} ${captureUnit}照片：${image.filename}`;
-            imageElement.hidden = false;
-            card.querySelector('.station-placeholder').hidden = true;
-            card.disabled = false;
-            card.setAttribute('aria-label', `預覽第 ${stationIndex + 1} ${captureUnit}照片 ${image.filename}`);
-            card.onclick = () => openImagePreview(image);
-            setTextIfChanged(stationFilenames[stationIndex], image.filename);
-        });
-    }
-
     function confidenceText(value) {
         return Number.isFinite(Number(value))
             ? `｜信心值 ${(Number(value) * 100).toFixed(1)}%`
@@ -845,125 +783,425 @@ const remoteVideo = document.getElementById('remote-video');
             : `｜無法判級：${grade.reason || '未知原因'}`;
     }
 
-    function fruitGrade(data, result) {
+    const BOARD_STAGES = [
+        { key: 'roi', title: 'ROI', artifact: 'roi_annotated' },
+        { key: 'color', title: 'color', artifact: 'masked_roi' },
+        { key: 'wrinkle', title: 'wrinkle', artifact: 'wrinkle_gray' },
+        { key: 'defect', title: 'defect', artifact: 'defect_annotated' },
+    ];
+    const PHOTO_FILENAMES = ['img_01.jpg', 'img_02.jpg', 'img_03.jpg'];
+    const CAPTURING_STATUSES = ['waiting_camera', 'uploading', 'photo_interval'];
+    const REASON_TEXT = {
+        active_fruit_exists: '目前仍有未處理的本輪資料',
+        auto_run_active: '自動運轉中',
+        camera_busy: '照片上傳中',
+        camera_not_ready: '手機拍攝端未就緒',
+        capture_incomplete: '三張照片尚未完成',
+        classifier_busy: '分類器執行中',
+        dataset_operation_in_progress: '資料處理中',
+        detection_in_progress: '檢測進行中',
+        detection_mode: '自動檢測由模型判級，不開放人工分類',
+        feed_arrival_unconfirmed: '送料到位尚未確認',
+        gate3_manual_removal_required: 'Gate 3 待人工安全復原',
+        network_selection_required: '尚未確認本次使用的網路',
+        no_active_fruit: '沒有待分類的資料',
+        pending_motor_command: '有待執行的馬達命令',
+        photo_only_required: '目前不是純拍攝',
+        sorter_recovery_required: '分類器待人工復原',
+        system_not_idle: '系統尚未閒置',
+        temp_fruit_exists: '暫存區仍有未處理資料',
+    };
+
+    function reasonText(code) {
+        if (!code) {
+            return '';
+        }
+        return REASON_TEXT[code] ? `${REASON_TEXT[code]}（${code}）` : code;
+    }
+
+    function capturedOriginalUrls(data) {
+        const urls = {};
+        (data.latest_images || []).forEach((image) => {
+            urls[image.filename] = image.url;
+        });
+        return urls;
+    }
+
+    function boardImages(data) {
+        const source = data.detection_result || data.detection_progress;
+        return (source && source.images) || {};
+    }
+
+    function detectionRunning(data) {
+        return ['pending', 'running'].includes(data.detection_status);
+    }
+
+    function failedStatus(summary) {
+        return ['error', 'skipped'].includes(summary && summary.status);
+    }
+
+    function roiCell(image, originalUrl, data) {
+        const urls = image.artifact_urls || {};
+        const roi = image.roi || {};
+        const original = urls.original || originalUrl;
+        if (urls.roi_annotated) {
+            return { state: 'done', url: urls.roi_annotated, caption: detectionJudgement(BOARD_STAGES[0], image) };
+        }
+        if (failedStatus(roi)) {
+            return { state: 'failed', url: original, badge: '原圖', caption: `ROI 不可用：${roi.reason || '未知原因'}` };
+        }
+        if (original) {
+            return {
+                state: detectionRunning(data) ? 'running' : 'waiting',
+                url: original,
+                badge: '原圖',
+                caption: detectionRunning(data) ? 'ROI 檢測中' : '已拍攝原圖｜等待 ROI 檢測',
+            };
+        }
+        return { state: 'waiting', placeholder: '等待', caption: '尚未拍攝' };
+    }
+
+    function modelCell(stage, image, data, hasResult) {
+        const urls = image.artifact_urls || {};
+        const model = (image.models || {})[stage.key] || {};
+        if (model.status === 'ok' && urls[stage.artifact]) {
+            return { state: 'done', url: urls[stage.artifact], caption: detectionJudgement(stage, image) };
+        }
+        if (model.status === 'ok') {
+            return { state: 'failed', placeholder: '影像未保存', caption: detectionJudgement(stage, image) };
+        }
+        if (failedStatus(model)) {
+            return {
+                state: 'failed',
+                placeholder: model.status === 'skipped' ? '未執行' : '失敗',
+                caption: `${model.status === 'skipped' ? '未執行' : '判定失敗'}：${model.reason || '未知原因'}`,
+            };
+        }
+        if (detectionRunning(data)) {
+            const roiReady = (image.roi || {}).status === 'ok';
+            return { state: 'running', placeholder: '處理中', caption: roiReady ? '模型推論中' : '等待 ROI' };
+        }
+        if (hasResult) {
+            return { state: 'failed', placeholder: '無結果', caption: '未產生結果' };
+        }
+        return { state: 'waiting', placeholder: '等待', caption: '尚未完成' };
+    }
+
+    function detectionBoardModel(data) {
+        const images = boardImages(data);
+        const originals = capturedOriginalUrls(data);
+        const hasResult = Boolean(data.detection_result);
+        return PHOTO_FILENAMES.map((filename, index) => {
+            const image = images[filename] || {};
+            const roi = roiCell(image, originals[filename], data);
+            const cells = [roi, ...BOARD_STAGES.slice(1).map(
+                (stage) => modelCell(stage, image, data, hasResult),
+            )];
+            return { filename, index, grade: viewGradeText(image), cells };
+        });
+    }
+
+    function collectionBoardModel(data) {
+        const originals = capturedOriginalUrls(data);
+        const capturing = CAPTURING_STATUSES.includes(data.status);
+        return PHOTO_FILENAMES.map((filename, index) => {
+            const url = originals[filename];
+            if (url) {
+                return { filename, index, cells: [{ state: 'done', url, caption: filename }] };
+            }
+            const active = capturing && Number(data.active_station_index) === index + 1;
+            return {
+                filename,
+                index,
+                cells: [{
+                    state: active ? 'running' : 'waiting',
+                    placeholder: active ? '拍攝中' : '等待',
+                    caption: active ? '等待手機上傳' : '尚未拍攝',
+                }],
+            };
+        });
+    }
+
+    function renderBoard(data) {
+        const detectionMode = data.work_mode === 'detection';
+        const model = detectionMode ? detectionBoardModel(data) : collectionBoardModel(data);
+        const manifest = JSON.stringify([detectionMode, model]);
+        if (manifest === lastBoardManifest) {
+            return;
+        }
+        lastBoardManifest = manifest;
+        detectionResults.classList.toggle('originals-board', !detectionMode);
+        detectionResults.replaceChildren(...model.map((photo) => renderPhotoGroup(photo, detectionMode)));
+        if (!model.some((photo) => photo.cells.some((cell) => cell.url))) {
+            closeImagePreview();
+        }
+    }
+
+    function renderPhotoGroup(photo, detectionMode) {
+        const group = document.createElement('section');
+        group.className = 'detection-group';
+        const heading = document.createElement('h3');
+        heading.textContent = `照片 ${photo.index + 1}${photo.grade || ''}`;
+        group.append(heading);
+        const grid = document.createElement('div');
+        grid.className = detectionMode ? 'detection-grid' : 'detection-grid originals-grid';
+        const titles = detectionMode ? BOARD_STAGES.map((stage) => stage.title) : ['原圖'];
+        photo.cells.forEach((cell, cellIndex) => {
+            grid.append(renderBoardCell(cell, `照片 ${photo.index + 1} ${titles[cellIndex]}`, titles[cellIndex], detectionMode));
+        });
+        group.append(grid);
+        return group;
+    }
+
+    function renderBoardCell(cell, label, title, detectionMode) {
+        const card = document.createElement('article');
+        card.className = 'detection-card';
+        card.dataset.state = cell.state;
+        if (detectionMode) {
+            const heading = document.createElement('h4');
+            heading.textContent = title;
+            card.append(heading);
+        }
+        const media = document.createElement('div');
+        media.className = 'detection-media';
+        if (cell.url) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'detection-image-button';
+            button.setAttribute('aria-label', `放大檢視 ${label}`);
+            const preview = document.createElement('img');
+            preview.src = cell.url;
+            preview.alt = label;
+            button.append(preview);
+            button.addEventListener('click', () => openImagePreview({ filename: label, url: cell.url }));
+            media.append(button);
+        } else {
+            media.classList.add('is-empty');
+            const placeholder = document.createElement('span');
+            placeholder.className = 'detection-placeholder';
+            placeholder.textContent = cell.placeholder;
+            media.append(placeholder);
+        }
+        if (cell.badge) {
+            const badge = document.createElement('span');
+            badge.className = 'detection-badge';
+            badge.textContent = cell.badge;
+            media.append(badge);
+        }
+        card.append(media);
+        const caption = document.createElement('p');
+        caption.className = 'detection-judgement';
+        caption.textContent = cell.caption;
+        card.append(caption);
+        return card;
+    }
+
+    function releaseBoardImages() {
+        lastBoardManifest = '';
+        closeImagePreview();
+        detectionResults.querySelectorAll('img').forEach((image) => {
+            image.removeAttribute('src');
+        });
+    }
+
+    function capturedCount(data) {
+        const originals = capturedOriginalUrls(data);
+        const images = boardImages(data);
+        return PHOTO_FILENAMES.filter(
+            (filename) => originals[filename] || (images[filename]?.artifact_urls || {}).original,
+        ).length;
+    }
+
+    function detectionSummaryText(data) {
+        const captured = capturedCount(data);
+        if (data.status === 'photo_interval') {
+            const seconds = (data.photo_detection_interval_ms || 0) / 1000;
+            return `拍攝 ${captured}／3 張；照片已保存，等待 ${seconds} 秒後拍攝下一張`;
+        }
+        if (CAPTURING_STATUSES.includes(data.status)) {
+            return `拍攝 ${captured}／3 張；等待第 ${data.active_station_index || captured + 1} 張上傳`;
+        }
+        if (data.work_mode !== 'detection') {
+            return captured === 3 ? '三張原圖已保存，請在操作區人工分類' : '開始後依序保存三張原圖';
+        }
+        const stageLabels = {
+            originals: '原圖已保存',
+            roi: 'ROI 已完成',
+            color: 'color 已完成',
+            wrinkle: 'wrinkle 已完成',
+            defect: 'defect 已完成',
+        };
+        if (detectionRunning(data)) {
+            const stage = data.detection_progress?.stage;
+            return `四模型檢測中${stage ? `｜${stageLabels[stage] || stage}` : ''}`;
+        }
+        if (data.detection_status === 'completed') {
+            return '檢測與保存完成';
+        }
+        if (data.detection_status === 'failed') {
+            return '檢測未完整完成，不視為整輪成功';
+        }
+        return '等待本輪三張照片';
+    }
+
+    function countViews(images, predicate) {
+        return PHOTO_FILENAMES.filter((filename) => predicate(images[filename] || {})).length;
+    }
+
+    function stageChipModels(data) {
+        const captured = capturedCount(data);
+        const capturing = CAPTURING_STATUSES.includes(data.status);
+        const chips = [{
+            label: `拍攝 ${captured}/3${data.status === 'photo_interval' ? '｜等待下一張' : ''}`,
+            state: captured === 3 ? 'done' : capturing ? 'active' : 'waiting',
+        }];
+        if (data.work_mode !== 'detection') {
+            chips.push({
+                label: data.status === 'uploaded' ? '待人工分類' : '人工分類',
+                state: data.status === 'uploaded' ? 'active' : 'waiting',
+            });
+            return chips;
+        }
+        const images = boardImages(data);
+        const running = detectionRunning(data);
+        const finished = Boolean(data.detection_result) || data.detection_status === 'failed';
+        const roiDone = countViews(images, (image) => image.roi?.status === 'ok');
+        const roiFailed = countViews(images, (image) => failedStatus(image.roi));
+        const modelsDone = countViews(images, (image) => BOARD_STAGES.slice(1).every(
+            (stage) => image.models?.[stage.key]?.status === 'ok',
+        ));
+        const modelsFailed = countViews(images, (image) => BOARD_STAGES.slice(1).some(
+            (stage) => failedStatus(image.models?.[stage.key]),
+        ));
+        chips.push(progressChip('ROI', roiDone, roiFailed, running, finished));
+        chips.push(progressChip('四模型', modelsDone, modelsFailed, running, finished));
+        const grade = gradeCardModel(data);
+        chips.push({
+            label: grade.state === 'graded' ? `分類完成：${grade.title}` : grade.state === 'review' ? '待人工處理' : '分類',
+            state: grade.state === 'graded' ? 'done' : grade.state === 'review' ? 'failed' : running ? 'active' : 'waiting',
+        });
+        return chips;
+    }
+
+    function progressChip(name, done, failed, running, finished) {
+        if (failed) {
+            return { label: `${name} 失敗 ${failed} 張`, state: 'failed' };
+        }
+        if (done === 3) {
+            return { label: `${name} 已完成`, state: 'done' };
+        }
+        if (running) {
+            return { label: `${name} 處理中 ${done}/3`, state: 'active' };
+        }
+        if (finished) {
+            return { label: `${name} 未完成 ${done}/3`, state: 'failed' };
+        }
+        return { label: `${name} 等待`, state: 'waiting' };
+    }
+
+    function renderStageChips(data) {
+        const chips = stageChipModels(data);
+        const fingerprint = JSON.stringify(chips);
+        if (fingerprint === lastChipFingerprint) {
+            return;
+        }
+        lastChipFingerprint = fingerprint;
+        const marks = { done: '✓', failed: '!', active: '…', waiting: '○' };
+        stageChips.replaceChildren(...chips.map((chip) => {
+            const item = document.createElement('li');
+            item.className = 'stage-chip';
+            item.dataset.state = chip.state;
+            const mark = document.createElement('span');
+            mark.setAttribute('aria-hidden', 'true');
+            mark.textContent = marks[chip.state];
+            item.append(mark, document.createTextNode(chip.label));
+            return item;
+        }));
+    }
+
+    function gradeCardModel(data) {
+        const result = data.detection_result;
         if (!result) {
-            return data.detection_error
-                ? { state: 'review', text: `整顆等級：待人工處理｜${data.detection_error}` }
-                : { state: 'waiting', text: '整顆等級：等待檢測' };
+            if (data.detection_error) {
+                return { state: 'review', title: '待人工處理', detail: `檢測未完成：${data.detection_error}` };
+            }
+            if (detectionRunning(data)) {
+                return { state: 'running', title: '檢測中', detail: '三張照片已保存，正在執行四模型檢測與 XGBoost 判級' };
+            }
+            return { state: 'waiting', title: '等待判定', detail: '三張照片完成後進行檢測與分類' };
         }
         const classification = result.classification || {};
         const storage = result.storage || {};
         if (storage.status === 'failed') {
-            return { state: 'review', text: `結果保存失敗，不視為完成｜${storage.reason}` };
+            return { state: 'review', title: '待人工處理', detail: `結果保存失敗，不視為完成：${storage.reason}` };
         }
-        if (classification.status === 'graded' && !result.complete) {
-            return {
-                state: 'review',
-                text: `整顆等級：${classification.label}（檢測未完整，不視為完成）｜${result.reason || '未知原因'}`,
-            };
+        if (classification.status === 'graded' && result.complete) {
+            return { state: 'graded', title: classification.label, detail: '三張照片取最低等級，結果已保存' };
         }
         if (classification.status === 'graded') {
             return {
-                state: 'graded',
-                text: `整顆等級：${classification.label}（三張取最低級）`,
+                state: 'review',
+                title: '待人工處理',
+                detail: `模型等級 ${classification.label}，但檢測未完整，不視為完成：${result.reason || '未知原因'}`,
             };
         }
         return {
             state: 'review',
-            text: `整顆等級：待人工處理｜${classification.reason || result.reason || '未知原因'}`,
+            title: '待人工處理',
+            detail: `無法判級：${classification.reason || result.reason || '未知原因'}`,
         };
     }
 
-    function renderDetection(data) {
-        const result = data.detection_result;
-        const manifest = JSON.stringify([
-            data.detection_status, data.detection_error, result,
-        ]);
-        if (manifest === lastDetectionManifest) {
+    function viewGradesText(data) {
+        const images = (data.detection_result || {}).images || {};
+        const parts = PHOTO_FILENAMES.map((filename, index) => {
+            const grade = images[filename]?.grade;
+            if (!grade) {
+                return '';
+            }
+            return grade.status === 'ok'
+                ? `照片 ${index + 1}：${grade.label}`
+                : `照片 ${index + 1}：無法判級（${grade.reason || '未知原因'}）`;
+        }).filter(Boolean);
+        return parts.length ? parts.join('｜') : '尚無視角等級';
+    }
+
+    function renderGradeCard(data) {
+        const grade = gradeCardModel(data);
+        detectionGrade.dataset.state = grade.state;
+        gradePanel.dataset.state = grade.state;
+        setTextIfChanged(detectionGrade, grade.title);
+        setTextIfChanged(gradeDetail, grade.detail);
+        setTextIfChanged(viewGrades, viewGradesText(data));
+    }
+
+    function actionGuidanceItems(data, photoOnly) {
+        const items = [autoRunGuidanceText(data)];
+        if (recaptureButton.disabled) {
+            items.push(`重新拍攝：${photoOnly
+                ? '純拍攝不提供重新拍攝，請先跳過／刪除本輪再開始'
+                : data.active_fruit_id ? '目前流程狀態不允許重新拍攝' : '目前沒有拍攝中的資料'}`);
+        }
+        if (discardButton.disabled) {
+            items.push(`跳過／刪除：${data.status === 'uploading'
+                ? '照片上傳中，完成後才能刪除'
+                : data.dataset_operation ? '資料處理中' : '目前沒有可刪除的暫存資料'}`);
+        }
+        return items;
+    }
+
+    function renderActionGuidance(data, photoOnly) {
+        const items = actionGuidanceItems(data, photoOnly);
+        const fingerprint = JSON.stringify(items);
+        if (fingerprint === lastActionGuidance) {
             return;
         }
-        lastDetectionManifest = manifest;
-        detectionResults.replaceChildren();
-
-        const statusLabels = {
-            idle: '等待本輪三張照片',
-            capturing: '拍攝中',
-            pending: '等待批次檢測',
-            running: '四模型檢測中',
-            completed: '檢測與保存完成',
-            failed: '檢測未完整完成',
-        };
-        setTextIfChanged(
-            detectionSummary,
-            statusLabels[data.detection_status] || data.detection_status || '等待',
-        );
-        const grade = fruitGrade(data, result);
-        detectionGrade.dataset.state = grade.state;
-        setTextIfChanged(detectionGrade, grade.text);
-        const stages = [
-            { key: 'roi', title: 'ROI', artifact: 'roi_annotated' },
-            { key: 'color', title: 'color', artifact: 'masked_roi' },
-            { key: 'wrinkle', title: 'wrinkle', artifact: 'wrinkle_gray' },
-            { key: 'defect', title: 'defect', artifact: 'defect_annotated' },
-        ];
-        const pendingText = data.detection_error
-            ? `未產生結果：${data.detection_error}`
-            : (statusLabels[data.detection_status] || '等待檢測');
-        const images = result?.images || Object.fromEntries(
-            [1, 2, 3].map((index) => [`img_0${index}.jpg`, {}]),
-        );
-        Object.entries(images).forEach(
-            ([filename, image], imageIndex) => {
-                const group = document.createElement('section');
-                group.className = 'detection-group';
-                const heading = document.createElement('h3');
-                heading.textContent = `照片 ${imageIndex + 1}｜${filename}${viewGradeText(image)}`;
-                group.append(heading);
-                const grid = document.createElement('div');
-                grid.className = 'detection-grid';
-
-                stages.forEach((stage) => {
-                    const card = document.createElement('article');
-                    card.className = 'detection-card';
-                    const title = document.createElement('h4');
-                    title.textContent = stage.title;
-                    card.append(title);
-                    const media = document.createElement('div');
-                    media.className = 'detection-media';
-                    const urls = image.artifact_urls || {};
-                    const url = urls[stage.artifact]
-                        || (stage.key === 'roi' ? urls.original : null);
-                    if (url) {
-                        const button = document.createElement('button');
-                        button.type = 'button';
-                        button.className = 'detection-image-button';
-                        const preview = document.createElement('img');
-                        preview.src = url;
-                        preview.alt = `照片 ${imageIndex + 1} ${stage.title}：${filename}`;
-                        button.append(preview);
-                        button.addEventListener('click', () => openImagePreview({
-                            filename: `${filename}｜${stage.title}`,
-                            url,
-                        }));
-                        media.append(button);
-                    } else {
-                        const placeholder = document.createElement('span');
-                        placeholder.className = 'detection-placeholder';
-                        placeholder.textContent = result ? '影像不可用' : pendingText;
-                        media.append(placeholder);
-                    }
-                    card.append(media);
-                    const judgement = document.createElement('p');
-                    judgement.className = 'detection-judgement';
-                    judgement.textContent = result
-                        ? detectionJudgement(stage, image) : pendingText;
-                    card.append(judgement);
-                    grid.append(card);
-                });
-                group.append(grid);
-                detectionResults.append(group);
-            },
-        );
+        lastActionGuidance = fingerprint;
+        actionGuidance.replaceChildren(...items.map((text) => {
+            const item = document.createElement('li');
+            item.textContent = text;
+            return item;
+        }));
     }
 
     function openImagePreview(image) {
@@ -984,30 +1222,12 @@ const remoteVideo = document.getElementById('remote-video');
         imageDialogImage.src = '';
     }
 
-    function releaseThumbnailFileHandles() {
-        const captureUnit = lastState && lastState.hardware_mode === 'photo_only' ? '張' : '站';
-        lastThumbnailManifest = '';
-        closeImagePreview();
-        stationImages.forEach((imageElement, index) => {
-            imageElement.removeAttribute('src');
-            imageElement.src = '';
-            imageElement.alt = '';
-            imageElement.hidden = true;
-            stationCards[index].querySelector('.station-placeholder').hidden = false;
-            stationCards[index].disabled = true;
-            stationCards[index].onclick = null;
-            stationCards[index].setAttribute('aria-label', `第 ${index + 1} ${captureUnit}尚未拍攝`);
-            setTextIfChanged(stationFilenames[index], '等待照片');
-        });
-        thumbnailEmpty.hidden = false;
-    }
-
     function sleep(ms) {
         return new Promise((resolve) => window.setTimeout(resolve, ms));
     }
 
-    async function releaseThumbnailsBeforeFileOperation() {
-        releaseThumbnailFileHandles();
+    async function releaseImagesBeforeFileOperation() {
+        releaseBoardImages();
         await sleep(120);
     }
 
@@ -1341,6 +1561,9 @@ const remoteVideo = document.getElementById('remote-video');
             capture_timing_updated: '拍攝停穩設定已更新',
             timing_config_applied: 'ESP32 已套用拍攝停穩設定',
             fruit_discarded: '暫存資料已跳過／刪除',
+            photo_capture_requested: '純拍攝已要求下一張照片',
+            photo_interval_started: '照片已保存，等待間隔後拍攝下一張',
+            detection_stage_saved: '檢測階段產物已保存',
         };
         return labels[eventName] || eventName || '未命名事件';
     }
@@ -1515,7 +1738,7 @@ const remoteVideo = document.getElementById('remote-video');
             renderState(lastState);
         }
         try {
-            await releaseThumbnailsBeforeFileOperation();
+            await releaseImagesBeforeFileOperation();
             const payload = await postJson('/api/classify/', {
                 label,
                 note: noteInput.value.trim(),
@@ -1561,7 +1784,7 @@ const remoteVideo = document.getElementById('remote-video');
             return;
         }
         try {
-            await releaseThumbnailsBeforeFileOperation();
+            await releaseImagesBeforeFileOperation();
             const payload = await postJson('/api/discard/', {
                 fruit_id: fruitId,
                 capture_token: lastState.capture_token,
@@ -1596,7 +1819,7 @@ const remoteVideo = document.getElementById('remote-video');
             return;
         }
         try {
-            await releaseThumbnailsBeforeFileOperation();
+            await releaseImagesBeforeFileOperation();
             const payload = await postJson('/api/reset_dataset/', { dataset_mode: datasetMode });
             lastState = payload;
             renderState(payload);

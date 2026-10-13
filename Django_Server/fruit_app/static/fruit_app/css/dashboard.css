@@ -69,7 +69,7 @@ button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 summary:focus-visible,
-.station-card:focus-visible {
+.detection-image-button:focus-visible {
     outline: 3px solid var(--focus);
     outline-offset: 3px;
 }
@@ -474,106 +474,12 @@ button.label:hover:not(:disabled) {
     background: var(--danger-soft);
 }
 
-button:disabled {
+button:disabled,
+button.button:disabled {
     border-color: #d8ded9;
     background: #dfe5e1;
     color: #78837c;
     cursor: not-allowed;
-}
-
-.station-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 12px;
-    padding: 16px;
-}
-
-.station-card {
-    display: grid;
-    min-width: 0;
-    min-height: 0;
-    gap: 10px;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface-muted);
-    color: var(--text);
-    text-align: left;
-    cursor: default;
-}
-
-.station-card:not(:disabled) {
-    cursor: pointer;
-}
-
-.station-card:not(:disabled):hover {
-    border-color: var(--primary);
-    background: var(--surface);
-}
-
-.station-card:disabled {
-    border-color: var(--border);
-    background: var(--surface-muted);
-    color: var(--text);
-}
-
-.station-card-heading {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    font-size: 13px;
-}
-
-.station-card-heading strong,
-.station-filename {
-    color: var(--muted);
-    font-size: 12px;
-}
-
-.station-card[data-state="active"] .station-card-heading strong {
-    color: var(--warning);
-}
-
-.station-card[data-state="completed"] .station-card-heading strong {
-    color: var(--success);
-}
-
-.station-media {
-    position: relative;
-    display: grid;
-    min-height: clamp(180px, 27vw, 340px);
-    overflow: hidden;
-    place-items: center;
-    border-radius: var(--radius-small);
-    background: #e8eeea;
-}
-
-.station-media img {
-    display: block;
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    background: #111813;
-}
-
-.station-placeholder {
-    color: #a5b2aa;
-    font-size: clamp(32px, 5vw, 64px);
-    font-weight: 800;
-    letter-spacing: -0.06em;
-}
-
-.station-filename {
-    min-width: 0;
-    overflow-wrap: anywhere;
-}
-
-.station-help {
-    margin: 0;
-    padding: 0 16px 16px;
-    color: var(--muted);
-    font-size: 13px;
 }
 
 .detection-results {
@@ -675,10 +581,6 @@ button:disabled {
     font-size: 13px;
     line-height: 1.45;
     overflow-wrap: anywhere;
-}
-
-.control-panel {
-    padding-bottom: 16px;
 }
 
 .current-fruit {
@@ -801,17 +703,7 @@ button:disabled {
     content: "!";
 }
 
-.primary-action,
-.control-guidance,
-.control-panel > .warning,
-.control-panel > .ghost-danger {
-    width: calc(100% - 32px);
-    margin-right: 16px;
-    margin-left: 16px;
-}
-
 .primary-action {
-    min-height: 50px;
     font-size: 16px;
 }
 
@@ -827,10 +719,6 @@ button:disabled {
 }
 
 .classify-panel {
-    padding: 16px;
-}
-
-.classify-panel fieldset {
     display: grid;
     min-width: 0;
     gap: 10px;
@@ -1302,9 +1190,6 @@ textarea {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .station-media {
-        min-height: 220px;
-    }
 }
 
 @media (max-width: 900px) {
@@ -1371,9 +1256,7 @@ textarea {
     }
 
     .alert-facts,
-    .detection-grid,
     .timing-config-grid,
-    .station-grid,
     .button-row,
     .sorter-summary,
     .timing-config-actions,
@@ -1381,9 +1264,6 @@ textarea {
         grid-template-columns: 1fr;
     }
 
-    .station-media {
-        min-height: min(72vw, 360px);
-    }
 
     .camera-stage {
         min-height: 280px;
@@ -1441,9 +1321,289 @@ textarea {
     font: inherit;
 }
 
-#btn-recapture + #btn-discard { margin-top: 8px; }
 
 .network-panel { margin-bottom: 16px; }
 .network-panel .controls { flex-wrap: wrap; }
 #camera-qr { display: block; max-width: 100%; background: #fff; }
 #camera-qr[hidden] { display: none; }
+
+/* Operation bar: the disclosure holds settings; main actions stay visible. */
+.operation-panel {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 12px 16px;
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    overflow: visible;
+}
+
+.operation-details > summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    min-height: 44px;
+    border-radius: var(--radius-small);
+    cursor: pointer;
+}
+
+.operation-summary-text {
+    display: grid;
+    min-width: 0;
+}
+
+.operation-summary-text strong {
+    font-size: 16px;
+}
+
+.operation-summary-text small {
+    color: var(--text-soft);
+    font-size: 13px;
+}
+
+.operation-content {
+    display: grid;
+    gap: 14px;
+    padding-top: 12px;
+}
+
+.operation-content .collection-options,
+.operation-content .current-fruit {
+    padding: 0;
+}
+
+.operation-content .readiness-block {
+    margin: 0;
+}
+
+.operation-content .control-guidance {
+    margin: 0;
+}
+
+.operation-content .classify-panel {
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+}
+
+.operation-actions {
+    display: grid;
+    justify-items: end;
+    gap: 6px;
+    max-width: 460px;
+}
+
+.operation-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.action-guidance {
+    display: grid;
+    gap: 2px;
+    margin: 0;
+    padding: 0;
+    color: var(--text-soft);
+    font-size: 12px;
+    list-style: none;
+    text-align: right;
+}
+
+/* Progress chips: text and a mark carry the state, colour only reinforces. */
+.stage-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 12px;
+    padding: 0;
+    list-style: none;
+}
+
+.stage-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--text-soft);
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.stage-chip[data-state="active"] {
+    border-color: var(--warning);
+    background: var(--warning-soft);
+    color: var(--warning);
+}
+
+.stage-chip[data-state="done"] {
+    border-color: var(--success);
+    background: var(--primary-soft);
+    color: var(--success);
+}
+
+.stage-chip[data-state="failed"] {
+    border-color: var(--danger);
+    background: var(--danger-soft);
+    color: var(--danger);
+}
+
+.result-workspace {
+    display: grid;
+    align-content: start;
+    gap: 16px;
+    min-width: 0;
+}
+
+.detection-panel .panel-heading p {
+    margin: 2px 0 0;
+}
+
+.grade-panel {
+    display: grid;
+    gap: 6px;
+    padding: 16px;
+    border-width: 2px;
+}
+
+.grade-panel h2 {
+    margin: 0;
+    color: var(--text-soft);
+    font-size: 15px;
+}
+
+.grade-panel .detection-grade {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font-size: clamp(28px, 3.2vw, 40px);
+    line-height: 1.15;
+}
+
+.grade-panel[data-state="graded"] {
+    border-color: var(--success);
+}
+
+.grade-panel[data-state="review"] {
+    border-color: var(--danger);
+    background: var(--danger-soft);
+}
+
+.grade-panel[data-state="review"] .detection-grade {
+    color: var(--danger);
+}
+
+.grade-detail,
+.grade-views {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.grade-views {
+    color: var(--text-soft);
+    font-size: 13px;
+}
+
+.result-workspace .camera-stage {
+    min-height: clamp(200px, 30vh, 360px);
+}
+
+.result-workspace .camera-actions {
+    flex-wrap: wrap;
+}
+
+.detection-card[data-state="failed"] {
+    border-color: var(--danger);
+}
+
+.detection-card[data-state="failed"] .detection-judgement {
+    color: var(--danger);
+}
+
+.detection-card[data-state="running"] .detection-judgement {
+    color: var(--warning);
+}
+
+.detection-media {
+    position: relative;
+}
+
+.detection-badge {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(17, 24, 19, 0.78);
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.detection-media.is-empty {
+    border: 1px dashed var(--border-strong);
+    background: var(--surface-strong);
+}
+
+.detection-media.is-empty .detection-placeholder {
+    color: var(--text-soft);
+}
+
+.originals-board {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.originals-grid {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.originals-grid .detection-media {
+    min-height: clamp(200px, 30vw, 380px);
+}
+
+.originals-grid .detection-image-button img {
+    max-height: 380px;
+}
+
+@media (max-width: 900px) {
+    .operation-panel {
+        grid-template-columns: 1fr;
+    }
+
+    .operation-actions {
+        order: -1;
+        justify-items: stretch;
+        max-width: none;
+    }
+
+    .operation-buttons {
+        justify-content: stretch;
+    }
+
+    .operation-buttons .button {
+        flex: 1 1 140px;
+    }
+
+    .action-guidance {
+        text-align: left;
+    }
+}
+
+@media (max-width: 640px) {
+    .originals-board {
+        grid-template-columns: 1fr;
+    }
+
+    .detection-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .detection-media {
+        min-height: 110px;
+    }
+}

@@ -4,14 +4,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>資料蒐集控制台｜百香果</title>
+    <title>檢測與分類控制台｜百香果</title>
     <link rel="stylesheet" href="{% static 'fruit_app/css/dashboard.css' %}">
 </head>
 <body>
 <header class="app-header">
     <div class="brand-block">
-        <span class="eyebrow">PASSION FRUIT COLLECTION</span>
-        <h1>百香果資料蒐集控制台</h1>
+        <span class="eyebrow">PASSION FRUIT INSPECTION</span>
+        <h1>百香果檢測與分類控制台</h1>
         <p class="camera-link">手機相機頁：<strong id="camera-url"></strong>，手機不要開啟 /dashboard/。</p>
     </div>
     <div class="system-status" aria-label="系統連線狀態">
@@ -56,110 +56,16 @@
             <p id="network-device-status" role="status" aria-live="polite"></p>
         </div>
     </details>
-    <div id="operator-alert" class="operator-alert" role="alert" hidden>
-        <div class="operator-alert-heading">
-            <span class="alert-kicker">需要操作員處理</span>
-            <strong id="operator-alert-title">系統已停止自動運轉</strong>
-        </div>
-        <dl class="alert-facts">
-            <div><dt>原因</dt><dd id="operator-alert-reason">無</dd></div>
-            <div><dt>位置</dt><dd id="operator-alert-location">無</dd></div>
-            <div><dt>資料</dt><dd id="operator-alert-fruit">無</dd></div>
-            <div><dt>命令</dt><dd id="operator-alert-command">none</dd></div>
-            <div id="operator-alert-feeder-wrap" hidden><dt>送料紀錄</dt><dd id="operator-alert-feeder">無</dd></div>
-        </dl>
-        <p id="operator-alert-instruction" class="alert-instruction"></p>
-    </div>
-    <div id="message" class="global-message" role="status" aria-live="polite"></div>
-
-    <div class="workspace-grid">
-        <div class="visual-workspace">
-            <section class="panel camera-panel" aria-labelledby="camera-panel-title">
-                <div class="panel-heading">
-                    <div>
-                        <span class="section-kicker">LIVE MONITOR</span>
-                        <h2 id="camera-panel-title">手機即時畫面</h2>
-                    </div>
-                    <div id="preview-indicator" class="status-indicator compact" data-state="pending">
-                        <span class="status-dot" aria-hidden="true"></span>
-                        <strong id="preview-status">等待連線</strong>
-                    </div>
-                </div>
-                <div class="camera-stage">
-                    <div id="remote-video-wrap" class="remote-video-wrap" hidden>
-                        <video id="remote-video" autoplay playsinline muted></video>
-                    </div>
-                    <div id="video-placeholder" class="video-placeholder">
-                        <span class="video-placeholder-mark" aria-hidden="true"></span>
-                        <strong>等待手機串流</strong>
-                        <span>拍攝上傳與即時預覽分開運作；預覽中斷不會阻擋照片上傳。</span>
-                    </div>
-                </div>
-                <div class="camera-actions">
-                    <span>即時預覽僅供監看，不代表手機拍攝端是否就緒。</span>
-                    <button id="btn-reconnect" type="button" class="button secondary">重新連線串流</button>
-                </div>
-            </section>
-
-            <section class="panel station-panel" aria-labelledby="station-panel-title">
-                <div class="panel-heading">
-                    <div>
-                        <span class="section-kicker">THREE-STATION CAPTURE</span>
-                        <h2 id="station-panel-title">三張原圖預覽</h2>
-                    </div>
-                    <strong id="station-progress-label" class="panel-meta">0／3 完成</strong>
-                </div>
-                <div id="thumbnail-grid" class="station-grid">
-                    <button id="station-card-1" class="station-card" type="button" disabled aria-label="第 1 站尚未拍攝">
-                        <span class="station-card-heading"><span>第 1 站</span><strong id="station-1-status">等待</strong></span>
-                        <span class="station-media">
-                            <span class="station-placeholder" aria-hidden="true">01</span>
-                            <img id="station-image-1" alt="" hidden>
-                        </span>
-                        <span id="station-filename-1" class="station-filename">等待照片</span>
-                    </button>
-                    <button id="station-card-2" class="station-card" type="button" disabled aria-label="第 2 站尚未拍攝">
-                        <span class="station-card-heading"><span>第 2 站</span><strong id="station-2-status">等待</strong></span>
-                        <span class="station-media">
-                            <span class="station-placeholder" aria-hidden="true">02</span>
-                            <img id="station-image-2" alt="" hidden>
-                        </span>
-                        <span id="station-filename-2" class="station-filename">等待照片</span>
-                    </button>
-                    <button id="station-card-3" class="station-card" type="button" disabled aria-label="第 3 站尚未拍攝">
-                        <span class="station-card-heading"><span>第 3 站</span><strong id="station-3-status">等待</strong></span>
-                        <span class="station-media">
-                            <span class="station-placeholder" aria-hidden="true">03</span>
-                            <img id="station-image-3" alt="" hidden>
-                        </span>
-                        <span id="station-filename-3" class="station-filename">等待照片</span>
-                    </button>
-                </div>
-                <p id="thumbnail-empty" class="station-help">開始自動運轉後，HC-SR04 會啟動三閘門流程，手機每站上傳 1 張照片。</p>
-            </section>
-
-            <section id="detection-panel" class="panel detection-panel" aria-labelledby="detection-title" hidden>
-                <div class="panel-heading">
-                    <div>
-                        <span class="section-kicker">AUTOMATIC INSPECTION</span>
-                        <h2 id="detection-title">四模型檢測結果</h2>
-                    </div>
-                    <strong id="detection-summary" class="panel-meta">等待本輪三張照片</strong>
-                </div>
-                <p id="detection-grade" class="detection-grade" data-state="waiting" aria-live="polite">整顆等級：等待檢測</p>
-                <div id="detection-results" class="detection-results" aria-live="polite"></div>
-            </section>
-        </div>
-
-        <aside class="operation-workspace" aria-label="流程操作">
-            <section class="panel control-panel" aria-labelledby="control-panel-title">
-                <div class="panel-heading">
-                    <div>
-                        <span class="section-kicker">CURRENT RUN</span>
-                        <h2 id="control-panel-title">目前流程</h2>
-                    </div>
-                    <span id="state-badge" class="state-badge" data-state="idle"><span class="status-dot" aria-hidden="true"></span><strong id="state-label">閒置</strong></span>
-                </div>
+    <section id="operation-panel" class="panel operation-panel" aria-label="目前流程與操作">
+        <details id="operation-details" class="operation-details">
+            <summary>
+                <span class="operation-summary-text">
+                    <strong id="operation-title">目前流程與操作設定</strong>
+                    <small id="operation-mode-summary">工作模式與硬體選項載入中</small>
+                </span>
+                <span id="state-badge" class="state-badge" data-state="idle"><span class="status-dot" aria-hidden="true"></span><strong id="state-label">閒置</strong></span>
+            </summary>
+            <div class="operation-content">
                 <div class="collection-options">
                     <label for="work-mode">工作模式</label>
                     <select id="work-mode" disabled>
@@ -198,16 +104,9 @@
                     </ul>
                 </div>
 
-                <button id="btn-auto-run" type="button" class="button primary-action" disabled>開始執行</button>
-                <p id="auto-run-guidance" class="control-guidance">ESP32、送料校正、HC-SR04、相機與三站流程皆就緒後，系統才會開放正式自動運轉。</p>
-                <button id="btn-recapture" type="button" class="button warning">重新拍攝目前 fruit</button>
-                <button id="btn-discard" type="button" class="button danger ghost-danger">跳過／刪除目前資料</button>
-            </section>
-
-            <section id="classification-panel" class="panel classify-panel" aria-labelledby="classification-title">
-                <fieldset>
+                <fieldset id="classification-panel" class="classify-panel">
                     <legend id="classification-title">人工分類</legend>
-                    <p>確認三張照片後，將目前資料提交到對應等級。</p>
+                    <p id="classification-guidance">確認三張照片後，將目前資料提交到對應等級。</p>
                     <label for="note">分類備註</label>
                     <textarea id="note" placeholder="可留空"></textarea>
                     <div class="button-row" aria-label="百香果等級">
@@ -217,6 +116,79 @@
                         <button type="button" class="button label classify-button" data-label="加工">加工</button>
                     </div>
                 </fieldset>
+            </div>
+        </details>
+        <div id="operation-actions" class="operation-actions" role="group" aria-label="主要操作" aria-describedby="action-guidance">
+            <div class="operation-buttons">
+                <button id="btn-auto-run" type="button" class="button primary-action" disabled>開始執行</button>
+                <button id="btn-recapture" type="button" class="button warning">重新拍攝</button>
+                <button id="btn-discard" type="button" class="button danger ghost-danger">跳過／刪除</button>
+            </div>
+            <ul id="action-guidance" class="action-guidance" aria-live="polite">
+                <li>ESP32、送料校正、HC-SR04、相機與三站流程皆就緒後，系統才會開放正式自動運轉。</li>
+            </ul>
+        </div>
+    </section>
+
+    <div id="operator-alert" class="operator-alert" role="alert" hidden>
+        <div class="operator-alert-heading">
+            <span class="alert-kicker">需要操作員處理</span>
+            <strong id="operator-alert-title">系統已停止自動運轉</strong>
+        </div>
+        <dl class="alert-facts">
+            <div><dt>原因</dt><dd id="operator-alert-reason">無</dd></div>
+            <div><dt>位置</dt><dd id="operator-alert-location">無</dd></div>
+            <div><dt>資料</dt><dd id="operator-alert-fruit">無</dd></div>
+            <div><dt>命令</dt><dd id="operator-alert-command">none</dd></div>
+            <div id="operator-alert-feeder-wrap" hidden><dt>送料紀錄</dt><dd id="operator-alert-feeder">無</dd></div>
+        </dl>
+        <p id="operator-alert-instruction" class="alert-instruction"></p>
+    </div>
+    <div id="message" class="global-message" role="status" aria-live="polite"></div>
+
+    <ol id="stage-chips" class="stage-chips" aria-label="本輪進度"></ol>
+
+    <div class="workspace-grid">
+        <section id="detection-panel" class="panel detection-panel" aria-labelledby="detection-title">
+            <div class="panel-heading">
+                <div>
+                    <h2 id="detection-title">四模型檢測結果</h2>
+                    <p id="detection-summary" class="panel-meta" aria-live="polite">等待本輪三張照片</p>
+                </div>
+            </div>
+            <div id="detection-results" class="detection-results"></div>
+        </section>
+
+        <aside class="result-workspace" aria-label="分類結果與手機畫面">
+            <section id="grade-panel" class="panel grade-panel" aria-labelledby="grade-panel-title">
+                <h2 id="grade-panel-title">本顆百香果分類結果</h2>
+                <p id="detection-grade" class="detection-grade" data-state="waiting" aria-live="polite">等待判定</p>
+                <p id="detection-grade-detail" class="grade-detail">三張照片完成後進行檢測與分類</p>
+                <p id="detection-view-grades" class="grade-views">尚無視角等級</p>
+            </section>
+
+            <section class="panel camera-panel" aria-labelledby="camera-panel-title">
+                <div class="panel-heading">
+                    <h2 id="camera-panel-title">手機即時畫面</h2>
+                    <div id="preview-indicator" class="status-indicator compact" data-state="pending">
+                        <span class="status-dot" aria-hidden="true"></span>
+                        <strong id="preview-status">等待連線</strong>
+                    </div>
+                </div>
+                <div class="camera-stage">
+                    <div id="remote-video-wrap" class="remote-video-wrap" hidden>
+                        <video id="remote-video" autoplay playsinline muted></video>
+                    </div>
+                    <div id="video-placeholder" class="video-placeholder">
+                        <span class="video-placeholder-mark" aria-hidden="true"></span>
+                        <strong>手機相機預覽</strong>
+                        <span>預覽與正式照片上傳分開運作；預覽中斷不會阻擋拍攝。</span>
+                    </div>
+                </div>
+                <div class="camera-actions">
+                    <span>即時預覽僅供監看，不代表手機拍攝端是否就緒。</span>
+                    <button id="btn-reconnect" type="button" class="button secondary">重新連線串流</button>
+                </div>
             </section>
         </aside>
     </div>

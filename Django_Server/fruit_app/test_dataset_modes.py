@@ -11,7 +11,13 @@ from . import test_detection as detection_tests
 
 
 class DatasetModeTests(SimpleTestCase):
-    setUp = existing.DataCollectionFlowTests.setUp
+    def setUp(self):
+        existing.DataCollectionFlowTests.setUp(self)
+        # Detection rounds advance on the next camera poll in these tests.
+        interval = mock.patch.object(views, 'PHOTO_DETECTION_INTERVAL_SECONDS', 0)
+        interval.start()
+        self.addCleanup(interval.stop)
+
     tearDown = existing.DataCollectionFlowTests.tearDown
     _post_json = existing.DataCollectionFlowTests._post_json
     _fake_image = existing.DataCollectionFlowTests._fake_image

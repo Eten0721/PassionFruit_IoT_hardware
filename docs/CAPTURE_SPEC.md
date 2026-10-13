@@ -404,6 +404,8 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 `POST /api/photo_capture/` 僅接受純拍攝；相機 heartbeat 過期回 `409 camera_not_ready`，有待處理資料回 `409 active_fruit_exists`，拒絕時不建立 fruit 資料夾。成功後重用手機 capture state 與 upload API，每張原子保存成功才更新 token 並要求下一張，不等待 station ready，也不建立任何 motor command。ESP32 事件回 `200 ignored`，直接 trigger 回 `409 hardware_mode_required`；ESP32 boot 改變不影響純拍攝上傳。
 
+自動檢測的純拍攝在第 1、2 張保存後進入 `photo_interval`：`capture_requested=false`、不建立新 token，期間的上傳回 `409`；到期後由下一次 `/api/state/` 或相機 state 輪詢發出下一張請求並更新 token，不以請求內 sleep 阻塞查詢。刪除本輪會取消尚未發出的請求。
+
 三張保存後才開放人工分類；純拍攝的 `/api/classify/` 與 `/api/discard/` 必須附目前 `fruit_id`、`capture_token`，過期請求回 `409 stale_capture`。分類維持既有照片、metadata 與 counter 契約，成功回 `hardware_skipped=true`，不建立分類器復原紀錄或實體命令。分類、刪除後回 idle，不自動開始下一輪。拍攝失敗沿用既有等待與同 token 重試；逾時保留已保存照片，操作員刪除本輪後重新開始。
 
 ### 檢測與判級
@@ -443,11 +445,12 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 ### UI 展示與操作摘要
 
-2026-10-13 使用者已接受目前 UI 規劃，配置以下列條目為準，仍待實作；取代 [Issue #18](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/18#ui-display-contract) 的舊版配置，歷史 Issue 不作為另一份同步維護的規格。
+2026-10-13 使用者已接受目前 UI 規劃，配置以下列條目為準；取代 [Issue #18](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/18#ui-display-contract) 的舊版配置，歷史 Issue 不作為另一份同步維護的規格。
 
 - 「確認本次使用的網路」下方新增操作摺疊列，收納目前流程、模式選項、啟動條件、開始／重新拍攝／跳過或刪除，以及人工分類。收合時仍在該列保留開始／重新拍攝／跳過等主要操作；按鈕可用性沿用狀態與安全限制，運轉時保留優雅暫停。
 - 移除獨立「三張原圖預覽」區塊；自動檢測每張原圖保存後先顯示於對應 ROI 格，待該張 ROI 產物可用才替換，未完成時明示等待／處理中，不把原圖冒充 ROI 結果。
 - 蒐集模式沿用左側同一展示區，只顯示三張原圖，隱藏未執行的模型格與自動分類結果；人工級距按鈕留在操作摺疊區。自動檢測無法判級時，該區開放人工接手，且右側的待人工處理提示在收合操作區後仍須可見。
+- 檢測執行中，`/api/state/` 的 `detection_progress` 提供最後完成的 `stage`（`originals／roi／color／wrinkle／defect`）與各張已保存產物、`artifact_urls` 及模型狀態；只在對應產物原子保存後更新，最終結果寫入 `detection_result` 時清空。畫面依此逐步替換，不以動畫推測完成。
 - 「四模型檢測結果」移至原手機預覽所在的左側主區，以三張照片分組、各列 ROI／color／wrinkle／defect，共十二格；成功產物逐步更新，有跳過、缺失或失敗時不得顯示整輪完整成功。
 - 手機即時畫面移至右側原流程操作位置；整顆分類結果也放在檢測區右手邊，以醒目級距文字區分等待、有效結果與待覆核，不只靠顏色表示。
 - 詳細設定、校正、診斷與資料管理保留在底部摺疊區。阻擋原因與安全復原提示直接可見；檢測展示重用真實前處理產物，既有橢圓 ROI 遮罩演算法不因版面調整而更改。

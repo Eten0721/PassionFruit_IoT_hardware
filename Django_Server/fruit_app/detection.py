@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import csv
 import json
 import shutil
@@ -10,7 +11,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -209,13 +210,35 @@ def _segmentation_summary(result, elapsed_ms, roi_mask):
     }
 
 
+def _summarise_role(role, ready_indices, results, elapsed_ms, reports, artifacts_list):
+    for index, result in zip(ready_indices, results, strict=True):
+        try:
+            if role == 'defect':
+                summary = _segmentation_summary(
+                    result, elapsed_ms, artifacts_list[index]['roi_mask'],
+                )
+                artifacts_list[index]['defect_annotated'] = result.plot()
+            else:
+                summary = _classification_summary(result, elapsed_ms)
+            reports[index]['models'][role] = summary
+        except Exception as error:
+            reports[index]['models'][role] = {
+                'status': 'error', 'reason': f'{type(error).__name__}: {error}',
+            }
+
+
 def execute_model_batch(
     image_paths: list[Path],
     model_paths: dict[str, str],
     *,
     model_options: dict[str, dict] | None = None,
+    on_stage: Callable[[str, list[dict], list[dict]], None] | None = None,
 ):
-    """Run the fixed deployment pipeline using installed YOLO and local weights."""
+    """Run the fixed deployment pipeline using installed YOLO and local weights.
+
+    ``on_stage`` receives the reports and artifacts after ROI and after each
+    later model, so callers can show real progress instead of guessing it.
+    """
     paths = {}
     for role in MODEL_ROLES:
         path = model_paths.get(role, '')
@@ -291,6 +314,8 @@ def execute_model_batch(
             role: {'status': 'skipped', 'reason': 'roi_unavailable'}
             for role in MODEL_ROLES[1:]
         }
+    if on_stage is not None:
+        on_stage('roi', reports, artifacts_list)
     for role in MODEL_ROLES[1:]:
         inputs = [
             cv2.cvtColor(artifacts_list[index]['wrinkle_gray'], cv2.COLOR_GRAY2BGR)
@@ -306,21 +331,11 @@ def execute_model_batch(
                 reports[index]['models'][role] = {
                     'status': 'error', 'reason': f'{type(error).__name__}: {error}',
                 }
-            continue
-        for index, result in zip(ready_indices, results, strict=True):
-            try:
-                if role == 'defect':
-                    summary = _segmentation_summary(
-                        result, elapsed_ms, artifacts_list[index]['roi_mask'],
-                    )
-                    artifacts_list[index]['defect_annotated'] = result.plot()
-                else:
-                    summary = _classification_summary(result, elapsed_ms)
-                reports[index]['models'][role] = summary
-            except Exception as error:
-                reports[index]['models'][role] = {
-                    'status': 'error', 'reason': f'{type(error).__name__}: {error}',
-                }
+        else:
+            _summarise_role(role, ready_indices, results, elapsed_ms,
+                            reports, artifacts_list)
+        if on_stage is not None:
+            on_stage(role, reports, artifacts_list)
     for report in reports:
         report['ok'] = report['roi']['status'] == 'ok' and all(
             summary['status'] == 'ok' for summary in report['models'].values()
@@ -537,8 +552,13 @@ def run_and_save(
     capture_time: str | None = None,
     hardware_mode: str = 'photo_only',
     model_options: dict[str, dict] | None = None,
+    progress: Callable[[str, dict], None] | None = None,
 ) -> dict:
-    """Run one three-image batch, grade it and save one durable fruit result."""
+    """Run one three-image batch, grade it and save one durable fruit result.
+
+    ``progress`` receives a copy of the per-image results each time originals
+    or a model stage's artifacts are saved; it never decides the outcome.
+    """
     root = Path(output_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     run_dir = root / fruit_id
@@ -564,11 +584,51 @@ def run_and_save(
                 f'{source.name}/original: {type(error).__name__}: {error}'
             )
 
+    written = {Path(source).name: set() for source in image_paths}
+
+    def apply_reports(reports, artifacts_list, missing_roi):
+        for source, report, artifacts in zip(
+            image_paths, reports, artifacts_list, strict=True
+        ):
+            source = Path(source)
+            image = images[source.name]
+            image['roi'] = dict(report.get('roi') or missing_roi)
+            image['models'] = _display_models(report.get('models') or {})
+            for name in ARTIFACT_NAMES:
+                artifact = artifacts.get(name)
+                if artifact is None or name in written[source.name]:
+                    continue
+                written[source.name].add(name)
+                relative = f'{source.stem}_{name}.jpg'
+                try:
+                    _write_artifact(run_dir / relative, artifact)
+                    image['artifacts'][name] = relative
+                except Exception as error:
+                    save_errors.append(
+                        f'{source.name}/{name}: {type(error).__name__}: {error}'
+                    )
+
+    def publish(stage):
+        if progress is None:
+            return
+        try:
+            progress(stage, copy.deepcopy(images))
+        except Exception:
+            pass  # Progress is display-only; it must not change the result.
+
+    def on_stage(stage, reports, artifacts_list):
+        apply_reports(
+            reports, artifacts_list, {'status': 'pending', 'reason': None},
+        )
+        publish(stage)
+
+    publish('originals')
     try:
         reports, artifacts_list = execute_model_batch(
             image_paths,
             model_paths,
             model_options=model_options,
+            on_stage=on_stage,
         )
         if len(reports) != len(image_paths) or len(artifacts_list) != len(image_paths):
             raise RuntimeError('批次推論結果數量與三張輸入不一致。')
@@ -586,27 +646,10 @@ def run_and_save(
         ]
         artifacts_list = [{} for _ in image_paths]
 
-    for source, report, artifacts in zip(
-        image_paths, reports, artifacts_list, strict=True
-    ):
-        source = Path(source)
-        image = images[source.name]
-        image['roi'] = dict(report.get('roi') or {
-            'status': 'error', 'reason': 'roi_result_missing',
-        })
-        image['models'] = _display_models(report.get('models') or {})
-        for name in ARTIFACT_NAMES:
-            artifact = artifacts.get(name)
-            if artifact is None:
-                continue
-            relative = f'{source.stem}_{name}.jpg'
-            try:
-                _write_artifact(run_dir / relative, artifact)
-                image['artifacts'][name] = relative
-            except Exception as error:
-                save_errors.append(
-                    f'{source.name}/{name}: {type(error).__name__}: {error}'
-                )
+    apply_reports(
+        reports, artifacts_list,
+        {'status': 'error', 'reason': 'roi_result_missing'},
+    )
 
     inference_complete = not save_errors and all(
         _image_complete(image) for image in images.values()

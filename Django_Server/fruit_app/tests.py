@@ -2348,7 +2348,11 @@ class DataCollectionFlowTests(SimpleTestCase):
         dashboard_response = self.client.get('/dashboard/')
         self.assertEqual(dashboard_response.status_code, 200)
         self.assertContains(dashboard_response, '不要開啟 /dashboard/')
-        self.assertContains(dashboard_response, '三張原圖預覽')
+        self.assertNotContains(dashboard_response, '三張原圖預覽')
+        self.assertContains(dashboard_response, 'id="operation-details"', html=False)
+        self.assertContains(dashboard_response, 'id="operation-actions"', html=False)
+        self.assertContains(dashboard_response, 'id="grade-panel"', html=False)
+        self.assertContains(dashboard_response, '本顆百香果分類結果')
         self.assertContains(dashboard_response, 'id="hardware-mode"')
         self.assertContains(dashboard_response, '<option value="detection">', html=False)
         self.assertContains(dashboard_response, 'id="detection-results"', html=False)
@@ -2829,7 +2833,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn('height: auto;', dashboard_css)
         self.assertIn('max-height: min(52vh, 520px);', dashboard_css)
         self.assertIn('.remote-video-wrap.is-streaming', dashboard_css)
-        self.assertIn('.control-panel > .ghost-danger', dashboard_css)
+        self.assertIn('.operation-buttons', dashboard_css)
 
     def test_dashboard_presents_accessible_operator_workspace(self):
         project_root = Path(__file__).resolve().parents[2]
@@ -2840,17 +2844,18 @@ class DataCollectionFlowTests(SimpleTestCase):
             project_root / 'Django_Server' / 'fruit_app' / 'templates' / 'dashboard.html'
         ).read_text(encoding='utf-8')
 
-        self.assertIn('百香果資料蒐集控制台', dashboard_html)
+        self.assertIn('百香果檢測與分類控制台', dashboard_html)
         self.assertIn('id="camera-ready-status"', dashboard_html)
         self.assertIn('id="operator-alert" class="operator-alert" role="alert" hidden', dashboard_html)
         self.assertIn('id="message" class="global-message" role="status"', dashboard_html)
         self.assertIn('<label for="note">分類備註</label>', dashboard_html)
         self.assertIn('<label for="counter-input">下一筆資料起始 ID</label>', dashboard_html)
-        self.assertIn('<fieldset>', dashboard_html)
+        self.assertIn('<fieldset id="classification-panel"', dashboard_html)
         self.assertIn('<legend id="classification-title">人工分類</legend>', dashboard_html)
-        for station_index in range(1, 4):
-            self.assertIn(f'id="station-card-{station_index}"', dashboard_html)
-            self.assertIn(f'id="station-image-{station_index}"', dashboard_html)
+        self.assertNotIn('station-card', dashboard_html)
+        self.assertIn('<details id="operation-details"', dashboard_html)
+        self.assertIn('id="stage-chips"', dashboard_html)
+        self.assertIn('id="grade-panel"', dashboard_html)
         for details_id in ('capture-settings', 'diagnostics', 'dataset-management'):
             self.assertIn(f'<details id="{details_id}"', dashboard_html)
         self.assertIn('class="danger-zone"', dashboard_html)
@@ -2866,7 +2871,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             self.assertIn(variable, dashboard_css)
         self.assertIn('button:focus-visible', dashboard_css)
         self.assertIn('@media (max-width: 640px)', dashboard_css)
-        self.assertIn('.station-media img {', dashboard_css)
+        self.assertIn('.detection-image-button img {', dashboard_css)
         self.assertIn('object-fit: contain;', dashboard_css)
 
         self.assertIn("camera_ready ? '可拍攝' : '未就緒'", dashboard_js)
@@ -2882,7 +2887,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn('fingerprint === lastAlertFingerprint', dashboard_js)
         self.assertIn('fingerprint === lastTraceFingerprint', dashboard_js)
         self.assertIn("beginControlAction('auto-run', autoRunButton)", dashboard_js)
-        self.assertIn('stationImages.forEach((imageElement, index)', dashboard_js)
+        self.assertIn("detectionResults.querySelectorAll('img')", dashboard_js)
         self.assertIn('await sleep(120)', dashboard_js)
 
     def test_firmware_boot_id_uses_per_boot_hardware_randomness(self):

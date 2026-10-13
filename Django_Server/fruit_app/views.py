@@ -103,6 +103,8 @@ ESP32_ONLINE_WINDOW_SECONDS = 6
 ESP32_START_TIMEOUT_SECONDS = 10
 HARDWARE_STEP_TIMEOUT_SECONDS = 20
 CAMERA_UPLOAD_TIMEOUT_SECONDS = 45
+# Photo-only detection pauses after each saved photo so operators can see it.
+PHOTO_DETECTION_INTERVAL_SECONDS = 1.0
 SORTER_PENDING_TIMEOUT_SECONDS = 30
 SORTER_RUNNING_TIMEOUT_SECONDS = 30
 CAMERA_READY_WINDOW_SECONDS = 5
@@ -203,8 +205,10 @@ APP_STATE = RuntimeState({
     'sorter_started_monotonic': None,
     'sorter_deadline_monotonic': None,
     'sorter_recovery_required': False,
+    'photo_next_capture': None,
     'detection_status': 'idle',
     'detection_result': None,
+    'detection_progress': None,
     'detection_error': None,
     'status': 'idle',
     'message': '等待手機相機、ESP32 與送料校正完成。',
@@ -1057,6 +1061,7 @@ def collection_options_api(request):
         APP_STATE['session_hardware_mode'] = data['hardware_mode']
         APP_STATE['detection_status'] = 'idle'
         APP_STATE['detection_result'] = None
+        APP_STATE['detection_progress'] = None
         APP_STATE['detection_error'] = None
         APP_STATE['discard_cleanup_last_monotonic'] = None
         APP_STATE['status'] = 'idle'
@@ -1087,6 +1092,34 @@ def _request_photo_capture(station_index):
     APP_STATE['message'] = f'純拍攝：等待第 {station_index}/{IMAGE_COUNT} 張照片。'
     _start_wait_timer()
     _record_transition('photo_capture_requested', station_index=station_index)
+
+
+def _schedule_photo_capture(station_index):
+    """Request the next detection photo only after the visible interval."""
+    saved_index = station_index - 1
+    APP_STATE['active_station_index'] = None
+    APP_STATE['status'] = 'photo_interval'
+    APP_STATE['photo_next_capture'] = {
+        'station_index': station_index,
+        'due_monotonic': time.monotonic() + PHOTO_DETECTION_INTERVAL_SECONDS,
+    }
+    APP_STATE['message'] = (
+        f'純拍攝：第 {saved_index}/{IMAGE_COUNT} 張已保存，'
+        f'等待 {PHOTO_DETECTION_INTERVAL_SECONDS:g} 秒後拍攝下一張。'
+    )
+    _clear_wait_timer()
+    _record_transition('photo_interval_started', station_index=saved_index)
+    _release_due_photo_capture()
+
+
+def _release_due_photo_capture():
+    scheduled = APP_STATE.get('photo_next_capture')
+    if not scheduled or APP_STATE.get('status') != 'photo_interval':
+        return
+    if time.monotonic() < scheduled['due_monotonic']:
+        return
+    APP_STATE['photo_next_capture'] = None
+    _request_photo_capture(scheduled['station_index'])
 
 
 @csrf_exempt
@@ -1131,6 +1164,7 @@ def photo_capture_api(request):
             'capturing' if APP_STATE['work_mode'] == 'detection' else 'idle'
         )
         APP_STATE['detection_result'] = None
+        APP_STATE['detection_progress'] = None
         APP_STATE['detection_error'] = None
         APP_STATE['capture_time'] = capture_time
         # Stay within JavaScript's exact integer range and across hardware resets.
@@ -1795,6 +1829,18 @@ def _detection_message(fruit_id, result):
     )
 
 
+def _publish_detection_progress(operation_token, fruit_id, stage, images):
+    with STATE_LOCK:
+        if not APP_STATE.operation_matches(operation_token):
+            return
+        APP_STATE['detection_progress'] = {
+            'fruit_id': fruit_id, 'stage': stage, 'images': images,
+        }
+        _record_transition(
+            'detection_stage_saved', fruit_id=fruit_id, details={'stage': stage},
+        )
+
+
 def _run_detection_job(operation_token, fruit_id, fruit_dir, session):
     with STATE_LOCK:
         if not APP_STATE.operation_matches(operation_token):
@@ -1816,6 +1862,9 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir, session):
             model_options=dict(
                 getattr(settings, 'DETECTION_MODEL_OPTIONS', {})
             ),
+            progress=lambda stage, images: _publish_detection_progress(
+                operation_token, fruit_id, stage, images,
+            ),
             **session,
         )
         error = None
@@ -1832,6 +1881,7 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir, session):
             'completed' if complete else 'failed'
         )
         APP_STATE['detection_result'] = result
+        APP_STATE['detection_progress'] = None
         APP_STATE['detection_error'] = error or (
             None if complete else (result or {}).get('reason')
         )
@@ -1989,9 +2039,11 @@ def upload_images_api(request):
         )
         APP_STATE['station_statuses'][str(station_index)] = 'captured'
         if photo_only:
+            detection_round = APP_STATE.get('session_work_mode') == 'detection'
             if station_index < IMAGE_COUNT:
-                _request_photo_capture(station_index + 1)
-            elif APP_STATE.get('session_work_mode') == 'detection':
+                next_capture = _schedule_photo_capture if detection_round else _request_photo_capture
+                next_capture(station_index + 1)
+            elif detection_round:
                 APP_STATE['active_station_index'] = None
                 _clear_wait_timer()
                 _start_detection_job(active_fruit_id, fruit_dir)
@@ -2611,8 +2663,10 @@ def reset_runtime_state_for_tests():
             'sorter_started_monotonic': None,
             'sorter_deadline_monotonic': None,
             'sorter_recovery_required': False,
+            'photo_next_capture': None,
             'detection_status': 'idle',
             'detection_result': None,
+            'detection_progress': None,
             'detection_error': None,
             'status': 'idle',
             'message': '等待手機相機、ESP32 與送料校正完成。',
@@ -4356,6 +4410,7 @@ def _clear_wait_timer():
 def _apply_session_timeouts():
     if APP_STATE.get('dataset_operation'):
         return
+    _release_due_photo_capture()
     _apply_sorter_timeout()
     if not APP_STATE['active_fruit_id'] or not APP_STATE.get('wait_started_monotonic'):
         return
@@ -4685,6 +4740,8 @@ def _state_payload(extra=None):
         'dataset_operation': APP_STATE.dataset_operation_payload(),
         'detection_status': APP_STATE.get('detection_status', 'idle'),
         'detection_result': _detection_result_payload(),
+        'detection_progress': _with_artifact_urls(APP_STATE.get('detection_progress')),
+        'photo_detection_interval_ms': round(PHOTO_DETECTION_INTERVAL_SECONDS * 1000),
         'detection_error': APP_STATE.get('detection_error'),
         **_sorter_state_payload(),
     }
@@ -4719,7 +4776,10 @@ def _state_payload(extra=None):
 
 
 def _detection_result_payload():
-    result = APP_STATE.get('detection_result')
+    return _with_artifact_urls(APP_STATE.get('detection_result'))
+
+
+def _with_artifact_urls(result):
     if not result:
         return None
     payload = json.loads(json.dumps(result, ensure_ascii=False))
@@ -4809,6 +4869,7 @@ def _sync_active_state_with_filesystem():
             'waiting_esp32_start',
             'waiting_station_ready',
             'waiting_camera',
+            'photo_interval',
             'uploading',
             'waiting_motor',
             'error',
@@ -4979,6 +5040,7 @@ def _clear_active_state(message, status='idle'):
     APP_STATE['fast_path_capture_token'] = None
     APP_STATE['active_station_index'] = None
     APP_STATE['station_statuses'] = {}
+    APP_STATE['photo_next_capture'] = None
     APP_STATE['gate3_waiting_boot_id'] = None
     APP_STATE['motor_command'] = None
     APP_STATE['last_error_reason'] = None
