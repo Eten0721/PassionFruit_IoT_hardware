@@ -805,7 +805,8 @@ textarea {
     display: none;
 }
 
-.disclosure-panel > summary::after {
+.disclosure-panel > summary::after,
+.disclosure-toggle::after {
     content: "+";
     display: grid;
     width: 28px;
@@ -823,7 +824,8 @@ textarea {
     border-radius: var(--radius-large) var(--radius-large) 0 0;
 }
 
-.disclosure-panel[open] > summary::after {
+.disclosure-panel[open] > summary::after,
+.disclosure-toggle[aria-expanded="true"]::after {
     content: "−";
 }
 
@@ -1398,6 +1400,19 @@ textarea {
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
+}
+
+.disclosure-toggle {
+    display: grid;
+    min-height: 0;
+    align-self: center;
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+
+.disclosure-toggle:hover:not(:disabled) {
+    background: transparent;
 }
 
 .action-guidance {

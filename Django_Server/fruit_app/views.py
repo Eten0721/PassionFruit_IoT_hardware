@@ -1890,6 +1890,8 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir, session):
         )
         message = _detection_message(fruit_id, result)
         if _photo_only_session():
+            if _saved_detection_result(fruit_id) is not None:
+                message += _clear_saved_photo_input(fruit_dir, fruit_id)
             _clear_active_state(message, status=terminal_status)
             return
         _disable_auto_run()
@@ -1904,6 +1906,28 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir, session):
             fruit_id=fruit_id,
             details={'complete': complete, 'gate3_locked': True},
         )
+
+
+def _saved_detection_result(fruit_id):
+    """Return the durable result only when its JSON and summary were saved."""
+    result = detection.load_result(_detection_output_root(), fruit_id)
+    if not result or (result.get('storage') or {}).get('status') != 'saved':
+        return None
+    return result
+
+
+def _clear_saved_photo_input(fruit_dir, fruit_id):
+    """Drop a photo-only round's temp originals once results hold a copy.
+
+    Returns a message suffix; a busy folder falls back to deferred cleanup.
+    """
+    try:
+        cleared = _discard_temp_fruit(fruit_dir, fruit_id)
+    except (DatasetFileBusyError, OSError) as exc:
+        return f' 暫存原圖暫時無法清除，結果已保存：{exc}'
+    if cleared['mode'] == 'deleted':
+        return ''
+    return ' 暫存原圖被占用，已改為背景清理；結果已保存。'
 
 
 def _start_detection_job(fruit_id, fruit_dir):
@@ -2314,9 +2338,12 @@ def discard_api(request):
         _disable_auto_run()
         APP_STATE['auto_run_finishing'] = False
         fruit_dir = _temp_dir() / fruit_id
+        # Saved results stay; only an unfinished round's partial output goes.
         result_dir = (
             _detection_output_root() / fruit_id
-            if APP_STATE['session_work_mode'] == 'detection' else None
+            if APP_STATE['session_work_mode'] == 'detection'
+            and _saved_detection_result(fruit_id) is None
+            else None
         )
         operation_token = APP_STATE.begin_dataset_operation('discard', fruit_id)
         APP_STATE['message'] = f'{fruit_id} 正在刪除或隔離。'
@@ -4926,6 +4953,9 @@ def _sync_active_state_with_filesystem():
     removed_empty = False
     for fruit_dir in temp_fruit_dirs:
         if _completed_photo_only_detection_input(fruit_dir):
+            if _saved_detection_result(fruit_dir.name) is not None:
+                _clear_saved_photo_input(fruit_dir, fruit_dir.name)
+                continue
             terminal_dirs.append(fruit_dir)
             continue
         image_total = _temp_image_count(fruit_dir)

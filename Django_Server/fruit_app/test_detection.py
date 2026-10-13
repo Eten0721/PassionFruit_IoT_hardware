@@ -251,6 +251,9 @@ class DetectionFlowTests(SimpleTestCase):
             discarded.json()['auto_run_recovery_reason'],
             'gate3_manual_removal_required',
         )
+        self.assertFalse((self.dataset_root / 'temp' / fruit_id).exists())
+        self.assertTrue((self.detection_root / fruit_id / 'result.json').is_file())
+        self.assertEqual(len(self._summary_rows()), 1)
         blocked = self._post_json('/api/auto_run/', {'enabled': True})
         self.assertEqual(blocked.status_code, 409)
         self.assertEqual(blocked.json()['reason'], 'gate3_manual_removal_required')
@@ -356,20 +359,43 @@ class DetectionFlowTests(SimpleTestCase):
     @mock.patch(
         'fruit_app.detection.execute_model_batch', side_effect=_external_result
     )
-    def test_completed_photo_detection_discards_its_input_and_result(
+    def test_saved_photo_detection_clears_temp_and_keeps_result(
         self, _execute
     ):
         fruit_id = self._start_detection().json()['active_fruit_id']
         self._upload_three(fruit_id)
         state = self._wait_for_detection()
 
-        self.assertTrue(state['can_discard'])
-        self.assertEqual(state['discardable_fruit_id'], fruit_id)
-        response = self._post_json('/api/discard/', {'fruit_id': fruit_id})
-
-        self.assertEqual(response.status_code, 200, response.content)
         self.assertFalse((self.dataset_root / 'temp' / fruit_id).exists())
-        self.assertFalse((self.detection_root / fruit_id).exists())
+        self.assertTrue((self.detection_root / fruit_id / 'result.json').is_file())
+        self.assertEqual(state['detection_result']['fruit_id'], fruit_id)
+        self.assertFalse(state['can_discard'])
+        self.assertIsNone(state['discardable_fruit_id'])
+        original = self.client.get(
+            state['detection_result']['images']['img_01.jpg']['artifact_urls']['original']
+        )
+        self.assertEqual(original.status_code, 200)
+        original.close()
+        response = self._post_json('/api/discard/', {'fruit_id': fruit_id})
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue((self.detection_root / fruit_id / 'result.json').is_file())
+        self.assertEqual(len(self._summary_rows()), 1)
+
+    @mock.patch(
+        'fruit_app.detection.execute_model_batch', side_effect=_external_result
+    )
+    def test_restart_clears_leftover_temp_of_saved_photo_detection(self, _execute):
+        with mock.patch.object(views, '_clear_saved_photo_input', return_value=''):
+            fruit_id, _ = self._run_photo_round()
+        self.assertTrue((self.dataset_root / 'temp' / fruit_id).exists())
+
+        views.reset_runtime_state_for_tests()
+        state = self.client.get('/api/state/').json()
+
+        self.assertFalse((self.dataset_root / 'temp' / fruit_id).exists())
+        self.assertTrue((self.detection_root / fruit_id / 'result.json').is_file())
+        self.assertFalse(state['can_discard'])
+        self.assertEqual(state['next_fruit_id'], 'fruit_002')
 
     @mock.patch('fruit_app.detection.execute_model_batch')
     def test_skipped_model_is_incomplete(self, execute):
@@ -463,7 +489,7 @@ class DetectionFlowTests(SimpleTestCase):
     def test_result_json_failure_still_records_failed_summary_row(
         self, _json, _execute
     ):
-        _fruit_id, state = self._run_photo_round()
+        fruit_id, state = self._run_photo_round()
 
         self.assertEqual(state['detection_status'], 'failed')
         self.assertIn('read only', state['detection_error'])
@@ -472,6 +498,14 @@ class DetectionFlowTests(SimpleTestCase):
         self.assertEqual(rows[0]['result_status'], 'failed')
         self.assertEqual(rows[0]['result_json'], '')
         self.assertTrue(rows[0]['reason'].startswith('result_json_save_failed'), rows[0])
+        # An unsaved result keeps its originals in temp so the round can be discarded.
+        self.assertTrue((self.dataset_root / 'temp' / fruit_id / 'img_01.jpg').is_file())
+        self.assertTrue(state['can_discard'])
+        response = self._post_json('/api/discard/', {'fruit_id': fruit_id})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse((self.dataset_root / 'temp' / fruit_id).exists())
+        self.assertFalse((self.detection_root / fruit_id).exists())
+        self.assertEqual(self._summary_rows(), [])
 
     @mock.patch(
         'fruit_app.detection.execute_model_batch', side_effect=_external_result
@@ -805,13 +839,14 @@ class DetectionFlowTests(SimpleTestCase):
     @mock.patch(
         'fruit_app.detection.execute_model_batch', side_effect=_external_result
     )
-    def test_discarded_detection_removes_its_summary_row(self, _execute):
+    def test_saved_detections_are_not_discarded_from_the_dashboard(self, _execute):
         first_id, _ = self._run_photo_round()
         second_id, _ = self._run_photo_round()
         response = self._post_json('/api/discard/', {'fruit_id': second_id})
-        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.status_code, 409)
         self.assertEqual(
-            [row['fruit_id'] for row in self._summary_rows()], [first_id],
+            [row['fruit_id'] for row in self._summary_rows()],
+            [first_id, second_id],
         )
 
     @mock.patch('fruit_app.detection.execute_model_batch')

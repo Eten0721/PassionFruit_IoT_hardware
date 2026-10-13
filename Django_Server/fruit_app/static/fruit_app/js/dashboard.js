@@ -41,6 +41,8 @@ const remoteVideo = document.getElementById('remote-video');
     const stageChips = document.getElementById('stage-chips');
     const operationModeSummary = document.getElementById('operation-mode-summary');
     const actionGuidance = document.getElementById('action-guidance');
+    const operationDetails = document.getElementById('operation-details');
+    const operationToggle = document.getElementById('btn-operation-toggle');
     const optionsGuidance = document.getElementById('options-guidance');
     const autoRunButton = document.getElementById('btn-auto-run');
     const recaptureButton = document.getElementById('btn-recapture');
@@ -119,6 +121,8 @@ const remoteVideo = document.getElementById('remote-video');
     let controlActionInFlight = null;
     let lastAlertFingerprint = '';
     let lastTraceFingerprint = '';
+    let messageClearTimer = null;
+    const messageVisibleMs = 10000;
     const stateIdlePollMs = 1000;
     const stateActivePollMs = 500;
     const webrtcPollMs = 1000;
@@ -215,8 +219,14 @@ const remoteVideo = document.getElementById('remote-video');
         }
     }
 
+    // Only operator-action feedback appears here; run status lives in the
+    // operation bar, stage chips and result card, so it is not repeated.
     function setMessage(message) {
+        window.clearTimeout(messageClearTimer);
         setTextIfChanged(messageEl, message || '');
+        if (message) {
+            messageClearTimer = window.setTimeout(() => setTextIfChanged(messageEl, ''), messageVisibleMs);
+        }
     }
 
     function setStreamStatus(message) {
@@ -513,7 +523,6 @@ const remoteVideo = document.getElementById('remote-video');
 
         renderReadiness(data);
         renderOperatorAlert(data.operator_alert);
-        setMessage(data.message || '');
         setTextIfChanged(detectionSummary, detectionSummaryText(data));
         renderStageChips(data);
         renderBoard(data);
@@ -543,7 +552,7 @@ const remoteVideo = document.getElementById('remote-video');
             detectionMode && !photoOnly
                 ? '資料已另存，進入 Gate 3 安全復原'
                 : detectionMode && data.discardable_fruit_id && !data.active_fruit_id
-                    ? '清除已保存檢測的暫存原圖'
+                    ? '刪除未保存成功的本輪檢測'
                 : '跳過／刪除目前資料',
         );
         if (photoOnly) {
@@ -1177,17 +1186,30 @@ const remoteVideo = document.getElementById('remote-video');
 
     function actionGuidanceItems(data, photoOnly) {
         const items = [autoRunGuidanceText(data)];
+        recaptureButton.title = '';
+        discardButton.title = '';
+        autoRunButton.title = autoRunButton.disabled ? items[0] : '';
         if (recaptureButton.disabled) {
-            items.push(`重新拍攝：${photoOnly
+            recaptureButton.title = `重新拍攝：${photoOnly
                 ? '純拍攝不提供重新拍攝，請先跳過／刪除本輪再開始'
-                : data.active_fruit_id ? '目前流程狀態不允許重新拍攝' : '目前沒有拍攝中的資料'}`);
+                : data.active_fruit_id ? '目前流程狀態不允許重新拍攝' : '目前沒有拍攝中的資料'}`;
+            items.push(recaptureButton.title);
         }
         if (discardButton.disabled) {
-            items.push(`跳過／刪除：${data.status === 'uploading'
+            discardButton.title = `跳過／刪除：${data.status === 'uploading'
                 ? '照片上傳中，完成後才能刪除'
-                : data.dataset_operation ? '資料處理中' : '目前沒有可刪除的暫存資料'}`);
+                : data.dataset_operation ? '資料處理中' : '目前沒有可刪除的暫存資料'}`;
+            items.push(discardButton.title);
         }
         return items;
+    }
+
+    function syncOperationDisclosure() {
+        const open = operationDetails.open;
+        // Reasons stay as button tooltips; the full list shows only when expanded.
+        actionGuidance.hidden = !open;
+        operationToggle.setAttribute('aria-expanded', String(open));
+        operationToggle.setAttribute('aria-label', `${open ? '收合' : '展開'}目前流程與操作設定`);
     }
 
     function renderActionGuidance(data, photoOnly) {
@@ -1895,6 +1917,10 @@ const remoteVideo = document.getElementById('remote-video');
         }
     });
     autoRunButton.addEventListener('click', toggleAutoRun);
+    operationToggle.addEventListener('click', () => {
+        operationDetails.open = !operationDetails.open;
+    });
+    operationDetails.addEventListener('toggle', syncOperationDisclosure);
     workModeSelect.addEventListener('change', async () => {
         const workMode = workModeSelect.value;
         const hardwareMode = hardwareModeSelect.value;

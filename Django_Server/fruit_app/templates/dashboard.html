@@ -123,8 +123,9 @@
                 <button id="btn-auto-run" type="button" class="button primary-action" disabled>開始執行</button>
                 <button id="btn-recapture" type="button" class="button warning">重新拍攝</button>
                 <button id="btn-discard" type="button" class="button danger ghost-danger">跳過／刪除</button>
+                <button id="btn-operation-toggle" type="button" class="disclosure-toggle" aria-controls="operation-details" aria-expanded="false" aria-label="展開目前流程與操作設定"></button>
             </div>
-            <ul id="action-guidance" class="action-guidance" aria-live="polite">
+            <ul id="action-guidance" class="action-guidance" aria-live="polite" hidden>
                 <li>ESP32、送料校正、HC-SR04、相機與三站流程皆就緒後，系統才會開放正式自動運轉。</li>
             </ul>
         </div>

@@ -381,7 +381,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 新流程的蒐集資料根目錄為 `DATASET_ROOT/collection/`，檢測為 `DATASET_ROOT/detection/`；各自維護 `temp/`、四級照片目錄、`metadata.csv`、`counter.json`、`reset_state.json`、`discard_state.json` 與 `_delete_pending/`。檢測原圖、處理圖及 `result.json` 保存於檢測分區的 `results/fruit_NNN/`，總表為檢測分區的 `detection_summary.csv`，契約見[檢測資料](#檢測資料與-line-通知)。
 
-既有 `DATASET_ROOT` 根目錄及舊 `Django_Server/detection_results/` 保留原位，只作歷史資料，不自動搬遷、升級或納入新流程的恢復與清理。Dashboard 明示目前資料區及歷史位置；開啟、編號、刪除與重置只作用於目前模式。刪除檢測果實同時處理其暫存、結果與總表列，重置檢測包含 `results/` 與總表；Windows 占用沿用隔離、延後清理及忽略標記，未能隔離的舊產物不得被覆寫或展示為新結果。
+既有 `DATASET_ROOT` 根目錄及舊 `Django_Server/detection_results/` 保留原位，只作歷史資料，不自動搬遷、升級或納入新流程的恢復與清理。Dashboard 明示目前資料區及歷史位置；開啟、編號、刪除與重置只作用於目前模式。檢測的 `result.json` 與總表列都保存成功後，純拍攝立即清除該輪 `temp/`（原圖已存於 `results/`），硬體模式於 Gate 3 人工復原的刪除時清除；Dashboard 的跳過／刪除只處理暫存與未保存成功的部分產物，不刪除已保存的檢測結果，已保存結果只隨重置檢測分區清除。重置檢測包含 `results/` 與總表；Windows 占用沿用隔離、延後清理及忽略標記，未能隔離的舊產物不得被覆寫或展示為新結果。
 
 目前模式與硬體選項原子保存於 runtime 的 `dataset_options.json`，重啟先恢復模式再讀取該分區；紀錄損壞時禁止資料變更、開始拍攝與接收照片，並顯示具體原因。硬體 command sequence、timing 與復原鎖仍共用，不隨分區重置。開始後固定本輪模式；有處理中工作或安全鎖時拒絕切換。Dashboard 的資料操作附 `dataset_mode`，缺少或與目前模式不符回 `409 stale_dataset_mode`；照片 URL 帶 `work_mode`，缺少或模式不符回 `404` 並要求快取重新驗證。
 
