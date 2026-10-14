@@ -110,8 +110,8 @@
 - Django 獨立監測即使 Dashboard 關閉仍執行，並在開始、trigger、command、report、照片保存及分類等既有入口共同以 `STATE_LOCK` 檢查安全狀態。純拍攝只依相機與所選網路判斷，不因 ESP32 缺席鎖定；WebRTC 預覽狀態不刷新／撤銷拍攝 readiness。
 - 確認失聯時：關閉 auto run／auto trigger、取消未執行命令與後續 phase、撤銷 capture token，保持已保存暫存照片供人工刪除；ESP32 先寫校正停止脈波，再取消分類器／閘門 phase，禁止 timeout 的 HomeAll。中斷命令只能回報 aborted，不回 completed，不因重連重新執行；舊 report 可被冪等確認但不能建立新拍攝、放行或送料。
 - 沿用既有原子 recovery marker 的寫入方式，保存網路失聯的 fruit／command／boot／控制端身分、reason 與 recovery generation；Django 重啟恢復鎖，ESP32 在確認失聯時以 NVS 保存 interlock 與當次校正停止脈波，重啟先恢復鎖及停止值，不能自行解除或自動歸位。保存失敗保持記憶體鎖與動作停用並回 `recovery_persist_failed`，不得宣稱復原完成；實體重新啟動的保持位置／初始化限制仍須驗收。
-- 人工先刪除／隔離本輪暫存資料，再依斷電程序移除果實、確認手已離開，最後於既有主操作區明確確認復原。沿用 `recovery_confirmed=true`，新增同一 command slot 的 `recover_network` 安全歸位交握，附當前 recovery generation；ESP32 只接受人工授權後的新交握，保持送料停止，依既有停穩時序歸位並回 `network_recovery_completed`。Django 在歸位／提交階段回 `recovery_allowed=true`，僅授權復原且 `control_allowed=false`。收到相符完成 ACK 後，Django 原子保存提交階段並回 `recovery_commit=true`；ESP32 先保存本機提交狀態且維持鎖，再回 `network_recovery_committed`。Django 原子保存清鎖與 generation／完成 receipt，回 `recovery_committed=true`；ESP32 收到此回應且清鎖保存成功後才可送料，Django 也只在全部開始條件成立時建立新的 `feed_one`。重複 ACK 只重送結果、不重做歸位；失敗／再次失聯／舊 ACK 維持鎖，撤銷交握後可接受新的人工授權。純拍攝以既有拍攝開始入口的明確復原確認解除相機／網路鎖，不建立此 motor command；純拍攝期間 ESP32 回報 `network_interlocked=1` 不再重新鎖住 Django，改回使用硬體後才鎖定並須走上述歸位交握。確認復原只需清理資料、已選網、手機相機就緒與 ESP32 在線（硬體），不需 HC-SR04 或設定同步，這兩項仍是下一次正式開始的條件；鎖住期間的命令輪詢仍更新 ESP32 送料／分類能力。LINE 通知開關不受網路安全鎖阻擋。
-- 無 active fruit 不代表沒有待移除實體果實；中斷分類時已提交資料維持不回滾，仍須人工移除。檔案刪除失敗沿用既有隔離／deferred cleanup，阻擋原因顯示清楚。鎖定期間拒絕重拍、分類與切換模式等可繞過處理的入口；清理、連線診斷與相符復原 ACK 仍可用。
+- 人工先刪除／隔離本輪暫存資料，再依斷電程序移除果實、確認手已離開，最後於既有主操作區明確確認復原。沿用 `recovery_confirmed=true`，新增同一 command slot 的 `recover_network` 安全歸位交握，附當前 recovery generation；ESP32 只接受人工授權後的新交握，保持送料停止，依既有停穩時序歸位並回 `network_recovery_completed`。Django 在歸位／提交階段回 `recovery_allowed=true`，僅授權復原且 `control_allowed=false`。收到相符完成 ACK 後，Django 原子保存提交階段並回 `recovery_commit=true`；ESP32 先保存本機提交狀態且維持鎖，再回 `network_recovery_committed`。Django 原子保存清鎖與 generation／完成 receipt，回 `recovery_committed=true`；ESP32 收到此回應且清鎖保存成功後才可送料，Django 也只在全部開始條件成立時建立新的 `feed_one`。重複 ACK 只重送結果、不重做歸位；失敗／再次失聯／舊 ACK 維持鎖，撤銷交握後可接受新的人工授權。資料鎖在任何模式都須先清理本輪暫存資料並明確確認；純拍攝沿用拍攝開始入口確認，且不建立 motor command。馬達鎖可保留並切到純拍攝工作，切回硬體後仍須歸位交握；硬體復原只要求清理資料、已選網、ESP32 在線與人工安全確認，不要求手機相機、HC-SR04 或設定同步，正式開始仍檢查這些條件。復原確認原因由 `network_recovery_confirm_disabled_reason` 提供，正式開始原因由 `auto_run_disabled_reason`／`photo_capture_disabled_reason` 提供。每次有效裝置請求含鎖中的命令輪詢、heartbeat 與 report 都更新其回報的能力、感測、feeder state 與 interlock；這些裝置狀態不保存，Django 重啟後視為未知。鎖種類與集中政策見 [ADR-0020](adr/0020-single-network-recovery-policy.md)。
+- 無 active fruit 不代表沒有待移除實體果實；中斷分類時已提交資料維持不回滾，仍須人工移除。檔案刪除失敗沿用既有隔離／deferred cleanup，阻擋原因顯示清楚。資料鎖期間只開放刪除／跳過暫存資料與 LINE 通知開關，阻擋停穩設定、送料校正與模式切換；馬達鎖只限制硬體操作，允許切到純拍攝並保留鎖。鎖住但沒有進行中的操作，且不在 `homing`／`committing` 交握中時，允許重新選網，供 Django 重啟後復原；選網不改變鎖種類、phase 或 generation，網路身分變更仍依既有安全檢查處理，不得解鎖。任何鎖存在時仍禁止 Dashboard 開熱點請求；連線觀察、診斷與相符復原 ACK 仍可用，復原須明確人工確認。
 - 所有門檻先於本輪下一個實體輸出檢查。分類正常時序短於失聯門檻，確認失聯前已完成的動作不能倒轉或宣稱被阻止；本期保證的是確認失聯後不再下達後續動作，須在各 phase 分別驗收。
 
 #### 手機與離線驗收前提
@@ -383,7 +383,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 既有 `DATASET_ROOT` 根目錄及舊 `Django_Server/detection_results/` 保留原位，只作歷史資料，不自動搬遷、升級或納入新流程的恢復與清理。Dashboard 資料管理只顯示目前模式，不顯示目前與歷史目錄路徑，重置區明示只影響目前模式；開啟、編號、刪除與重置只作用於目前模式。檢測的 `result.json` 與總表列都保存成功後，純拍攝立即清除該輪 `temp/`（原圖已存於 `results/`）；硬體有效判級在持久保存 sorter intent 後推進 counter、清理暫存，再建立分槽命令，待人工判級或安全移除的輪次則保留暫存。Dashboard 的跳過／刪除只處理暫存與未保存成功的部分產物，不刪除已保存的檢測結果，已保存結果只隨重置檢測分區清除。重置檢測包含 `results/` 與總表；Windows 占用沿用隔離、延後清理及忽略標記，未能隔離的舊產物不得被覆寫或展示為新結果。
 
-目前模式與硬體選項原子保存於 runtime 的 `dataset_options.json`，重啟先恢復模式再讀取該分區；紀錄損壞時禁止資料變更、開始拍攝與接收照片，並顯示具體原因。硬體 command sequence、timing 與復原鎖仍共用，不隨分區重置。開始後固定本輪模式；有處理中工作或安全鎖時拒絕切換。Dashboard 的資料操作附 `dataset_mode`，缺少或與目前模式不符回 `409 stale_dataset_mode`；照片 URL 帶 `work_mode`，缺少或模式不符回 `404` 並要求快取重新驗證。
+目前模式與硬體選項原子保存於 runtime 的 `dataset_options.json`，重啟先恢復模式再讀取該分區；紀錄損壞時禁止資料變更、開始拍攝與接收照片，並顯示具體原因。硬體 command sequence、timing 與復原鎖仍共用，不隨分區重置。開始後固定本輪模式；有處理中工作或資料鎖時拒絕切換；馬達鎖的模式例外見「失聯門檻與安全交握」。Dashboard 的資料操作附 `dataset_mode`，缺少或與目前模式不符回 `409 stale_dataset_mode`；照片 URL 帶 `work_mode`，缺少或模式不符回 `404` 並要求快取重新驗證。
 
 ## 純拍攝與自動檢測
 
@@ -396,11 +396,11 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 - 純拍攝由「手動觸發本輪」啟動，要求手機相機 readiness 有效且沒有處理中的工作階段；僅預覽連線不代表相機已可拍攝。
 - 純拍攝按一次即自動拍攝三張，不需逐張確認。Django 在每張驗證並保存成功後才要求下一張，保留拍攝 token、上傳驗證與重複請求防護；不等待實體 station ready。自動檢測的純拍攝用於隔離 ESP32 的模型檢測與分類測試，前兩張各在保存成功後額外等待 `1000 ms` 才要求下一張；此等待不套用到硬體停穩 timing。三張是三次拍攝，不保證果實已轉動或具有不同視角。
 - 使用硬體時包含上游送料、HC-SR04 與三站閘門交握，沿用既有 readiness、能力回報與送料校正條件。純拍攝的略過條件不得套用到實體流程。
-- 模式與硬體選項只能在沒有 active capture、待處理果實、推論或 motor command，且硬體沒有待復原動作時切換；切換選項不得清除既有鎖定。
+- 模式與硬體選項只能在沒有 active capture、待處理果實、推論或 motor command，且沒有資料鎖時切換；馬達鎖的模式例外見「失聯門檻與安全交握」，切換選項不得清除既有鎖定。
 
 ### 純拍攝 API 契約
 
-`POST /api/collection_options/` 接收 `work_mode=collection|detection` 與 `hardware_mode=hardware|photo_only`，四種組合皆可選；既有 capture、Dataset、motor、自動運轉、推論或復原鎖存在時回 `409` 與具體 reason，不清除鎖定。預設使用硬體；開始後固定本輪 `session_work_mode` 與 `session_hardware_mode`。純拍攝與使用硬體的自動檢測會在暫存 fruit 目錄原子保存 `.capture-session.json`，供 Django 重啟後恢復工作模式、硬體選項與拍攝時間；資料提交成功或完成安全復原後清理該內部標記，不改變 metadata CSV 欄位。
+`POST /api/collection_options/` 接收 `work_mode=collection|detection` 與 `hardware_mode=hardware|photo_only`，四種組合皆可選；既有 capture、Dataset、motor、自動運轉、推論或資料鎖存在時回 `409` 與具體 reason，不清除鎖定；馬達鎖的模式例外見「失聯門檻與安全交握」。預設使用硬體；開始後固定本輪 `session_work_mode` 與 `session_hardware_mode`。純拍攝與使用硬體的自動檢測會在暫存 fruit 目錄原子保存 `.capture-session.json`，供 Django 重啟後恢復工作模式、硬體選項與拍攝時間；資料提交成功或完成安全復原後清理該內部標記，不改變 metadata CSV 欄位。
 
 `POST /api/photo_capture/` 僅接受純拍攝；相機 heartbeat 過期回 `409 camera_not_ready`，有待處理資料回 `409 active_fruit_exists`，拒絕時不建立 fruit 資料夾。成功後重用手機 capture state 與 upload API，每張原子保存成功才更新 token 並要求下一張，不等待 station ready，也不建立任何 motor command。ESP32 事件回 `200 ignored`，直接 trigger 回 `409 hardware_mode_required`；ESP32 boot 改變不影響純拍攝上傳。
 

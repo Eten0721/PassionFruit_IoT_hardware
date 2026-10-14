@@ -128,7 +128,11 @@ class NetworkOnboardingTests(SimpleTestCase):
         self.assertTrue((self.dataset_root / 'temp' / 'fruit_001' / 'img_01.jpg').exists())
         token = self.client.get('/api/state/').json()['capture_token']
         self.assertEqual(self.post('/api/discard/', {'fruit_id': 'fruit_001', 'capture_token': token}).status_code, 200)
-        self.assertEqual(self.post('/api/network/', {'interface_id': '7', 'ipv4': '192.168.50.11'}).status_code, 200)
+        recovery = self.client.get('/api/state/').json()['network_recovery']
+        response = self.post('/api/network/', {'interface_id': '7', 'ipv4': '192.168.50.11'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.network.snapshot()['network_revision'], info['network_revision'] + 1)
+        self.assertEqual(self.client.get('/api/state/').json()['network_recovery'], recovery)
 
     def test_selected_network_photo_only_saves_three_images_and_classifies(self):
         self.select()

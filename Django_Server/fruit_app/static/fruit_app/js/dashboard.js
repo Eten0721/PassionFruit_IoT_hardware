@@ -722,6 +722,14 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     function autoRunGuidanceText(data) {
+        if (data.network_recovery && data.network_recovery_confirm_disabled_reason !== 'network_recovery_not_required') {
+            const recoveryReason = data.network_recovery_confirm_disabled_reason;
+            return recoveryReason
+                ? `目前無法確認安全復原：${reasonText(recoveryReason)}`
+                : data.hardware_mode === 'photo_only'
+                    ? '按「開始執行」確認本輪資料已清理，再開始新一輪拍攝。馬達安全鎖仍保留。'
+                    : '按「開始執行」確認人工安全復原；只會讓馬達歸位並解除安全鎖。正式運轉仍需相機、HC-SR04 與設定同步。';
+        }
         if (data.hardware_mode === 'photo_only') {
             const reason = data.photo_capture_disabled_reason;
             return reason
@@ -735,12 +743,6 @@ const remoteVideo = document.getElementById('remote-video');
         }
         if (data.auto_run_finishing) {
             return '正在完成目前果實，完成後不會送入下一顆。';
-        }
-        if (data.network_recovery) {
-            const recoveryReason = data.network_recovery_confirm_disabled_reason;
-            return recoveryReason
-                ? `目前無法確認安全復原：${reasonText(recoveryReason)}`
-                : '按「開始執行」確認人工安全復原；只會讓馬達歸位並解除安全鎖，不會送料。正式運轉仍需 HC-SR04 與設定同步。';
         }
         if (timingInputsDirty) {
             return '停穩設定尚未套用，請先在進階設定保存數值。';
@@ -1847,10 +1849,12 @@ const remoteVideo = document.getElementById('remote-video');
         }
         try {
             if (lastState && lastState.hardware_mode === 'photo_only') {
-                const recoveryConfirmed = Boolean(lastState.network_recovery) && confirm(
+                const recoveryRequired = Boolean(lastState.network_recovery)
+                    && lastState.network_recovery_confirm_disabled_reason !== 'network_recovery_not_required';
+                const recoveryConfirmed = recoveryRequired && confirm(
                     '是否已刪除本輪暫存資料並完成安全清理？確認後將開始新一輪拍攝。',
                 );
-                if (lastState.network_recovery && !recoveryConfirmed) return;
+                if (recoveryRequired && !recoveryConfirmed) return;
                 const payload = await postJson('/api/photo_capture/', {recovery_confirmed: recoveryConfirmed});
                 lastState = payload;
                 renderState(payload);

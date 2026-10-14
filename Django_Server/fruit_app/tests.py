@@ -39,7 +39,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.hardware_guard_patcher = mock.patch.object(views, '_network_hardware_disabled_reason', return_value=None)
         self.hardware_guard_patcher.start()
         self.addCleanup(self.hardware_guard_patcher.stop)
-        self.device_observer_patcher = mock.patch.object(views, '_observe_device', return_value=None)
+        self.device_observer_patcher = mock.patch.object(
+            views, '_observe_device', side_effect=views.NETWORK_RECOVERY.record_device_facts)
         self.device_observer_patcher.start()
         self.addCleanup(self.device_observer_patcher.stop)
         self.safety_monitor_patcher = mock.patch.object(views, '_check_network_safety')

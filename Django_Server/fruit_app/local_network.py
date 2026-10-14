@@ -333,19 +333,18 @@ class LocalNetwork:
 NETWORK = LocalNetwork()
 
 
-def network_required(view=None, *, cleanup=False):
+def network_required(view=None, *, cleanup=False, operation='capture'):
     if view is None:
-        return partial(network_required, cleanup=cleanup)
+        return partial(network_required, cleanup=cleanup, operation=operation)
     @wraps(view)
     def guarded(request, *args, **kwargs):
         from . import views
         views._ensure_dataset_structure()
         with views.STATE_LOCK:
             views._check_network_safety()
-            if (not cleanup and request.path != '/api/photo_capture/'
-                    and not request.path.startswith('/api/esp32')
-                    and views.APP_STATE.get('network_recovery')):
-                return network_error(views._network_recovery_reason())
+            reason = views.NETWORK_RECOVERY.disabled_reason(operation)
+            if reason:
+                return network_error(reason)
         reason = NETWORK.request_reason(request, cleanup=cleanup)
         if reason:
             return network_error(reason)
