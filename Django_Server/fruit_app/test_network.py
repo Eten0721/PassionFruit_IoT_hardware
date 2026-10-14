@@ -151,12 +151,20 @@ class NetworkOnboardingTests(SimpleTestCase):
         self.assertFalse(self.motor_command_sequence_path.exists())
 
     def test_svg_qr_decodes_to_selected_ipv4_url_without_cache(self):
+        self.select()
+        decoded = self._decode_svg_qr(self.client.get('/api/network/qr.svg', HTTP_HOST='localhost:8443'))
+        self.assertEqual(decoded, 'https://192.168.50.10:8443/camera/')
+        self.assertEqual(decoded, self.client.get('/api/network/info/').json()['camera_url'])
+
+    def test_setup_qr_decodes_to_esp32_softap_page_without_network_selection(self):
+        decoded = self._decode_svg_qr(self.client.get('/api/network/setup_qr.svg'))
+        self.assertEqual(decoded, 'http://192.168.4.1/')
+
+    def _decode_svg_qr(self, response):
         import re
         from xml.etree import ElementTree
         import cv2
         import numpy as np
-        self.select()
-        response = self.client.get('/api/network/qr.svg', HTTP_HOST='localhost:8443')
         self.assertEqual(response.status_code, 200)
         self.assertIn('no-store', response['Cache-Control'])
         self.assertEqual(response['Content-Type'], 'image/svg+xml')
@@ -170,8 +178,7 @@ class NetworkOnboardingTests(SimpleTestCase):
             x, y, right, bottom = [int(float(value) * 10) for value in (x, y, right, bottom)]
             pixels[y:bottom, x:right] = 0
         decoded, _, _ = cv2.QRCodeDetector().detectAndDecode(pixels)
-        self.assertEqual(decoded, 'https://192.168.50.10:8443/camera/')
-        self.assertEqual(decoded, self.client.get('/api/network/info/').json()['camera_url'])
+        return decoded
 
     def test_windows_inventory_filters_unusable_addresses_and_reports_query_failure(self):
         import subprocess

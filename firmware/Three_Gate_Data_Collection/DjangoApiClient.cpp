@@ -405,11 +405,14 @@ bool DjangoApiClient::takeResult(HttpResult& result) {
   return true;
 }
 
-void DjangoApiClient::setControlState(uint32_t generation, bool interlocked, const String& motion, bool setupAllowed) {
+void DjangoApiClient::setControlState(uint32_t generation, bool interlocked, const String& motion,
+                                      const char* setupBlockReason) {
+  const bool setupAllowed = setupBlockReason == nullptr;
   localSetupAllowed_.store(setupAllowed, std::memory_order_release);
   controlGeneration_ = generation;
   controlState_ = "recovery_generation=" + String(generation) + "&network_interlocked=" + String(interlocked ? 1 : 0)
       + "&motion=" + encodeFormValue(motion) + "&setup_allowed=" + String(setupAllowed ? 1 : 0);
+  if (!setupAllowed) controlState_ += "&setup_block_reason=" + String(setupBlockReason);
 }
 
 void DjangoApiClient::requestSetup() {

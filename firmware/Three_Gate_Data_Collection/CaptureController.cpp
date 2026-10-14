@@ -82,7 +82,7 @@ void CaptureController::tick() {
   api_.setControlState(generation_, networkInterlocked_,
       setupAwaitingGrant_ ? "setup" : recoveryRunning_ ? "recover_network" : motionPhase_ == MotionPhase::kFeederDriving ? "feed_one"
       : classifierCommandActive_ ? "classify_fruit" : sequenceActive_ ? "capture" : "idle",
-      setupAllowedLocal());
+      setupBlockReason());
   currentTime = millis();
   checkStartSequenceWaitTimeout(currentTime);
   if (networkRequest_ != NetworkRequest::kNone) {
@@ -126,6 +126,7 @@ void CaptureController::collectNetworkResult(uint32_t currentTime) {
   }
   if (setupAwaitingGrant_) return;
   if (!accepted) return;
+  if (DjangoApiClient::controlValue(result.body, "setup_requested") == "1") beginSetupRequest(currentTime, "dashboard");
   switch (request) {
     case NetworkRequest::kHeartbeat:
       yieldAfterHeartbeat_ = true;
@@ -261,10 +262,26 @@ bool CaptureController::acceptControlResult(const HttpResult& result, uint32_t c
 }
 
 bool CaptureController::setupAllowedLocal() const {
-  return !networkInterlocked_ && !persistFailed_ && !operationStarted_ && !autoTriggerEnabled_ &&
-      !sequenceActive_ && !classifierCommandActive_ && !pendingReport_.active && !autoTrigger_.active() &&
-      !awaitingFruitAfterTimeout_ && !recoveryRunning_ && motionPhase_ == MotionPhase::kIdle &&
-      !classifier_.busy() && classifier_.available() && gatesAreSafeForFastPath();
+  return setupBlockReason() == nullptr;
+}
+
+// First failing safe-idle condition, so a refused BOOT press names what to clear.
+const char* CaptureController::setupBlockReason() const {
+  if (persistFailed_) return "recovery_persist_failed";
+  if (networkInterlocked_) return "network_interlocked";
+  if (recoveryRunning_) return "network_recovery_running";
+  if (operationStarted_) return "operation_started";
+  if (autoTriggerEnabled_) return "auto_trigger_enabled";
+  if (autoTrigger_.active()) return "auto_trigger_active";
+  if (awaitingFruitAfterTimeout_) return "awaiting_fruit_after_timeout";
+  if (sequenceActive_) return "capture_sequence_active";
+  if (classifierCommandActive_) return "classifier_command_active";
+  if (pendingReport_.active) return "report_pending";
+  if (motionPhase_ != MotionPhase::kIdle) return "motion_not_idle";
+  if (classifier_.busy()) return "classifier_busy";
+  if (!classifier_.available()) return "classifier_unavailable";
+  if (!gates_.atHome()) return "gates_not_home";
+  return nullptr;
 }
 
 // True once per debounced press, and only after the button was released since boot.
@@ -283,8 +300,24 @@ bool CaptureController::setupButtonPressed(uint32_t currentTime) {
 }
 
 void CaptureController::checkSetupButton(uint32_t currentTime) {
-  if (!setupButtonPressed(currentTime)) return;
-  if (!setupAllowedLocal() || centralSetupBlocked_) { Serial.println("setup_blocked"); return; }
+  if (setupButtonPressed(currentTime)) beginSetupRequest(currentTime, "boot");
+}
+
+// BOOT and the Dashboard button share one path: safe-idle check, then the central motion=setup grant.
+void CaptureController::beginSetupRequest(uint32_t currentTime, const char* source) {
+  if (setupAwaitingGrant_ || api_.setupPending()) return;
+  const char* blocked = setupBlockReason();
+  if (!blocked && centralSetupBlocked_) blocked = "central_setup_blocked";
+  if (blocked) {
+    Serial.print("setup_blocked: ");
+    Serial.print(blocked);
+    if (pendingReport_.active) { Serial.print(" event="); Serial.print(pendingReport_.event); }
+    Serial.print(" source=");
+    Serial.println(source);
+    return;
+  }
+  Serial.print("setup_requested source=");
+  Serial.println(source);
   autoTriggerEnabled_ = false;
   if (WiFi.status() != WL_CONNECTED || !api_.controllerReady()) {
     api_.requestSetup();

@@ -22,7 +22,8 @@ class DjangoApiClient {
   void begin();
   bool wifiConnected() const;
   bool takeResult(HttpResult& result);
-  void setControlState(uint32_t generation, bool interlocked, const String& motion, bool setupAllowed);
+  // setupBlockReason is nullptr when the device is safe-idle for setup.
+  void setControlState(uint32_t generation, bool interlocked, const String& motion, const char* setupBlockReason);
   bool heartbeat();
   void requestSetup();
   // Closes a pending or open setup AP and returns to the saved Wi-Fi.

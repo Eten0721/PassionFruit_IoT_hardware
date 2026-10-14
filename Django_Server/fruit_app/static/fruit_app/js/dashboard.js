@@ -21,7 +21,6 @@ const remoteVideo = document.getElementById('remote-video');
     const sorterFruitEl = document.getElementById('sorter-fruit');
     const sorterLabelEl = document.getElementById('sorter-label');
     const sorterErrorEl = document.getElementById('sorter-error');
-    const errorReasonEl = document.getElementById('error-reason');
     const rawStateLabelEl = document.getElementById('raw-state-label');
     const stateBadge = document.getElementById('state-badge');
     const counterInput = document.getElementById('counter-input');
@@ -65,14 +64,6 @@ const remoteVideo = document.getElementById('remote-video');
         timing: document.getElementById('readiness-timing'),
         calibration: document.getElementById('readiness-calibration'),
     };
-    const operatorAlert = document.getElementById('operator-alert');
-    const operatorAlertReason = document.getElementById('operator-alert-reason');
-    const operatorAlertLocation = document.getElementById('operator-alert-location');
-    const operatorAlertFruit = document.getElementById('operator-alert-fruit');
-    const operatorAlertCommand = document.getElementById('operator-alert-command');
-    const operatorAlertFeederWrap = document.getElementById('operator-alert-feeder-wrap');
-    const operatorAlertFeeder = document.getElementById('operator-alert-feeder');
-    const operatorAlertInstruction = document.getElementById('operator-alert-instruction');
     const timingCommandDelay = document.getElementById('timing-command-delay');
     const timingWaitStarted = document.getElementById('timing-wait-started');
     const timingUploadReceived = document.getElementById('timing-upload-received');
@@ -128,7 +119,6 @@ const remoteVideo = document.getElementById('remote-video');
     let feederConfirmationInFlight = false;
     let classificationInFlight = false;
     let controlActionInFlight = null;
-    let lastAlertFingerprint = '';
     let lastTraceFingerprint = '';
     let messageClearTimer = null;
     const messageVisibleMs = 10000;
@@ -144,6 +134,8 @@ const remoteVideo = document.getElementById('remote-video');
     let networkSelectionInFlight = false;
     const networkSelect = document.getElementById('network-interface');
     const selectNetworkButton = document.getElementById('btn-select-network');
+    const networkSetupButton = document.getElementById('btn-network-setup');
+    let networkSetupInFlight = false;
 
     function renderNetwork(network) {
         const interfaces = network.interfaces || [];
@@ -179,6 +171,7 @@ const remoteVideo = document.getElementById('remote-video');
         setTextIfChanged(document.getElementById('network-setup-status'), setup.status === 'allowed'
             ? '可配網（allowed）：ESP32 與中央均處於安全閒置。'
             : `${setup.status === 'blocked' ? '配網被阻擋（blocked）' : '配網無法確認（unknown）'}：${setup.reason || 'unknown'}`);
+        networkSetupButton.disabled = networkSetupInFlight || setup.status !== 'allowed';
         const qr = document.getElementById('camera-qr');
         qr.hidden = !selected;
         if (selected) {
@@ -217,6 +210,21 @@ const remoteVideo = document.getElementById('remote-video');
             setMessage(`確認網路失敗：${error.message}`);
         } finally {
             networkSelectionInFlight = false;
+            await refreshState();
+        }
+    });
+
+    networkSetupButton.addEventListener('click', async () => {
+        if (networkSetupInFlight) return;
+        networkSetupInFlight = true;
+        networkSetupButton.disabled = true;
+        try {
+            await postJson('/api/network/setup_request/');
+            setMessage('已通知 ESP32 開啟設定熱點；數秒內手機會看到 PF-Setup- 開頭的熱點，再掃描下方 QR Code。');
+        } catch (error) {
+            setMessage(`無法開啟 ESP32 設定熱點：${error.payload?.reason || error.message}`);
+        } finally {
+            networkSetupInFlight = false;
             await refreshState();
         }
     });
@@ -549,11 +557,10 @@ const remoteVideo = document.getElementById('remote-video');
         setTextIfChanged(sorterFruitEl, data.sorter_fruit_id || '無');
         setTextIfChanged(sorterLabelEl, data.sorter_label || '無');
         setTextIfChanged(sorterErrorEl, data.sorter_error || '無');
-        setTextIfChanged(errorReasonEl, data.last_error_reason || '無');
-        errorReasonEl.hidden = !data.last_error_reason;
+        // The reason stays reachable on hover; the Gate 3 steps live in the 安全復原 confirm dialog.
+        stateBadge.title = errorReasonText(data);
 
         renderReadiness(data);
-        renderOperatorAlert(data.operator_alert);
         setTextIfChanged(detectionSummary, detectionSummaryText(data));
         renderStageChips(data);
         renderBoard(data);
@@ -581,7 +588,7 @@ const remoteVideo = document.getElementById('remote-video');
         setTextIfChanged(
             discardButton,
             detectionMode && !photoOnly
-                ? '資料已另存，進入 Gate 3 安全復原'
+                ? '安全復原'
                 : detectionMode && data.discardable_fruit_id && !data.active_fruit_id
                     ? '刪除未保存成功的本輪檢測'
                 : '跳過／刪除目前資料',
@@ -738,35 +745,20 @@ const remoteVideo = document.getElementById('remote-video');
             : '所有啟動條件已就緒，可以開始正式自動運轉。';
     }
 
-    function renderOperatorAlert(alert) {
-        const fingerprint = JSON.stringify(alert || null);
-        if (fingerprint === lastAlertFingerprint) {
-            return;
-        }
-        lastAlertFingerprint = fingerprint;
-        operatorAlert.hidden = !alert;
+    // The operation bar is the single error surface; it keeps the alert's handling
+    // instruction because some (e.g. Gate 3 removal) carry safety steps.
+    function errorReasonText(data) {
+        const alert = data.operator_alert;
         if (!alert) {
-            return;
+            return data.last_error_reason || '';
         }
         const feederMetrics = [
             Number.isFinite(alert.feeder_elapsed_ms) ? `實際 ${alert.feeder_elapsed_ms} ms` : '',
             Number.isFinite(alert.feeder_max_run_ms) ? `上限 ${alert.feeder_max_run_ms} ms` : '',
             alert.feeder_stop_reason ? `停止原因 ${alert.feeder_stop_reason}` : '',
         ].filter(Boolean).join('｜');
-        setTextIfChanged(operatorAlertReason, alert.reason || 'unknown');
-        setTextIfChanged(operatorAlertLocation, alert.location || 'unknown');
-        setTextIfChanged(operatorAlertFruit, alert.fruit_id || '無');
-        setTextIfChanged(
-            operatorAlertCommand,
-            `${alert.command || 'none'} #${alert.command_id || 0}`,
-        );
-        operatorAlertFeederWrap.hidden = !feederMetrics;
-        setTextIfChanged(operatorAlertFeeder, feederMetrics || '無');
-        setTextIfChanged(
-            operatorAlertInstruction,
-            alert.instruction
-                || '暫停 → 排除／重新拍攝／刪除 → 開始執行（請自行暫停、排除狀況後重新開始）',
-        );
+        const reason = alert.reason || data.last_error_reason || 'unknown';
+        return `${reason}：${alert.instruction || '請排除狀況後重新開始。'}${feederMetrics ? `（${feederMetrics}）` : ''}`;
     }
 
     function sorterStatusText(status) {
@@ -1359,7 +1351,7 @@ const remoteVideo = document.getElementById('remote-video');
             items.push(recaptureButton.title);
         }
         if (discardButton.disabled) {
-            discardButton.title = `跳過／刪除：${data.status === 'uploading'
+            discardButton.title = `${discardButton.textContent}：${data.status === 'uploading'
                 ? '照片上傳中，完成後才能刪除'
                 : data.dataset_operation ? '資料處理中' : '目前沒有可刪除的暫存資料'}`;
             items.push(discardButton.title);
@@ -1996,8 +1988,12 @@ const remoteVideo = document.getElementById('remote-video');
         if (!fruitId) {
             return;
         }
-        const prompt = lastState.gate3_manual_removal_required
-            ? `${fruitId} 的檢測結果已另存。這只會處理暫存原圖，Gate 3 仍保持鎖定；是否進入人工安全復原？`
+        const gate3Recovery = lastState.gate3_manual_removal_required
+            || (lastState.work_mode === 'detection' && lastState.hardware_mode !== 'photo_only');
+        const prompt = gate3Recovery
+            ? `安全復原（Gate 3）\n\n${fruitId} 的檢測結果已另存。這只會處理暫存原圖，Gate 3 與分類器仍保持鎖定，不會自動動作。\n\n`
+                + '請切斷伺服電源，確認 Gate 3 與分類器不會動作後人工移除果實；手離開機構並恢復安全狀態後，再按「開始執行」。\n\n'
+                + '是否進入人工安全復原？'
             : `確定刪除 ${fruitId} 的暫存照片嗎？`;
         if (!confirm(prompt)) {
             return;

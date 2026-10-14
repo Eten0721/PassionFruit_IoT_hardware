@@ -2384,7 +2384,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn('id="network-setup-summary-status" class="summary-badge"', network_summary)
         self.assertIn('未連線', network_summary)
         diagnostics = html.split('<details id="diagnostics"', 1)[1].split('</details>', 1)[0]
-        for status_id in ('stream-status', 'error-reason'):
+        for status_id in ('stream-status',):
             self.assertIn(f'id="{status_id}"', html)
             self.assertNotIn(f'id="{status_id}"', diagnostics)
         css = (Path(__file__).parent / 'static/fruit_app/css/dashboard.css').read_text(encoding='utf-8')
@@ -2803,7 +2803,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn("'開始執行'", dashboard_js)
         self.assertIn('data.can_start_auto_run', dashboard_js)
         self.assertIn('data.operator_alert', dashboard_js)
-        self.assertIn('自行暫停、排除狀況後重新開始', dashboard_js)
+        self.assertIn('alert.instruction', dashboard_js)
         self.assertIn('alert.feeder_elapsed_ms', dashboard_js)
         self.assertIn('alert.feeder_max_run_ms', dashboard_js)
         self.assertIn('alert.feeder_stop_reason', dashboard_js)
@@ -2867,7 +2867,9 @@ class DataCollectionFlowTests(SimpleTestCase):
 
         self.assertIn('百香果檢測與分類控制台', dashboard_html)
         self.assertIn('id="camera-ready-status"', dashboard_html)
-        self.assertIn('id="operator-alert" class="operator-alert" role="alert" hidden', dashboard_html)
+        self.assertNotIn('id="operator-alert"', dashboard_html)
+        self.assertNotIn('id="error-reason"', dashboard_html)
+        self.assertIn('stateBadge.title = errorReasonText(data)', dashboard_js)
         self.assertIn('id="message" class="global-message" role="status"', dashboard_html)
         self.assertIn('<label for="note">分類備註</label>', dashboard_html)
         self.assertIn('<label for="counter-input">下一筆資料起始 ID</label>', dashboard_html)
@@ -2902,10 +2904,9 @@ class DataCollectionFlowTests(SimpleTestCase):
             dashboard_js,
         )
         self.assertIn('gate3_sorter_v1', dashboard_js)
-        self.assertIn('function renderOperatorAlert(alert)', dashboard_js)
+        self.assertIn('function errorReasonText(data)', dashboard_js)
         self.assertIn("idle: '閒置'", dashboard_js)
         self.assertIn("unavailable: { label: '無有效回音', tone: 'error' }", dashboard_js)
-        self.assertIn('fingerprint === lastAlertFingerprint', dashboard_js)
         self.assertIn('fingerprint === lastTraceFingerprint', dashboard_js)
         self.assertIn("beginControlAction('auto-run', autoRunButton)", dashboard_js)
         self.assertIn("detectionResults.querySelectorAll('img')", dashboard_js)

@@ -40,6 +40,9 @@ IMAGE_COUNT = 3
 IMAGE_FILENAMES = [f'img_{idx:02d}.jpg' for idx in range(1, IMAGE_COUNT + 1)]
 FRUIT_ID_PATTERN = re.compile(r'^fruit_(\d{3,})$')
 ESP32_SETUP_FAILURES = ('setup_ap_failed',)
+ESP32_SETUP_BLOCK_REASON_PATTERN = re.compile(r'[a-z_]{1,48}')
+ESP32_SETUP_URL = 'http://192.168.4.1/'  # Firmware WifiSetup page on the ESP32 softAP default address.
+ESP32_SETUP_REQUEST_TTL_S = 15  # The idle ESP32 polls every 250 ms; an unclaimed request must not linger.
 METADATA_FIELDNAMES = [
     'fruit_id',
     'label',
@@ -343,9 +346,41 @@ def network_qr_api(request):
     payload = local_network.NETWORK.snapshot()
     if not payload['selected']:
         return local_network.network_error(payload['reason'])
+    return _qr_svg_response(payload['camera_url'])
+
+
+@require_GET
+def network_setup_qr_api(request):
+    # Fixed softAP address; it does not depend on the selected LAN, so no network selection is required.
+    return _qr_svg_response(ESP32_SETUP_URL)
+
+
+@csrf_exempt
+def network_setup_request_api(request):
+    # Remote BOOT press: the ESP32 still runs its own safe-idle check and the motion=setup grant handshake.
+    if request.method != 'POST':
+        return local_network.network_error('network_method_not_allowed', status=405)
+    reason = local_network.NETWORK.request_reason(request, local_only=True)
+    if reason:
+        return local_network.network_error(reason)
+    with STATE_LOCK:
+        _check_network_safety()
+        setup = _network_setup_payload()
+        if setup['status'] != 'allowed':
+            return local_network.network_error(setup['reason'] or 'esp32_setup_unavailable')
+        APP_STATE['esp32_setup_request_deadline'] = time.monotonic() + ESP32_SETUP_REQUEST_TTL_S
+    return _no_store_response(JsonResponse({'ok': True, 'setup_requested': True}))
+
+
+def _esp32_setup_requested():
+    deadline = APP_STATE.get('esp32_setup_request_deadline')
+    return deadline is not None and time.monotonic() < deadline
+
+
+def _qr_svg_response(text):
     import qrcode
     from qrcode.image.svg import SvgPathFillImage
-    image = qrcode.make(payload['camera_url'], image_factory=SvgPathFillImage)
+    image = qrcode.make(text, image_factory=SvgPathFillImage)
     return _no_store_response(HttpResponse(image.to_string(), content_type='image/svg+xml'))
 
 
@@ -493,7 +528,8 @@ def _network_setup_payload():
     reason = ('esp32_setup_active' if APP_STATE.get('esp32_setup_active')
               else _network_setup_reason() or APP_STATE.get('esp32_setup_failure'))
     if reason is None and not APP_STATE.get('esp32_setup_allowed'):
-        reason = 'esp32_not_idle'
+        detail = APP_STATE.get('esp32_setup_block_reason')
+        reason = f'esp32_not_idle:{detail}' if detail else 'esp32_not_idle'
     return {'status': 'blocked' if reason else 'allowed', 'reason': reason}
 
 
@@ -508,6 +544,8 @@ def _control_fields(data=None):
         'boot_id': data.get('boot_id', '') if data is not None else APP_STATE.get('esp32_boot_id', ''),
         'control_allowed': bool(allowed), 'control_lease_ms': 6000 if allowed else 0,
         'setup_allowed': bool(allowed and _network_setup_reason() is None),
+        'setup_requested': bool(allowed and data is not None and _network_setup_reason() is None
+                                and _esp32_setup_requested()),
         'recovery_allowed': bool(APP_STATE.get('network_recovery')
                                  and APP_STATE['network_recovery'].get('phase') in ('homing', 'committing')
                                  and data is not None and _device_identity_matches(data)),
@@ -576,10 +614,16 @@ def _observe_device(data):
     APP_STATE['esp32_setup_allowed'] = _safe_bool(data.get('setup_allowed')) is True
     # Firmware omits the field after its setup AP opens successfully, which clears the failure.
     APP_STATE['esp32_setup_failure'] = data.get('setup_failure') if data.get('setup_failure') in ESP32_SETUP_FAILURES else None
+    block_reason = data.get('setup_block_reason')
+    APP_STATE['esp32_setup_block_reason'] = (
+        block_reason if isinstance(block_reason, str) and ESP32_SETUP_BLOCK_REASON_PATTERN.fullmatch(block_reason) else None)
     APP_STATE['esp32_setup_active'] = (
         data.get('motion') == 'setup' and APP_STATE['esp32_setup_allowed']
         and _network_setup_reason() is None
     )
+    # The device has claimed (motion=setup) or refused (not safe-idle) a Dashboard setup request.
+    if data.get('motion') == 'setup' or not APP_STATE['esp32_setup_allowed']:
+        APP_STATE.pop('esp32_setup_request_deadline', None)
     receipt = APP_STATE.get('network_recovery_receipt') or {}
     completing_receipt = (
         data.get('event') in ('network_recovery_completed', 'network_recovery_committed')
@@ -2873,7 +2917,9 @@ def reset_runtime_state_for_tests():
     with STATE_LOCK:
         for key in ('network_recovery', 'network_identity', 'network_persist_failed',
                     'esp32_network_capable', 'esp32_interlocked', 'esp32_motion',
-                    'esp32_setup_allowed', 'esp32_setup_active', 'esp32_setup_failure', 'recovery_generation',
+                    'esp32_setup_allowed', 'esp32_setup_active', 'esp32_setup_failure', 'esp32_setup_block_reason',
+                    'esp32_setup_request_deadline',
+                    'recovery_generation',
                     'network_recovery_receipt'):
             APP_STATE.pop(key, None)
         APP_STATE.update({

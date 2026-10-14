@@ -51,7 +51,7 @@
             <p id="network-status" role="status" aria-live="polite">等待介面盤點。</p>
             <p>控制端網址：<strong id="server-url">尚未確認</strong></p>
             <img id="camera-qr" width="220" height="220" alt="手機相機 HTTPS 網址 QR Code" hidden>
-            <p>用 iPhone Chrome 掃碼，再按「開啟相機」並允許權限。若憑證警告確認後仍無法開啟，依相機頁的安全來源診斷處理。</p>
+            <p>用手機 Chrome 掃碼，再按「開啟相機」並允許權限。若憑證警告確認後仍無法開啟，依相機頁的安全來源診斷處理。</p>
             <p id="network-discovery-status"></p>
             <p id="network-device-status" role="status" aria-live="polite"></p>
         </div>
@@ -129,7 +129,6 @@
             </div>
         </details>
         <div id="operation-actions" class="operation-actions" role="group" aria-label="主要操作" aria-describedby="action-guidance">
-            <p id="error-reason" class="control-guidance" role="alert" hidden></p>
             <div class="operation-buttons">
                 <button id="btn-auto-run" type="button" class="button primary-action" disabled>開始執行</button>
                 <button id="btn-recapture" type="button" class="button warning">重新拍攝</button>
@@ -142,20 +141,6 @@
         </div>
     </section>
 
-    <div id="operator-alert" class="operator-alert" role="alert" hidden>
-        <div class="operator-alert-heading">
-            <span class="alert-kicker">需要操作員處理</span>
-            <strong id="operator-alert-title">系統已停止自動運轉</strong>
-        </div>
-        <dl class="alert-facts">
-            <div><dt>原因</dt><dd id="operator-alert-reason">無</dd></div>
-            <div><dt>位置</dt><dd id="operator-alert-location">無</dd></div>
-            <div><dt>資料</dt><dd id="operator-alert-fruit">無</dd></div>
-            <div><dt>命令</dt><dd id="operator-alert-command">none</dd></div>
-            <div id="operator-alert-feeder-wrap" hidden><dt>送料紀錄</dt><dd id="operator-alert-feeder">無</dd></div>
-        </dl>
-        <p id="operator-alert-instruction" class="alert-instruction"></p>
-    </div>
     <div id="message" class="global-message" role="status" aria-live="polite"></div>
 
     <ol id="stage-chips" class="stage-chips" aria-label="本輪進度"></ol>
@@ -220,11 +205,10 @@
     <div class="advanced-stack">
         <details id="dataset-management" class="disclosure-panel">
             <summary>
-                <span><strong>資料管理</strong><small>設定下一筆 ID、開啟 Dataset 資料夾或重置資料。</small></span>
+                <span><strong>資料管理</strong><small>設定下一筆 ID、開啟 Dataset 資料夾或重置資料。<span id="dataset-scope" aria-live="polite"></span></small></span>
                 <span class="summary-badge neutral">低頻操作</span>
             </summary>
             <div class="disclosure-content data-management-grid">
-                <p id="dataset-scope" aria-live="polite"></p>
                 <p id="legacy-dataset-location" hidden></p>
                 <div class="counter-control">
                     <label for="counter-input">下一筆資料起始 ID</label>
@@ -254,7 +238,21 @@
             </summary>
             <div class="disclosure-content">
                 <p id="network-setup-status" role="status">無法確認 ESP32 是否可安全配網。</p>
-                <p>安全閒置時，於正常開機後按一下 BOOT，再連上名稱以 PF-Setup- 開頭的設定熱點，開啟 http://192.168.4.1/。密碼由維護者提供。保存成功後，在設定頁按「退出連線」關閉熱點，再將手機切回目標 Wi-Fi。GPIO 0 是目前 BOOT 候選腳位，尚待實機核對；不要按住 BOOT 上電或重置。</p>
+                <div class="controls">
+                    <button id="btn-network-setup" type="button" class="button secondary" disabled>開啟 ESP32 設定熱點</button>
+                    <span class="control-guidance">ESP32 在線且安全閒置時可用，效果等同在機台按一下 BOOT。</span>
+                </div>
+                <div class="setup-qr-block">
+                    <img id="setup-qr" src="{% url 'network_setup_qr_api' %}" width="180" height="180" alt="ESP32 設定頁 http://192.168.4.1/ 的 QR Code">
+                    <ol class="setup-steps">
+                        <li>未保存過 Wi-Fi 時，ESP32 開機後會自動開熱點；已有設定時，等安全閒置再按上方「開啟 ESP32 設定熱點」，或在機台按一下 BOOT。不要按住 BOOT 上電或重置。</li>
+                        <li>手機連上名稱以 PF-Setup- 開頭的熱點，密碼由維護者提供。</li>
+                        <li>用手機相機掃描左側 QR Code，開啟 http://192.168.4.1/ 設定頁；也可在瀏覽器網址列直接輸入。</li>
+                        <li>選擇或輸入目標 Wi-Fi 與密碼，按「連線並保存」。顯示 saved 與 IP 後，按「退出連線」關閉熱點，再將手機切回目標 Wi-Fi。</li>
+                        <li>不需變更時按「取消設定」或再按一下 BOOT，ESP32 會恢復原本保存的 Wi-Fi。</li>
+                    </ol>
+                </div>
+                <p>QR Code 只在手機已連上設定熱點時能開啟；連在一般 Wi-Fi 時無法進入設定頁。GPIO 0 是目前 BOOT 候選腳位，尚待實機核對。</p>
             </div>
         </details>
 

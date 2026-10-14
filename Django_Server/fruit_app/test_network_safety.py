@@ -60,6 +60,36 @@ class NetworkSafetyTests(SimpleTestCase):
         state = self.client.get('/api/state/').json()
         self.assertEqual(state['network']['setup'], {'status': 'blocked', 'reason': 'motor_command_pending'})
 
+    def test_dashboard_setup_request_is_delivered_once_and_cleared_when_claimed(self):
+        self.assertEqual(self.post('/api/network/setup_request/').json()['reason'], 'esp32_offline')
+        self.prepare()
+        self.assertFalse(self.client.get('/api/esp32/heartbeat/', self.device()).json()['setup_requested'])
+        self.assertEqual(self.post('/api/network/setup_request/').status_code, 200)
+        self.assertTrue(self.client.get('/api/esp32/command/', self.device()).json()['setup_requested'])
+        response = self.client.get('/api/esp32/heartbeat/', self.device(motion='setup')).json()
+        self.assertFalse(response['setup_requested'])
+        self.assertTrue(response['setup_allowed'])
+
+    def test_dashboard_setup_request_is_refused_when_not_idle_and_expires(self):
+        self.prepare()
+        views.APP_STATE['motor_command'] = {'command': 'feed_one', 'command_id': 88}
+        self.assertEqual(self.post('/api/network/setup_request/').json()['reason'], 'motor_command_pending')
+        views.APP_STATE['motor_command'] = None
+        self.assertEqual(self.post('/api/network/setup_request/').status_code, 200)
+        views.APP_STATE['esp32_setup_request_deadline'] = views.time.monotonic() - 1
+        self.assertFalse(self.client.get('/api/esp32/heartbeat/', self.device()).json()['setup_requested'])
+        self.assertEqual(self.post('/api/network/setup_request/').status_code, 200)
+        self.client.get('/api/esp32/heartbeat/', self.device(setup_allowed='0', setup_block_reason='network_interlocked'))
+        self.assertNotIn('esp32_setup_request_deadline', views.APP_STATE)
+
+    def test_device_setup_block_reason_is_shown_and_validated(self):
+        self.prepare()
+        self.client.get('/api/esp32/heartbeat/', self.device(setup_allowed='0', setup_block_reason='network_interlocked'))
+        self.assertEqual(self.client.get('/api/state/').json()['network']['setup'],
+                         {'status': 'blocked', 'reason': 'esp32_not_idle:network_interlocked'})
+        self.client.get('/api/esp32/heartbeat/', self.device(setup_allowed='0', setup_block_reason='<script>'))
+        self.assertEqual(self.client.get('/api/state/').json()['network']['setup']['reason'], 'esp32_not_idle')
+
     def test_setup_ap_failure_is_shown_until_device_stops_reporting_it(self):
         self.prepare()
         self.client.get('/api/esp32/heartbeat/', self.device(setup_failure='setup_ap_failed'))
