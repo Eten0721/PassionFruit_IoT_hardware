@@ -21,8 +21,12 @@ DEFECT_NAMES = {
 PHOTO_NAMES = ('img_01.jpg', 'img_02.jpg', 'img_03.jpg')
 PANEL_WIDTH = 640
 PHOTO_HEIGHT = 480
-FONT_SIZE = 28
-LINE_HEIGHT = 40
+# LINE shows the 1920 px composite in a card about 500 px wide, so captions
+# need roughly 4x their on-screen size to stay readable without opening it.
+FONT_SIZE = 56
+LINE_HEIGHT = 76
+SWATCH_TOP = 12
+SWATCH_SIZE = 46
 
 
 def generate_notification(result_path: Path, *, output_dir: Path | None = None,
@@ -279,13 +283,15 @@ def _compose(views, photos, font):
                       font=font, fill='#222222')
         for legend_index, entry in enumerate(view['legend']):
             top = 16 + (len(lines) + legend_index) * LINE_HEIGHT
-            draw.rectangle((left + 16, top + 6, left + 39, top + 29),
-                           fill=tuple(entry['color']), outline='#222222', width=2)
-            draw.text((left + 52, top), entry['label'], font=font, fill='#222222')
+            draw.rectangle((left + 16, top + SWATCH_TOP,
+                            left + 16 + SWATCH_SIZE, top + SWATCH_TOP + SWATCH_SIZE),
+                           fill=tuple(entry['color']), outline='#222222', width=3)
+            draw.text((left + 32 + SWATCH_SIZE, top), entry['label'], font=font, fill='#222222')
         if photo is None:
             draw.rectangle((left, header_height, left + PANEL_WIDTH - 1, composite.height - 1),
                            fill='#eeeeee')
-            draw.text((left + 180, header_height + 210), '未取得影像', font=font, fill='#555555')
+            draw.text((left + PANEL_WIDTH // 2, header_height + PHOTO_HEIGHT // 2), '未取得影像',
+                      font=font, fill='#555555', anchor='mm')
             continue
         with ImageOps.contain(photo, (PANEL_WIDTH, PHOTO_HEIGHT)) as scaled:
             composite.paste(scaled, (left + (PANEL_WIDTH - scaled.width) // 2,

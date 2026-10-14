@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageFont
 from django.core.management import call_command
 from django.test import SimpleTestCase
 
-from .notification import generate_notification
+from .notification import LINE_HEIGHT, SWATCH_SIZE, SWATCH_TOP, generate_notification
 from .detection import DEFECT_COLORS, DEFECT_MARKED_SUFFIX
 
 
@@ -362,8 +362,10 @@ class NotificationTests(SimpleTestCase):
                                     for value, expected in zip(pixel, entry['color'], strict=True))
                                 for pixel in caption.getdata())
                     self.assertGreater(count, 150)
-            for top in (62, 102):
-                self.assertLess(max(image.getpixel((17, top + 10))), 90)
+            # Legend rows follow the single "照片 1" caption line; check each swatch's border.
+            for row in (1, 2):
+                top = 16 + row * LINE_HEIGHT + SWATCH_TOP
+                self.assertLess(max(image.getpixel((17, top + SWATCH_SIZE // 2))), 90)
             red, green, blue = image.getpixel((320, image.height - 240))
             self.assertLess(red, 10)
             self.assertGreater(green, 245)
@@ -422,6 +424,12 @@ class NotificationTests(SimpleTestCase):
                     self.assertLess(max(x for x, _ in dark), caption.width - 1)
                     self.assertGreater(min(y for _, y in dark), 0)
                     self.assertLess(max(y for _, y in dark), caption.height - 1)
+            # "照片 1" must stay legible after LINE shrinks the 1920 px composite
+            # into a card about 500 px wide: glyphs at least 40 px tall here.
+            with image.crop((0, 0, 640, 16 + LINE_HEIGHT)).convert('L') as title:
+                rows = [y for y in range(title.height)
+                        if any(title.getpixel((x, y)) < 100 for x in range(title.width))]
+                self.assertGreaterEqual(max(rows) - min(rows), 40)
             with Image.open(preview['preview_path']) as smaller:
                 self.assertAlmostEqual(image.width / image.height,
                                        smaller.width / smaller.height, places=2)
