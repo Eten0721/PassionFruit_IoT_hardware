@@ -12,7 +12,8 @@ outcome stays unknown past the retry-key window, the entry becomes
 Credentials come only from a private JSON file next to the outbox; they never
 enter the outbox, status payloads or error text. The push and retry rules
 (retry key, 409 = already accepted, 4xx not retried as-is) follow the delivered
-``line_notifier.py``, extended to image messages and a durable per-result key.
+``line_notifier.py``, extended to one Flex bubble (composite + text) and a
+durable per-result key.
 """
 
 from __future__ import annotations
@@ -32,6 +33,8 @@ import uuid
 from pathlib import Path
 from typing import Callable, NamedTuple
 
+from PIL import Image
+
 from . import grading
 from .notification import generate_notification
 
@@ -44,7 +47,10 @@ UNSENT_ERRNOS = {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN,
 PUSH_URL = 'https://api.line.me/v2/bot/message/push'
 UPLOAD_URL = 'https://api.cloudinary.com/v1_1/{cloud}/image/upload'
 PUBLIC_ID_PREFIX = 'passionfruit_notifications/'
+# Flex hero images must stay within 1024 x 1024 px; the full image opens on tap.
 PREVIEW_TRANSFORMATION = 'c_limit,w_960,h_960,q_auto:good,f_jpg'
+FALLBACK_ASPECT_RATIO = '2:1'
+ALT_TEXT_LIMIT = 400
 CREDENTIAL_FIELDS = (
     'line_channel_access_token', 'line_group_id',
     'cloudinary_cloud_name', 'cloudinary_api_key', 'cloudinary_api_secret',
@@ -269,8 +275,14 @@ class Outbox:
             raise _Rejected(f'通知內容無法產生：{error}', final=True) from None
         if not preview['ok']:
             raise _Rejected(f"通知內容無法產生：{preview['reason']}", final=True)
+        try:
+            with Image.open(preview['image_path']) as image:
+                aspect_ratio = f'{image.width}:{image.height}'
+        except OSError as error:
+            raise _Rejected(f'通知合成圖無法讀取：{type(error).__name__}', final=False) from None
         image_url = self._upload(Path(preview['image_path']), entry['result_id'], credentials)
         return self._update(entry['result_id'], text=preview['text'], image_url=image_url,
+                            image_aspect_ratio=aspect_ratio,
                             preview_url=image_url.replace(
                                 '/image/upload/', f'/image/upload/{PREVIEW_TRANSFORMATION}/', 1),
                             entry_only=True)
@@ -317,11 +329,9 @@ class Outbox:
         entry = self._update(entry['result_id'], entry_only=True,
                              key_first_used_at=entry['key_first_used_at'] or now,
                              unknown_since=entry['unknown_since'] or now)
-        body = json.dumps({'to': credentials['line_group_id'], 'messages': [
-            {'type': 'text', 'text': entry['text']},
-            {'type': 'image', 'originalContentUrl': entry['image_url'],
-             'previewImageUrl': entry['preview_url']},
-        ]}, ensure_ascii=False).encode('utf-8')
+        body = json.dumps({'to': credentials['line_group_id'],
+                           'messages': [_flex_message(entry)]},
+                          ensure_ascii=False).encode('utf-8')
         try:
             response = self._http_post(PUSH_URL, body, {
                 'Content-Type': 'application/json; charset=utf-8',
@@ -421,6 +431,32 @@ class Outbox:
         except OSError:
             staging.unlink(missing_ok=True)
             raise
+
+
+def _flex_message(entry):
+    """One bubble: the composite on top (tap for full size), the text below."""
+    lines = entry['text'].strip().split('\n')
+    alt_text = ' '.join(line for line in lines if not line.startswith('偵測時間：'))
+    return {
+        'type': 'flex', 'altText': alt_text[:ALT_TEXT_LIMIT],
+        'contents': {
+            'type': 'bubble', 'size': 'giga',
+            'hero': {
+                'type': 'image', 'url': entry['preview_url'], 'size': 'full',
+                'aspectMode': 'fit',
+                'aspectRatio': entry.get('image_aspect_ratio') or FALLBACK_ASPECT_RATIO,
+                'action': {'type': 'uri', 'label': '查看原圖', 'uri': entry['image_url']},
+            },
+            'body': {
+                'type': 'box', 'layout': 'vertical', 'spacing': 'sm',
+                'contents': [
+                    {'type': 'text', 'text': line, 'wrap': True,
+                     **({'weight': 'bold', 'size': 'md'} if index == 0 else {'size': 'sm'})}
+                    for index, line in enumerate(lines)
+                ],
+            },
+        },
+    }
 
 
 def _json(body):

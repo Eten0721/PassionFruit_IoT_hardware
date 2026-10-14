@@ -87,7 +87,8 @@ def generate_notification(result_path: Path, *, output_dir: Path | None = None,
         if not any(photo is not None for photo in photos):
             return {'ok': False, 'reason': 'no_images'}
         heading = '測試 |瑕疵通知|' if result['hardware_mode'] == 'photo_only' else '|瑕疵通知|'
-        decision = '加工（人工判定）' if classification['source'] == 'manual' else '加工'
+        # Every notification is a processing fruit; only a manual source is worth a line.
+        decision = ['判定方式：人工判定'] if classification['source'] == 'manual' else []
         observed = list(dict.fromkeys(
             observation for view in views if view['detection_complete']
             for observation in view['observations']
@@ -99,7 +100,7 @@ def generate_notification(result_path: Path, *, output_dir: Path | None = None,
         )
         detected_at = datetime.fromisoformat(capture_time).strftime('%Y-%m-%d %H:%M:%S') if capture_time else '未記錄'
         text = '\n'.join([
-            heading, f'偵測時間：{detected_at}', f'等級：{decision}', f'發現瑕疵：{findings}',
+            heading, f'偵測時間：{detected_at}', *decision, f'發現瑕疵：{findings}',
             *([f"備註：照片 {'、'.join(unfinished)} 未完成檢測，未列入瑕疵觀察"] if unfinished else []),
         ]) + '\n'
         font_path = Path(font_path) if font_path is not None else Path('C:/Windows/Fonts/msjh.ttc')

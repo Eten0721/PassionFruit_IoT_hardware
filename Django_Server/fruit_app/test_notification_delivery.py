@@ -141,13 +141,23 @@ class NotificationDeliveryTests(SimpleTestCase):
         self.assertEqual(push['headers']['X-Line-Retry-Key'], self.entry('fruit_001_id')['retry_key'])
         body = json.loads(push['body'])
         self.assertEqual(body['to'], 'C0123456789abcdef')
-        text, image = body['messages']
-        self.assertEqual(text['type'], 'text')
-        self.assertTrue(text['text'].startswith('測試 |瑕疵通知|\n偵測時間：2026-10-14 09:00:00\n'))
-        self.assertEqual(image['type'], 'image')
-        self.assertEqual(image['originalContentUrl'], IMAGE_URL)
-        self.assertTrue(image['previewImageUrl'].startswith('https://res.cloudinary.com/'))
-        self.assertIn('/upload/c_limit,w_960,h_960', image['previewImageUrl'])
+        [flex] = body['messages']
+        self.assertEqual(flex['type'], 'flex')
+        self.assertEqual(flex['altText'], '測試 |瑕疵通知| 發現瑕疵：擦傷')
+        bubble = flex['contents']
+        self.assertEqual((bubble['type'], bubble['size']), ('bubble', 'giga'))
+        hero = bubble['hero']
+        self.assertEqual(hero['type'], 'image')
+        self.assertTrue(hero['url'].startswith('https://res.cloudinary.com/'))
+        self.assertIn('/upload/c_limit,w_960,h_960', hero['url'])
+        self.assertEqual(hero['action'], {'type': 'uri', 'label': '查看原圖', 'uri': IMAGE_URL})
+        self.assertEqual(hero['aspectMode'], 'fit')
+        width, height = map(int, hero['aspectRatio'].split(':'))
+        self.assertGreater(width, height)  # three views side by side
+        lines = [item['text'] for item in bubble['body']['contents']]
+        self.assertEqual(lines, ['測試 |瑕疵通知|', '偵測時間：2026-10-14 09:00:00', '發現瑕疵：擦傷'])
+        self.assertTrue(all(item['wrap'] for item in bubble['body']['contents']))
+        self.assertEqual(bubble['body']['contents'][0]['weight'], 'bold')
         self.assertEqual(self.entry('fruit_001_id')['status'], 'sent')
         self.assertEqual(self.outbox().deliver_pending(), [])
         self.assertEqual(len(self.http.line_calls()), 1)
@@ -185,9 +195,9 @@ class NotificationDeliveryTests(SimpleTestCase):
         self.assertIsNone(self.entry('fruit_001_id')['unknown_since'])
         self.clock[0] += 3600
         self.assertEqual(self.outbox().deliver_pending()[0]['status'], 'sent')
-        texts = [json.loads(call['body'])['messages'][0]['text'] for call in self.http.line_calls()]
-        self.assertEqual(len(set(texts)), 1)
-        self.assertIn('偵測時間：2026-10-14 09:00:00', texts[0])
+        bodies = [call['body'] for call in self.http.line_calls()]
+        self.assertEqual(len(set(bodies)), 1)
+        self.assertIn('偵測時間：2026-10-14 09:00:00', bodies[0].decode('utf-8'))
         self.assertEqual(len(self.http.upload_calls()), 2)  # the URL is kept once uploaded
 
     def test_unknown_delivery_after_restart_reuses_retry_key_and_accepts_409(self):
@@ -283,7 +293,7 @@ class NotificationDeliveryTests(SimpleTestCase):
         self.assertTrue(self.outbox().enqueue(hardware, hardware_path)['queued'])
         self.assertFalse(self.outbox().enqueue(photo, photo_path)['queued'])
         self.outbox().deliver_pending()
-        push_text = json.loads(self.http.line_calls()[0]['body'])['messages'][0]['text']
+        push_text = json.loads(self.http.line_calls()[0]['body'])['messages'][0]['altText']
         self.assertTrue(push_text.startswith('|瑕疵通知|'))
         photo_status = self.outbox().status('photo_only')
         self.assertEqual(photo_status['counts']['sent'], 0)

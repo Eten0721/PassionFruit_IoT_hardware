@@ -116,7 +116,8 @@ class NotificationTests(SimpleTestCase):
         text = Path(preview['text_path']).read_text(encoding='utf-8')
         self.assertEqual(preview['text'], text)
         self.assertEqual(text, '測試 |瑕疵通知|\n偵測時間：2026-10-14 09:00:00\n'
-                         '等級：加工\n發現瑕疵：擦傷\n')
+                         '發現瑕疵：擦傷\n')
+        self.assertNotIn('等級', text)
         self.assertEqual(preview['result_id'], result['result_id'])
         self.assertNotIn(result['result_id'], text)
         self.assertNotIn(result['completed_at'], text)
@@ -167,7 +168,7 @@ class NotificationTests(SimpleTestCase):
         self.write_fixture(result)
         preview = generate_notification(self.result_path)
         self.assertEqual(preview['text'], '|瑕疵通知|\n偵測時間：2026-10-14 16:07:19\n'
-                         '等級：加工\n發現瑕疵：色澤異常、皺褶、畫圖蟲、擦傷、蟲咬\n')
+                         '發現瑕疵：色澤異常、皺褶、畫圖蟲、擦傷、蟲咬\n')
 
     def test_incomplete_views_are_excluded_from_union_but_keep_image_observations(self):
         result = self.manual_fixture()
@@ -178,7 +179,7 @@ class NotificationTests(SimpleTestCase):
         self.write_fixture(result)
         preview = generate_notification(self.result_path)
         self.assertEqual(preview['text'], '測試 |瑕疵通知|\n偵測時間：2026-10-14 09:00:00\n'
-                         '等級：加工（人工判定）\n發現瑕疵：擦傷\n'
+                         '判定方式：人工判定\n發現瑕疵：擦傷\n'
                          '備註：照片 1、3 未完成檢測，未列入瑕疵觀察\n')
         self.assertIn('炭疽病', preview['views'][0]['label'])
         self.assertNotIn('疑似', preview['views'][0]['label'])
@@ -217,7 +218,7 @@ class NotificationTests(SimpleTestCase):
             preview = generate_notification(self.result_path)
         self.assertTrue(preview['ok'])
         self.assertEqual(preview['text'], '|瑕疵通知|\n偵測時間：2026-10-14 09:00:00\n'
-                         '等級：加工（人工判定）\n發現瑕疵：擦傷\n')
+                         '判定方式：人工判定\n發現瑕疵：擦傷\n')
         self.assertFalse(preview['text'].startswith('測試'))
         for filename, data in before.items():
             self.assertEqual((self.root / filename).read_bytes(), data)
