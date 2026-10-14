@@ -6,7 +6,7 @@
 
 ## 現行穩定功能
 
-- Issue [#32](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/32) 已讓純拍攝自動檢測在無法判級時，由操作員於右側結果卡人工選級；人工等級與原模型分類分開保存在同顆 `result.json`，總表同列改為 `manual_completed`／`manual`，不建立硬體命令或下一輪。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#檢測與判級)，驗證與操作步驟見 [人工接手驗收](acceptance/issue-32-manual-takeover.md)。使用硬體的人工接手放行仍待 Issue [#33](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/33)；操作員人工驗收尚未進行。
+- Issue [#32](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/32) 已讓純拍攝自動檢測在無法判級時，由操作員於右側結果卡人工選級或放棄本輪（不分級）；人工等級與原模型分類分開保存在同顆 `result.json`，總表同列改為 `manual_completed` 或 `manual_abandoned`、來源 `manual`，不建立硬體命令或下一輪。檢測分區不再建立未使用的四級目錄與 `metadata.csv`。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#檢測與判級)，驗證與操作步驟見 [人工接手驗收](acceptance/issue-32-manual-takeover.md)。使用硬體的人工接手放行仍待 Issue [#33](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/33)；操作員人工驗收尚未進行。
 
 - Issue [#31](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/31) 已套用檢測主畫面：網路確認下方為可收合的操作列，收合時仍保留開始／重新拍攝／跳過及阻擋原因；左側三張各四格依後端 `detection_progress` 逐步由原圖替換為真實產物，右側為醒目整顆結果與手機預覽，蒐集模式同區只顯示三張原圖。自動檢測純拍攝的照片間隔依 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#純拍攝-api-契約) 執行。通知開關尚未實作；自動化測試與瀏覽器檢查已通過，操作員人工驗收尚未進行。
 

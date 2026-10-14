@@ -113,6 +113,44 @@ class DatasetModeTests(SimpleTestCase):
             self.assertEqual(Path(response.json()['path']), self.dataset_base / 'detection')
             open_folder.assert_called_once_with(self.dataset_base / 'detection')
 
+    def test_detection_partition_has_no_label_folders_or_metadata(self):
+        detection = self.dataset_base / 'detection'
+        detection.mkdir(parents=True, exist_ok=True)
+        for label in ('上等', '中等', '下等'):
+            (detection / label).mkdir(exist_ok=True)
+        kept = detection / '加工' / 'fruit_009'
+        kept.mkdir(parents=True)
+        (detection / 'metadata.csv').write_text(
+            ','.join(views.METADATA_FIELDNAMES) + '\n', encoding='utf-8-sig',
+        )
+        views._initialise_dataset_structure.cache_clear()
+
+        self._select('detection')
+        self.assertEqual(self._post_json('/api/reset_dataset/').status_code, 200)
+
+        for label in ('上等', '中等', '下等'):
+            self.assertFalse((detection / label).exists(), label)
+        self.assertTrue(kept.is_dir())  # Non-empty legacy content stays put.
+        self.assertFalse((detection / 'metadata.csv').exists())
+        self.assertTrue((detection / 'temp').is_dir())
+        self._select('collection')
+        collection = self.dataset_base / 'collection'
+        for label in views.LABELS:
+            self.assertTrue((collection / label).is_dir(), label)
+        self.assertTrue((collection / 'metadata.csv').is_file())
+
+    def test_detection_metadata_with_rows_is_kept(self):
+        detection = self.dataset_base / 'detection'
+        detection.mkdir(parents=True, exist_ok=True)
+        metadata = detection / 'metadata.csv'
+        metadata.write_text(
+            ','.join(views.METADATA_FIELDNAMES) + '\nfruit_001,上等\n',
+            encoding='utf-8-sig',
+        )
+        views._initialise_dataset_structure.cache_clear()
+        self._select('detection')
+        self.assertIn('fruit_001', metadata.read_text(encoding='utf-8-sig'))
+
     def test_same_number_images_are_scoped_and_old_result_is_not_current(self):
         for mode, data in (('collection', b'collection'), ('detection', b'detection')):
             folder = self.dataset_base / mode / '上等' / 'fruit_001'

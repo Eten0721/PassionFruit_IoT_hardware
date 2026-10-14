@@ -1210,6 +1210,53 @@ class DetectionFlowTests(SimpleTestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['classification_source'], 'manual')
 
+    def test_abandon_keeps_evidence_without_grade_or_next_round(self):
+        fruit_id, state = self._run_needs_review_round()
+        original = state['detection_result']
+
+        response = self._post_json('/api/detection/manual_grade/', {
+            'fruit_id': fruit_id, 'result_id': original['result_id'],
+            'abandon': True,
+        })
+
+        self.assertEqual(response.status_code, 200, response.content)
+        saved = self._saved_result(fruit_id)
+        classification = saved['classification']
+        self.assertEqual(classification['status'], 'abandoned')
+        self.assertEqual(classification['source'], 'manual')
+        self.assertIsNone(classification['grade'])
+        self.assertIsNone(classification['label'])
+        self.assertEqual(classification['reason'], 'operator_abandoned')
+        self.assertEqual(saved['model_classification'], original['classification'])
+        self.assertEqual(saved['inference'], original['inference'])
+        self.assertEqual(saved['status'], 'manual_abandoned')
+        self.assertFalse(saved['complete'])
+        self.assertEqual(saved['reason'], 'detection_incomplete')
+        self.assertTrue(
+            (self.detection_root / fruit_id / 'img_01_original.jpg').is_file()
+        )
+        rows = self._summary_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['result_status'], 'manual_abandoned')
+        self.assertEqual(rows[0]['classification_status'], 'abandoned')
+        self.assertEqual(rows[0]['classification_source'], 'manual')
+        self.assertEqual(rows[0]['final_grade'], '')
+
+        state = self.client.get('/api/state/').json()
+        self.assertFalse(state['can_manual_grade'])
+        self.assertEqual(state['manual_grade_disabled_reason'], 'already_manual_graded')
+        self.assertIsNone(state['active_fruit_id'])
+        self.assertEqual(state['motor_command']['command'], 'none')
+        repeat = self._post_json('/api/detection/manual_grade/', {
+            'fruit_id': fruit_id, 'result_id': original['result_id'],
+            'abandon': True,
+        })
+        self.assertTrue(repeat.json()['duplicate'])
+        graded = self._manual_grade(state, '上等')
+        self.assertEqual(graded.status_code, 409)
+        self.assertEqual(graded.json()['reason'], 'already_manual_graded')
+        self.assertEqual(len(self._summary_rows()), 1)
+
     @mock.patch('fruit_app.detection.execute_model_batch')
     def test_hardware_needs_review_keeps_gate3_lock_until_hardware_ticket(
         self, execute,

@@ -1917,7 +1917,7 @@ MANUAL_GRADE_MESSAGES = {
         '使用硬體的人工接手放行尚未接通；Gate 3 維持關閉，請依安全復原提示處理。'
     ),
     'result_not_saved': '本輪檢測結果尚未保存成功，無法人工接手；請刪除本輪重拍。',
-    'already_manual_graded': '本輪已完成人工判級。',
+    'already_manual_graded': '本輪已由人工處理（判級或放棄）。',
     'not_needs_review': '本輪已由模型判級，不需人工接手。',
     'stale_detection_result': '畫面上的檢測結果已變更，請重新確認本輪照片。',
     'result_not_found': '找不到本輪檢測結果檔，無法人工接手。',
@@ -1951,14 +1951,16 @@ def _manual_grade_disabled_reason():
 @require_POST
 @network_required
 def manual_grade_api(request):
-    """Operator grade for a photo-only round the model could not grade."""
+    """Operator grade, or ``abandon``, for a photo-only needs-review round."""
     data = _request_data(request)
-    label = data.get('label')
-    if label not in LABELS:
+    abandon = data.get('abandon') is True
+    label = None if abandon else data.get('label')
+    if not abandon and label not in LABELS:
         return _json_error(
-            '分類必須是上等、中等、下等或加工。', status=400, reason='invalid_label',
+            '分類必須是上等、中等、下等或加工，或明確放棄本輪。',
+            status=400, reason='invalid_label',
         )
-    grade = grading.grade_for_label(label)
+    grade = None if abandon else grading.grade_for_label(label)
     with STATE_LOCK:
         mode_error = _request_dataset_mode_error(request)
         if mode_error is not None:
@@ -1977,7 +1979,7 @@ def manual_grade_api(request):
             reason = _manual_grade_disabled_reason()
         duplicate = reason == 'already_manual_graded' and (
             current.get('classification') or {}
-        ).get('label') == label
+        ).get('grade') == grade
         if reason and not duplicate:
             return _json_error(
                 MANUAL_GRADE_MESSAGES[reason], status=409, reason=reason,
@@ -1988,7 +1990,7 @@ def manual_grade_api(request):
         )
 
     try:
-        outcome = detection.apply_manual_grade(
+        outcome = detection.apply_manual_decision(
             output_root=_detection_output_root(),
             summary_path=_detection_summary_path(),
             fruit_id=fruit_id,
@@ -2005,13 +2007,15 @@ def manual_grade_api(request):
         if (APP_STATE.get('detection_result') or {}).get('result_id') == data['result_id']:
             APP_STATE['detection_result'] = outcome['result']
             APP_STATE['detection_error'] = None
+            decision = '已放棄本輪、不分級' if abandon else f'已人工判為「{label}」'
             APP_STATE['message'] = (
-                f'{fruit_id} 已人工判為「{label}」並更新檢測紀錄；'
+                f'{fruit_id} {decision}並更新檢測紀錄；'
                 '原檢測失敗資訊仍保留。純拍攝不啟動硬體或下一輪。'
             )
         _record_transition(
-            'detection_manual_graded', fruit_id=fruit_id,
-            details={'label': label, 'duplicate': outcome['duplicate']},
+            'detection_manual_decided', fruit_id=fruit_id,
+            details={'label': label, 'abandoned': abandon,
+                     'duplicate': outcome['duplicate']},
         )
         return JsonResponse(_state_payload(extra={
             'manual_grade_saved': True,
@@ -2913,6 +2917,32 @@ def _capture_timing_path():
     return Path(settings.CAPTURE_TIMING_CONFIG_PATH)
 
 
+def _collects_by_label():
+    """Only collection files photos into label folders with metadata.csv.
+
+    Detection keeps every round, including manual takeover, in ``results/``
+    and ``detection_summary.csv``.
+    """
+    return APP_STATE['work_mode'] == 'collection'
+
+
+def _remove_empty_label_scaffold(root):
+    """Drop empty label folders and a header-only metadata.csv; keep content."""
+    for label in LABELS:
+        try:
+            (root / label).rmdir()
+        except OSError:
+            pass  # Missing, non-empty or busy: leave it where it is.
+    metadata = root / 'metadata.csv'
+    try:
+        with metadata.open('r', encoding='utf-8-sig', newline='') as csv_file:
+            has_rows = any(True for _row in csv.DictReader(csv_file))
+        if not has_rows:
+            metadata.unlink()
+    except OSError:
+        pass
+
+
 def _legacy_capture_timing_path():
     return Path(settings.DATASET_ROOT) / 'capture_timing.json'
 
@@ -2948,12 +2978,16 @@ def _initialise_dataset_structure(root):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     (root / 'temp').mkdir(parents=True, exist_ok=True)
-    for label in LABELS:
-        (root / label).mkdir(parents=True, exist_ok=True)
+    if _collects_by_label():
+        for label in LABELS:
+            (root / label).mkdir(parents=True, exist_ok=True)
+    else:
+        _remove_empty_label_scaffold(root)
     if not (root / 'counter.json').exists():
         _write_counter(1)
     _ensure_capture_timing_config()
-    _ensure_metadata_header()
+    if _collects_by_label():
+        _ensure_metadata_header()
     _restore_gate3_recovery_marker()
     _restore_sorter_recovery_marker()
     path = _network_recovery_path()
@@ -5554,8 +5588,10 @@ def _reset_dataset_contents():
     moved_paths = []
     ignored_paths = []
     reset_id = datetime.now().strftime('reset_%Y%m%d_%H%M%S')
-    parents = [_temp_dir(), *(_dataset_root() / label for label in LABELS)]
-    if APP_STATE['work_mode'] == 'detection':
+    parents = [_temp_dir()]
+    if _collects_by_label():
+        parents.extend(_dataset_root() / label for label in LABELS)
+    else:
         parents.append(_detection_output_root())
     for parent in parents:
         parent.mkdir(parents=True, exist_ok=True)
@@ -5570,10 +5606,11 @@ def _reset_dataset_contents():
                 })
             if result['ignored']:
                 ignored_paths.append(result['relative_path'])
-    with _metadata_path().open('w', encoding='utf-8-sig', newline='') as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=METADATA_FIELDNAMES)
-        writer.writeheader()
-    if APP_STATE['work_mode'] == 'detection':
+    if _collects_by_label():
+        with _metadata_path().open('w', encoding='utf-8-sig', newline='') as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=METADATA_FIELDNAMES)
+            writer.writeheader()
+    else:
         detection.reset_summary(_detection_summary_path())
     _load_image_list.cache_clear()
     _write_counter(1)

@@ -532,9 +532,12 @@ def _set_overall_status(result: dict) -> None:
     storage = result['storage']
     saved = storage['status'] == 'saved'
     if classification.get('source') == MANUAL_SOURCE and saved:
-        # Keep the original failure visible next to the operator's grade.
+        # Keep the original failure visible next to the operator's decision.
         result['complete'] = False
-        result['status'] = 'manual_completed'
+        result['status'] = (
+            'manual_abandoned' if classification['status'] == 'abandoned'
+            else 'manual_completed'
+        )
         result['reason'] = (
             inference['reason']
             or (result.get('model_classification') or {}).get('reason')
@@ -552,18 +555,19 @@ def _set_overall_status(result: dict) -> None:
     )
 
 
-def apply_manual_grade(
+def apply_manual_decision(
     *, output_root: Path, summary_path: Path, fruit_id: str, result_id: str,
-    grade: int,
+    grade: int | None,
 ) -> dict:
-    """Record an operator grade on a saved needs-review result of this round.
+    """Record an operator grade, or ``grade=None`` to abandon the round.
 
-    The model's classification moves unchanged to ``model_classification``;
-    images, inference failure and storage locations are kept. JSON and the
-    summary row change together or not at all. An identical repeat is a
-    duplicate that only re-syncs the summary row.
+    Only a saved needs-review result of this round qualifies. The model's
+    classification moves unchanged to ``model_classification``; images,
+    inference failure and storage locations are kept. JSON and the summary
+    row change together or not at all. An identical repeat is a duplicate
+    that only re-syncs the summary row.
     """
-    if grade not in range(len(grading.GRADES)):
+    if grade is not None and grade not in range(len(grading.GRADES)):
         raise ValueError(f'人工等級必須是 0～3：{grade!r}')
     result = load_result(output_root, fruit_id)
     if result is None:
@@ -584,14 +588,9 @@ def apply_manual_grade(
     if classification.get('status') != 'needs_review':
         return {'ok': False, 'reason': 'not_needs_review'}
 
-    label, code = grading.grade_label(grade)
     updated = copy.deepcopy(result)
     updated['model_classification'] = classification
-    updated['classification'] = {
-        'status': 'graded', 'grade': grade, 'label': label, 'code': code,
-        'source': MANUAL_SOURCE, 'worst_view': None, 'reason': None,
-        'decided_at': _now(),
-    }
+    updated['classification'] = _manual_classification(grade)
     _set_overall_status(updated)
     json_path = Path(output_root) / fruit_id / 'result.json'
     try:
@@ -611,6 +610,21 @@ def apply_manual_grade(
             )
         return failure
     return {'ok': True, 'duplicate': False, 'result': updated}
+
+
+def _manual_classification(grade: int | None) -> dict:
+    if grade is None:
+        return {
+            'status': 'abandoned', 'grade': None, 'label': None, 'code': None,
+            'source': MANUAL_SOURCE, 'worst_view': None,
+            'reason': 'operator_abandoned', 'decided_at': _now(),
+        }
+    label, code = grading.grade_label(grade)
+    return {
+        'status': 'graded', 'grade': grade, 'label': label, 'code': code,
+        'source': MANUAL_SOURCE, 'worst_view': None, 'reason': None,
+        'decided_at': _now(),
+    }
 
 
 def _save_failure(reason: str, error: Exception) -> dict:

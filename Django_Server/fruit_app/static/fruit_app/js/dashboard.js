@@ -41,6 +41,7 @@ const remoteVideo = document.getElementById('remote-video');
     const manualGradePanel = document.getElementById('manual-grade-panel');
     const manualGradeGuidance = document.getElementById('manual-grade-guidance');
     const manualGradeButtons = Array.from(document.querySelectorAll('.manual-grade-button'));
+    const manualAbandonButton = document.getElementById('btn-manual-abandon');
     const stageChips = document.getElementById('stage-chips');
     const operationModeSummary = document.getElementById('operation-mode-summary');
     const actionGuidance = document.getElementById('action-guidance');
@@ -1094,9 +1095,9 @@ const remoteVideo = document.getElementById('remote-video');
         chips.push(progressChip('四模型', modelsDone, modelsFailed, running, finished));
         const grade = gradeCardModel(data);
         chips.push({
-            label: grade.state === 'graded' || grade.state === 'manual'
+            label: grade.chip || (grade.state === 'graded'
                 ? `分類完成：${grade.title}`
-                : grade.state === 'review' ? '待人工處理' : '分類',
+                : grade.state === 'review' ? '待人工處理' : '分類'),
             state: grade.state === 'graded' || grade.state === 'manual'
                 ? 'done'
                 : grade.state === 'review' ? 'failed' : running ? 'active' : 'waiting',
@@ -1153,11 +1154,21 @@ const remoteVideo = document.getElementById('remote-video');
         }
         const classification = result.classification || {};
         const storage = result.storage || {};
+        if (classification.status === 'abandoned' && classification.source === 'manual') {
+            const failure = result.reason || (result.model_classification || {}).reason || '未知原因';
+            return {
+                state: 'manual',
+                title: '已放棄本輪',
+                chip: '人工放棄本輪',
+                detail: `操作員判定本輪不分級並已保存；照片與原檢測失敗原因保留：${failure}`,
+            };
+        }
         if (classification.status === 'graded' && classification.source === 'manual') {
             const failure = result.reason || (result.model_classification || {}).reason || '未知原因';
             return {
                 state: 'manual',
                 title: `${classification.label}（人工判定）`,
+                chip: `人工分類：${classification.label}`,
                 detail: `模型無法判級，由操作員人工判定並已保存；原檢測失敗原因保留：${failure}`,
             };
         }
@@ -1212,9 +1223,9 @@ const remoteVideo = document.getElementById('remote-video');
         manualGradePanel.hidden = grade.state !== 'review'
             || !data.detection_result
             || ['not_detection_mode', 'already_manual_graded', 'not_needs_review'].includes(reason);
-        manualGradeButtons.forEach((button) => {
+        [...manualGradeButtons, manualAbandonButton].forEach((button) => {
             button.disabled = Boolean(controlActionInFlight) || !data.can_manual_grade;
-            button.title = data.can_manual_grade ? '' : `無法人工判級：${reasonText(reason)}`;
+            button.title = data.can_manual_grade ? '' : `無法人工處理：${reasonText(reason)}`;
         });
         setTextIfChanged(manualGradeGuidance, data.can_manual_grade
             ? '檢查左側三張照片與失敗原因後選擇等級；人工結果與模型輸出分開保存。'
@@ -1827,24 +1838,36 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     async function manualGrade(label) {
-        const actionButton = manualGradeButtons.find((button) => button.dataset.label === label);
+        // ``label === null`` abandons the round without a grade.
+        const actionButton = label === null
+            ? manualAbandonButton
+            : manualGradeButtons.find((button) => button.dataset.label === label);
         const result = lastState && lastState.detection_result;
-        if (!result || !beginControlAction('manual_grade', actionButton)) {
+        if (!result) {
             return;
         }
+        if (label === null && !window.confirm(
+            `確定放棄 ${result.fruit_id}？本輪不分級，照片與失敗原因仍保留在檢測紀錄。`,
+        )) {
+            return;
+        }
+        if (!beginControlAction('manual_grade', actionButton)) {
+            return;
+        }
+        const decision = label === null ? '放棄本輪' : `人工判定「${label}」`;
         try {
             const payload = await postJson('/api/detection/manual_grade/', {
-                label,
+                ...(label === null ? { abandon: true } : { label }),
                 fruit_id: result.fruit_id,
                 result_id: result.result_id,
             });
             lastState = payload;
             renderState(payload);
             setMessage(payload.duplicate
-                ? `${payload.fruit_id} 已是人工判定「${label}」，未重複寫入紀錄。`
-                : `${payload.fruit_id} 已人工判為「${label}」並更新同顆檢測紀錄。`);
+                ? `${payload.fruit_id} 已是${decision}，未重複寫入紀錄。`
+                : `${payload.fruit_id} 已${decision}並更新同顆檢測紀錄。`);
         } catch (error) {
-            setMessage(`人工判級失敗：${error.message}`);
+            setMessage(`${decision}失敗：${error.message}`);
         } finally {
             endControlAction(actionButton);
             await refreshState();
@@ -2044,6 +2067,7 @@ const remoteVideo = document.getElementById('remote-video');
     manualGradeButtons.forEach((button) => {
         button.addEventListener('click', () => manualGrade(button.dataset.label));
     });
+    manualAbandonButton.addEventListener('click', () => manualGrade(null));
     classifyButtons.forEach((button) => {
         button.addEventListener('click', () => classify(button.dataset.label));
     });
