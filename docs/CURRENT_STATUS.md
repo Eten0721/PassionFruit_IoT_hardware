@@ -45,7 +45,7 @@
 
 ## 已接受但尚未完成
 
-- LINE／Cloudinary 實際帳號設定、群組核對與 Issue [#35](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/35) 的人工驗收尚未執行；整合驗收見 Issue [#36](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/36)。
+- Issue [#36](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/36) 只完成軟體整合驗證；其人工驗收清單尚未操作，硬體備妥後依該 Issue 補測。
 - 資料分區的瀏覽器、手機與操作員觀察驗收（蒐集／檢測各一輪、只刪檢測、重置後重啟、處理中切換）尚未執行。
 - 離線換網、換電腦與各階段斷線復原的實機驗收由 Issue [#27](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/27) 追蹤；BOOT 候選腳位、換網與斷電保存仍待操作員驗證。
 

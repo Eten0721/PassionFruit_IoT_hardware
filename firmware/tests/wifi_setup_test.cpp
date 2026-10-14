@@ -139,6 +139,7 @@ static void wrongPasswordAndSaveFailureKeepPrevious() {
   assert(Fake::wifiSSID == "host-test");
   save(controller);
   Fake::wifiNvsFail = true; Fake::connected = true;
+  WiFi.pollEvents();  // Emit GOT_IP now, as the ESP32 does, instead of on a racy worker poll.
   request(controller, "/status");
   request(controller, "/status");
   assert(response() == "wifi_config_save_failed");

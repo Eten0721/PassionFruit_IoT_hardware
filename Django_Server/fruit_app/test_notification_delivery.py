@@ -388,6 +388,14 @@ class NotificationFlowTests(SimpleTestCase):
     _worst_second_view = flow.__dict__['_worst_second_view']
     _run_photo_round = flow._run_photo_round
     _manual_grade = flow._manual_grade
+    _prepare_auto_run = flow._prepare_auto_run
+    _esp32_command = flow._esp32_command
+    _esp32_poll_params = flow._esp32_poll_params
+    _report = flow._report
+    _report_feed_success = flow._report_feed_success
+    _start_hardware_detection = flow._start_hardware_detection
+    _upload_hardware_stations = flow._upload_hardware_stations
+    _summary_rows = flow._summary_rows
     del flow
 
     def _processing_round(self):
@@ -427,6 +435,56 @@ class NotificationFlowTests(SimpleTestCase):
             _fruit, state = self._run_photo_round()
         self.assertEqual(state['detection_result']['classification']['label'], '上等')
         self.assertEqual(len(self._outbox_entries()), 2)
+
+    def test_hardware_processing_sorts_and_feeds_next_when_queueing_fails(self):
+        views.notification_outbox().set_enabled('hardware', True)
+        with mock.patch('fruit_app.detection.execute_model_batch',
+                        side_effect=self._worst_second_view), \
+                mock.patch.object(delivery.Outbox, 'enqueue',
+                                  side_effect=OSError('outbox disk full')):
+            fruit_id = self._start_hardware_detection()
+            self._upload_hardware_stations(fruit_id)
+            state = self._wait_for_detection()
+
+        classification = state['detection_result']['classification']
+        self.assertEqual(classification['label'], '加工')
+        command = state['motor_command']
+        self.assertEqual(command['command'], 'classify_fruit')
+        self.assertEqual(command['classification_code'], classification['code'])
+        self.assertIn('LINE 通知未能排入待送', state['message'])
+        self.assertEqual(self._outbox_entries(), {})
+        self.assertEqual(len(self._summary_rows()), 1)
+
+        accepted = self._report('classification_sorter_completed',
+                                command_id=command['command_id'],
+                                classification_code=command['classification_code'],
+                                fruit_id=fruit_id)
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(self.client.get('/api/state/').json()['motor_command']['command'],
+                         'feed_one')
+
+    def test_hardware_manual_processing_sorts_when_queueing_fails(self):
+        views.notification_outbox().set_enabled('hardware', True)
+        reports, artifacts = self._external_result(
+            [Path(f'img_{index:02d}.jpg') for index in range(1, 4)], {})
+        reports[0]['models']['defect'] = {'status': 'failed', 'reason': 'inference_failed'}
+        artifacts[0].pop('defect_annotated')
+        with mock.patch('fruit_app.detection.execute_model_batch',
+                        return_value=(reports, artifacts)):
+            fruit_id = self._start_hardware_detection()
+            self._upload_hardware_stations(fruit_id)
+            state = self._wait_for_detection()
+        self.assertEqual(state['detection_result']['classification']['status'], 'needs_review')
+
+        with mock.patch.object(delivery.Outbox, 'enqueue',
+                               side_effect=OSError('outbox disk full')):
+            response = self._manual_grade(state, '加工')
+        self.assertEqual(response.status_code, 200)
+        state = response.json()
+        self.assertEqual(state['motor_command']['command'], 'classify_fruit')
+        self.assertEqual(state['motor_command']['classification_code'], 'processing')
+        self.assertIn('LINE 通知未能排入待送', state['message'])
+        self.assertEqual(self._outbox_entries(), {})
 
     def test_switch_follows_current_hardware_mode(self):
         self._post_json('/api/collection_options/', {

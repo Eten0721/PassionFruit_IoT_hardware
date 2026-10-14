@@ -1897,7 +1897,7 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir, session):
             _clear_active_state(message, status=terminal_status)
             return
         if complete:
-            _start_saved_detection_sorting(result)
+            _start_saved_detection_sorting(result, notice)
             return
         APP_STATE['status'] = terminal_status
         APP_STATE['message'] = (
@@ -1935,8 +1935,17 @@ def _sorter_start_disabled_reason():
     return None
 
 
-def _start_saved_detection_sorting(result):
-    """Consume a saved grade once; never retry physical sorting from disk."""
+def _start_saved_detection_sorting(result, notice=''):
+    """Consume a saved grade once; never retry physical sorting from disk.
+
+    ``notice`` (the LINE queue outcome) is appended to whatever sorting message
+    results, so hardware rounds report it as photo-only rounds do.
+    """
+    _start_sorting_saved_grade(result)
+    APP_STATE['message'] += notice
+
+
+def _start_sorting_saved_grade(result):
     fruit_id = result['fruit_id']
     classification = result.get('classification') or {}
     label = classification.get('label')
@@ -2082,7 +2091,7 @@ def manual_grade_api(request):
                     '原檢測失敗資訊仍保留。純拍攝不啟動硬體或下一輪。' + notice
                 )
             elif not outcome['duplicate']:
-                _start_saved_detection_sorting(outcome['result'])
+                _start_saved_detection_sorting(outcome['result'], notice)
             elif APP_STATE.get('active_fruit_id') == fruit_id:
                 _set_sorter_failed(fruit_id, label, CLASSIFICATION_CODES[label],
                                    'manual_decision_uncertain')
