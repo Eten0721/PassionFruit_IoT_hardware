@@ -11,6 +11,7 @@ from django.core.management import call_command
 from django.test import SimpleTestCase
 
 from .notification import generate_notification
+from .detection import DEFECT_COLORS, DEFECT_MARKED_SUFFIX
 
 
 class NotificationTests(SimpleTestCase):
@@ -76,7 +77,7 @@ class NotificationTests(SimpleTestCase):
             stem = f'img_{index:02d}'
             original = f'{stem}_original.jpg'
             annotated = f'{stem}_defect_annotated.jpg'
-            marked = f'{stem}_defect_marked.jpg'
+            marked = f'{stem}{DEFECT_MARKED_SUFFIX}'
             with Image.new('RGB', (320, 240), color) as image:
                 image.save(self.root / original)
             with Image.new('RGB', (320, 240), 'yellow') as image:
@@ -114,9 +115,10 @@ class NotificationTests(SimpleTestCase):
         self.assertTrue(preview['ok'])
         text = Path(preview['text_path']).read_text(encoding='utf-8')
         self.assertEqual(preview['text'], text)
-        for expected in ('2026-10-14T09:00:00+08:00', result['result_id'],
-                         '加工等級', '照片 1：擦傷', '照片 2：擦傷', '照片 3：擦傷'):
-            self.assertIn(expected, text)
+        self.assertEqual(text, '測試 |瑕疵通知|\n偵測時間：2026-10-14 09:00:00\n'
+                         '等級：加工\n發現瑕疵：擦傷\n')
+        self.assertEqual(preview['result_id'], result['result_id'])
+        self.assertNotIn(result['result_id'], text)
         self.assertNotIn(result['completed_at'], text)
         self.assertTrue(text.startswith('測試'))
         for forbidden in ('0.987654', '98.7654', 'confidence', 'processing',
@@ -148,6 +150,61 @@ class NotificationTests(SimpleTestCase):
                               'reason': 'grade_model_failed', 'features': None}
         return result
 
+    def test_observation_union_keeps_first_occurrence_order_across_completed_views(self):
+        result = self.processing_fixture()
+        result['hardware_mode'] = 'hardware'
+        result['capture_time'] = '2026-10-14 16:07:19'
+        first = result['images']['img_01.jpg']['models']
+        first['color']['class_name'] = 'bad_color'
+        first['wrinkle']['display_label'] = '有皺褶（壞）'
+        first['defect']['detections'] = [{'class_name': 'insect_track', 'class_index': 3}]
+        second = result['images']['img_02.jpg']['models']
+        second['color']['class_name'] = 'bad_color'
+        second['defect']['detections'] = [
+            {'class_name': name, 'class_index': index}
+            for name, index in [('abrasion', 0), ('insect_bite', 2), ('insect_track', 3)]
+        ]
+        self.write_fixture(result)
+        preview = generate_notification(self.result_path)
+        self.assertEqual(preview['text'], '|瑕疵通知|\n偵測時間：2026-10-14 16:07:19\n'
+                         '等級：加工\n發現瑕疵：色澤異常、皺褶、畫圖蟲、擦傷、蟲咬\n')
+
+    def test_incomplete_views_are_excluded_from_union_but_keep_image_observations(self):
+        result = self.manual_fixture()
+        for name in ('img_01.jpg', 'img_03.jpg'):
+            models = result['images'][name]['models']
+            models['color']['status'] = 'error'
+            models['defect']['detections'] = [{'class_name': 'anthracnose', 'class_index': 1}]
+        self.write_fixture(result)
+        preview = generate_notification(self.result_path)
+        self.assertEqual(preview['text'], '測試 |瑕疵通知|\n偵測時間：2026-10-14 09:00:00\n'
+                         '等級：加工（人工判定）\n發現瑕疵：擦傷\n'
+                         '備註：照片 1、3 未完成檢測，未列入瑕疵觀察\n')
+        self.assertIn('疑似炭疽病', preview['views'][0]['label'])
+        self.assertNotIn('疑似炭疽病', preview['text'])
+        result['images']['img_02.jpg']['models']['defect']['detections'] = []
+        self.write_fixture(result)
+        preview = generate_notification(self.result_path)
+        self.assertIn('發現瑕疵：已完成檢測的照片未偵測到瑕疵', preview['text'])
+        result['images']['img_02.jpg']['models']['color']['status'] = 'error'
+        self.write_fixture(result)
+        preview = generate_notification(self.result_path)
+        self.assertIn('發現瑕疵：無可用檢測結果', preview['text'])
+
+    def test_old_palette_marked_images_fall_back_without_mismatched_legends(self):
+        result = self.processing_fixture()
+        for index, image in enumerate(result['images'].values(), 1):
+            old_name = f'img_{index:02d}_defect_marked.jpg'
+            (self.root / image['artifacts']['defect_marked']).rename(self.root / old_name)
+            image['artifacts']['defect_marked'] = old_name
+        self.write_fixture(result)
+        preview = generate_notification(self.result_path)
+        for index, view in enumerate(preview['views'], 1):
+            self.assertTrue(view['detection_complete'])
+            self.assertEqual(view['label'], '無標示圖；擦傷')
+            self.assertEqual(view['legend'], [])
+            self.assertEqual(view['image_path'], str(self.root / f'img_{index:02d}_original.jpg'))
+
     def test_manual_processing_uses_final_classification_without_rewriting_any_input(self):
         result = self.manual_fixture()
         result['hardware_mode'] = 'hardware'
@@ -158,7 +215,8 @@ class NotificationTests(SimpleTestCase):
         with mock.patch('socket.socket.connect', side_effect=AssertionError('No network')):
             preview = generate_notification(self.result_path)
         self.assertTrue(preview['ok'])
-        self.assertIn('人工判為加工等級', preview['text'])
+        self.assertEqual(preview['text'], '|瑕疵通知|\n偵測時間：2026-10-14 09:00:00\n'
+                         '等級：加工（人工判定）\n發現瑕疵：擦傷\n')
         self.assertFalse(preview['text'].startswith('測試'))
         for filename, data in before.items():
             self.assertEqual((self.root / filename).read_bytes(), data)
@@ -175,7 +233,7 @@ class NotificationTests(SimpleTestCase):
         self.write_fixture(result)
         preview = generate_notification(self.result_path)
         self.assertTrue(preview['ok'])
-        self.assertEqual(preview['text'].count('未偵測到瑕疵'), 3)
+        self.assertEqual(preview['text'].count('未偵測到瑕疵'), 1)
         self.assertNotIn('擦傷', preview['text'])
 
     def test_disease_and_other_successful_observations_are_chinese_and_suspected(self):
@@ -191,7 +249,10 @@ class NotificationTests(SimpleTestCase):
         preview = generate_notification(self.result_path)
         self.assertTrue(preview['ok'])
         self.assertEqual(preview['views'][0]['observations'],
-                         ['色澤異常', '皺褶', '擦傷', '疑似炭疽病', '蟲咬', '蟲跡'])
+                         ['色澤異常', '皺褶', '擦傷', '疑似炭疽病', '蟲咬', '畫圖蟲'])
+        self.assertNotIn('蟲跡', preview['text'])
+        self.assertIn('畫圖蟲', preview['views'][0]['label'])
+        self.assertIn('畫圖蟲', [entry['label'] for entry in preview['views'][0]['legend']])
         self.assertIn('疑似炭疽病', preview['text'])
         for forbidden in ('0.987654', 'anthracnose', 'insect_bite', 'insect_track',
                           '因此', '因為', '導致', '已分槽', '可食用'):
@@ -230,7 +291,7 @@ class NotificationTests(SimpleTestCase):
         preview = generate_notification(self.result_path)
         self.assertTrue(preview['ok'])
         self.assertIn('無可用檢測結果', preview['text'])
-        self.assertEqual(preview['text'].count('未完成檢測'), 3)
+        self.assertIn('備註：照片 1、2、3 未完成檢測，未列入瑕疵觀察', preview['text'])
         self.assertNotIn('未偵測到瑕疵', preview['text'])
 
     def test_missing_view_has_a_placeholder_without_invented_image_or_marks(self):
@@ -247,7 +308,7 @@ class NotificationTests(SimpleTestCase):
 
     def test_missing_marked_image_falls_back_to_original_without_changing_detection_status(self):
         result = self.processing_fixture()
-        (self.root / 'img_02_defect_marked.jpg').unlink()
+        (self.root / f'img_02{DEFECT_MARKED_SUFFIX}').unlink()
         self.write_fixture(result)
         preview = generate_notification(self.result_path)
         view = preview['views'][1]
@@ -275,9 +336,7 @@ class NotificationTests(SimpleTestCase):
             self.assertLess(green, 10)
             self.assertLess(blue, 10)
 
-    def test_chinese_legend_matches_ultralytics_class_colors_and_marked_image(self):
-        from ultralytics.utils.plotting import colors
-
+    def test_chinese_legend_matches_fixed_class_colors_and_has_dark_borders(self):
         result = self.processing_fixture()
         result['images']['img_01.jpg']['models']['defect']['detections'] = [
             {'class_name': 'abrasion', 'class_index': 3, 'confidence': 0.87},
@@ -286,10 +345,10 @@ class NotificationTests(SimpleTestCase):
         self.write_fixture(result)
         preview = generate_notification(self.result_path)
         first = preview['views'][0]
-        self.assertEqual(first['image_path'], str(self.root / 'img_01_defect_marked.jpg'))
+        self.assertEqual(first['image_path'], str(self.root / f'img_01{DEFECT_MARKED_SUFFIX}'))
         self.assertEqual(first['legend'], [
-            {'label': '擦傷', 'class_index': 3, 'color': list(reversed(colors(3, True)))},
-            {'label': '疑似炭疽病', 'class_index': 0, 'color': list(reversed(colors(0, True)))},
+            {'label': '擦傷', 'class_index': 3, 'color': list(DEFECT_COLORS['abrasion'])},
+            {'label': '疑似炭疽病', 'class_index': 0, 'color': list(DEFECT_COLORS['anthracnose'])},
         ])
         with Image.open(preview['image_path']) as image:
             # Each expected color must occupy a visible swatch in photo 1's caption.
@@ -298,7 +357,9 @@ class NotificationTests(SimpleTestCase):
                     count = sum(all(abs(value - expected) < 15
                                     for value, expected in zip(pixel, entry['color'], strict=True))
                                 for pixel in caption.getdata())
-                    self.assertGreater(count, 200)
+                    self.assertGreater(count, 150)
+            for top in (62, 102):
+                self.assertLess(max(image.getpixel((17, top + 10))), 90)
             red, green, blue = image.getpixel((320, image.height - 240))
             self.assertLess(red, 10)
             self.assertGreater(green, 245)

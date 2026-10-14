@@ -2369,6 +2369,27 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertContains(camera_response, '/static/fruit_app/js/camera.js')
         self.assertEqual(camera_response['Cache-Control'], 'no-store, max-age=0')
 
+    def test_dashboard_hides_diagnostics_and_orders_settings_for_operators(self):
+        response = self.client.get('/dashboard/')
+        self.assertEqual(response.status_code, 200)
+        html = response.content.decode('utf-8')
+        self.assertIn('<h1 id="dashboard-title">百香果檢測與分類控制台</h1>', html)
+        self.assertIn('<details id="diagnostics" class="disclosure-panel" hidden>', html)
+        self.assertIn('<p id="legacy-dataset-location" hidden></p>', html)
+        self.assertIn('只重置目前模式的暫存、照片、結果與編號', html)
+        self.assertLess(html.index('id="dataset-management"'), html.index('id="network-setup"'))
+        self.assertLess(html.index('id="network-setup"'), html.index('id="capture-settings"'))
+        self.assertLess(html.index('id="capture-settings"'), html.index('id="diagnostics"'))
+        network_summary = html.split('<details id="network-setup"', 1)[1].split('</summary>', 1)[0]
+        self.assertIn('id="network-setup-summary-status" class="summary-badge"', network_summary)
+        self.assertIn('未連線', network_summary)
+        diagnostics = html.split('<details id="diagnostics"', 1)[1].split('</details>', 1)[0]
+        for status_id in ('stream-status', 'error-reason'):
+            self.assertIn(f'id="{status_id}"', html)
+            self.assertNotIn(f'id="{status_id}"', diagnostics)
+        css = (Path(__file__).parent / 'static/fruit_app/css/dashboard.css').read_text(encoding='utf-8')
+        self.assertIn('.global-message:empty {\n    display: none;\n}', css)
+
     def test_dashboard_renders_calibrated_timing_defaults(self):
         response = self.client.get('/dashboard/')
 

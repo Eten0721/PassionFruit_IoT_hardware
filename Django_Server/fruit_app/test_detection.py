@@ -397,7 +397,7 @@ class DetectionFlowTests(SimpleTestCase):
         write_artifact = detection._write_artifact
 
         def fail_farmer_only(path, image):
-            if path.name.endswith('_defect_marked.jpg'):
+            if path.name.endswith(detection.DEFECT_MARKED_SUFFIX):
                 raise OSError('farmer image unavailable')
             write_artifact(path, image)
 

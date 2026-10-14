@@ -11,7 +11,7 @@
 <header class="app-header">
     <div class="brand-block">
         <span class="eyebrow">PASSION FRUIT INSPECTION</span>
-        <h1>百香果檢測與分類控制台</h1>
+        <h1 id="dashboard-title">百香果檢測與分類控制台</h1>
         <p class="camera-link">手機相機頁：<strong id="camera-url"></strong>，手機不要開啟 /dashboard/。</p>
     </div>
     <div class="system-status" aria-label="系統連線狀態">
@@ -119,6 +119,7 @@
             </div>
         </details>
         <div id="operation-actions" class="operation-actions" role="group" aria-label="主要操作" aria-describedby="action-guidance">
+            <p id="error-reason" class="control-guidance" role="alert" hidden></p>
             <div class="operation-buttons">
                 <button id="btn-auto-run" type="button" class="button primary-action" disabled>開始執行</button>
                 <button id="btn-recapture" type="button" class="button warning">重新拍攝</button>
@@ -199,7 +200,7 @@
                     </div>
                 </div>
                 <div class="camera-actions">
-                    <span>即時預覽僅供監看，不代表手機拍攝端是否就緒。</span>
+                    <span id="stream-status" role="status">即時預覽僅供監看，不代表手機拍攝端是否就緒。</span>
                     <button id="btn-reconnect" type="button" class="button secondary">重新連線串流</button>
                 </div>
             </section>
@@ -207,6 +208,46 @@
     </div>
 
     <div class="advanced-stack">
+        <details id="dataset-management" class="disclosure-panel">
+            <summary>
+                <span><strong>資料管理</strong><small>設定下一筆 ID、開啟 Dataset 資料夾或重置資料。</small></span>
+                <span class="summary-badge neutral">低頻操作</span>
+            </summary>
+            <div class="disclosure-content data-management-grid">
+                <p id="dataset-scope" aria-live="polite"></p>
+                <p id="legacy-dataset-location" hidden></p>
+                <div class="counter-control">
+                    <label for="counter-input">下一筆資料起始 ID</label>
+                    <div class="controls">
+                        <input id="counter-input" type="number" min="1" inputmode="numeric" placeholder="例如 120">
+                        <button id="btn-set-counter" type="button" class="button secondary">設定起始 ID</button>
+                    </div>
+                </div>
+                <button id="btn-open-folder" type="button" class="button secondary">開啟 Dataset 資料夾</button>
+                <section class="danger-zone" aria-labelledby="danger-zone-title">
+                    <div>
+                        <span class="section-kicker">DANGER ZONE</span>
+                        <h3 id="danger-zone-title">重置 Dataset</h3>
+                        <p>只重置目前模式的暫存、照片、結果與編號。另一模式及舊資料保留原位。此動作無法復原。</p>
+                    </div>
+                    <button id="btn-reset-dataset" type="button" class="button danger">重置 Dataset</button>
+                </section>
+            </div>
+        </details>
+
+        <details id="network-setup" class="disclosure-panel" aria-labelledby="network-setup-title">
+            <summary>
+                <span><strong id="network-setup-title">ESP32 網路設定</strong><small>查看配網狀態與 BOOT 重新設定指引。</small></span>
+                <span class="summary-statuses">
+                    <span id="network-setup-summary-status" class="summary-badge" data-state="error" aria-live="polite">未連線</span>
+                </span>
+            </summary>
+            <div class="disclosure-content">
+                <p id="network-setup-status" role="status">無法確認 ESP32 是否可安全配網。</p>
+                <p>安全閒置時，於正常開機後按一下 BOOT，再連上名稱以 PF-Setup- 開頭的設定熱點，開啟 http://192.168.4.1/。密碼由維護者提供。保存成功後，在設定頁按「退出連線」關閉熱點，再將手機切回目標 Wi-Fi。GPIO 0 是目前 BOOT 候選腳位，尚待實機核對；不要按住 BOOT 上電或重置。</p>
+            </div>
+        </details>
+
         <details id="capture-settings" class="disclosure-panel">
             <summary>
                 <span><strong>停穩設定與送料校正</strong><small>調整三站 timing、同步 ESP32 並完成單顆送料確認。</small></span>
@@ -284,17 +325,7 @@
             </div>
         </details>
 
-        <details id="network-setup" class="disclosure-panel" aria-labelledby="network-setup-title">
-            <summary>
-                <span><strong id="network-setup-title">ESP32 網路設定</strong><small>查看配網狀態與 BOOT 重新設定指引。</small></span>
-            </summary>
-            <div class="disclosure-content">
-                <p id="network-setup-status" role="status">無法確認 ESP32 是否可安全配網。</p>
-                <p>安全閒置時，於正常開機後按一下 BOOT，再連上名稱以 PF-Setup- 開頭的設定熱點，開啟 http://192.168.4.1/。密碼由維護者提供。保存成功後，在設定頁按「退出連線」關閉熱點，再將手機切回目標 Wi-Fi。GPIO 0 是目前 BOOT 候選腳位，尚待實機核對；不要按住 BOOT 上電或重置。</p>
-            </div>
-        </details>
-
-        <details id="diagnostics" class="disclosure-panel">
+        <details id="diagnostics" class="disclosure-panel" hidden>
             <summary>
                 <span><strong>診斷與流程紀錄</strong><small>檢查 WebRTC、硬體命令、最近事件與流程時間。</small></span>
                 <span class="summary-badge neutral">維修資訊</span>
@@ -303,11 +334,9 @@
                 <section aria-labelledby="diagnostics-system-title">
                     <h3 id="diagnostics-system-title">系統診斷</h3>
                     <dl class="diagnostic-list">
-                        <div><dt>WebRTC</dt><dd id="stream-status">正在建立 WebRTC offer，等待手機端連線。</dd></div>
                         <div><dt>Capture raw state</dt><dd id="raw-state-label">idle</dd></div>
                         <div><dt>送料結果</dt><dd id="feeder-test-result">尚無資料</dd></div>
                         <div><dt>馬達命令</dt><dd id="motor-command">none</dd></div>
-                        <div><dt>錯誤原因</dt><dd id="error-reason">無</dd></div>
                     </dl>
                 <dl class="sorter-summary">
                     <div><dt>硬體分類器</dt><dd id="sorter-status">閒置</dd></div>
@@ -327,33 +356,6 @@
                     <ol id="transition-trace" class="trace-list">
                         <li class="trace-empty">伺服器尚未提供 transition trace。</li>
                     </ol>
-                </section>
-            </div>
-        </details>
-
-        <details id="dataset-management" class="disclosure-panel">
-            <summary>
-                <span><strong>資料管理</strong><small>設定下一筆 ID、開啟 Dataset 資料夾或重置資料。</small></span>
-                <span class="summary-badge neutral">低頻操作</span>
-            </summary>
-            <div class="disclosure-content data-management-grid">
-                <p id="dataset-scope" aria-live="polite"></p>
-                <p id="legacy-dataset-location"></p>
-                <div class="counter-control">
-                    <label for="counter-input">下一筆資料起始 ID</label>
-                    <div class="controls">
-                        <input id="counter-input" type="number" min="1" inputmode="numeric" placeholder="例如 120">
-                        <button id="btn-set-counter" type="button" class="button secondary">設定起始 ID</button>
-                    </div>
-                </div>
-                <button id="btn-open-folder" type="button" class="button secondary">開啟 Dataset 資料夾</button>
-                <section class="danger-zone" aria-labelledby="danger-zone-title">
-                    <div>
-                        <span class="section-kicker">DANGER ZONE</span>
-                        <h3 id="danger-zone-title">重置 Dataset</h3>
-                        <p>只重置目前模式的暫存、照片、結果與編號。另一模式及舊資料保留原位。此動作無法復原。</p>
-                    </div>
-                    <button id="btn-reset-dataset" type="button" class="button danger">重置 Dataset</button>
                 </section>
             </div>
         </details>

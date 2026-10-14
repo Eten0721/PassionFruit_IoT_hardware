@@ -273,6 +273,10 @@ h1 {
     font-size: 14px;
 }
 
+.global-message:empty {
+    display: none;
+}
+
 .global-message:not(:empty) {
     min-height: 42px;
     padding: 10px 12px;

@@ -234,6 +234,24 @@ const remoteVideo = document.getElementById('remote-video');
         }
     }
 
+    const diagnostics = document.getElementById('diagnostics');
+    const diagnosticsStorageKey = 'pf-dashboard-diagnostics-visible';
+    try {
+        diagnostics.hidden = window.localStorage.getItem(diagnosticsStorageKey) !== 'true';
+    } catch {
+        diagnostics.hidden = true;
+    }
+    document.getElementById('dashboard-title').addEventListener('dblclick', () => {
+        window.getSelection()?.removeAllRanges();
+        diagnostics.hidden = !diagnostics.hidden;
+        try {
+            window.localStorage.setItem(diagnosticsStorageKey, String(!diagnostics.hidden));
+        } catch {
+            // Storage may be blocked; the toggle still works for this page.
+        }
+        setMessage(diagnostics.hidden ? '已隱藏診斷資訊' : '已顯示診斷資訊');
+    });
+
     function setStreamStatus(message) {
         setTextIfChanged(streamStatus, message);
     }
@@ -506,6 +524,9 @@ const remoteVideo = document.getElementById('remote-video');
         const diagnosticOnline = Boolean(data.network?.esp32?.online);
         setTextIfChanged(esp32StatusEl, data.esp32_online ? '在線' : diagnosticOnline ? '診斷已連線' : '離線');
         esp32Indicator.dataset.state = data.esp32_online || diagnosticOnline ? 'online' : 'offline';
+        const setupSummaryStatus = document.getElementById('network-setup-summary-status');
+        setTextIfChanged(setupSummaryStatus, data.esp32_online ? '已連線' : diagnosticOnline ? '已連線（診斷）' : '未連線');
+        setupSummaryStatus.dataset.state = data.esp32_online || diagnosticOnline ? 'ready' : 'error';
         setTextIfChanged(cameraReadyStatusEl, data.camera_ready ? '可拍攝' : '未就緒');
         cameraReadyIndicator.dataset.state = data.camera_ready ? 'ready' : 'offline';
         const sensor = sensorStatus(data.feeder_sensor_state);
@@ -525,6 +546,7 @@ const remoteVideo = document.getElementById('remote-video');
         setTextIfChanged(sorterLabelEl, data.sorter_label || '無');
         setTextIfChanged(sorterErrorEl, data.sorter_error || '無');
         setTextIfChanged(errorReasonEl, data.last_error_reason || '無');
+        errorReasonEl.hidden = !data.last_error_reason;
 
         renderReadiness(data);
         renderOperatorAlert(data.operator_alert);
@@ -533,9 +555,7 @@ const remoteVideo = document.getElementById('remote-video');
         renderBoard(data);
         renderGradeCard(data);
         setTextIfChanged(document.getElementById('dataset-scope'),
-            `目前資料區：${data.work_mode === 'detection' ? '自動檢測' : '蒐集'}｜${data.dataset_path}`);
-        setTextIfChanged(document.getElementById('legacy-dataset-location'),
-            `舊資料保留原位，不納入本頁清理：${data.legacy_dataset_path} 根目錄、${data.legacy_detection_path}`);
+            `目前模式：${data.work_mode === 'detection' ? '自動檢測' : '蒐集'}`);
         renderTiming(data.timing || {});
         renderCaptureTiming(data);
         renderTransitionTrace(data);
@@ -1980,9 +2000,7 @@ const remoteVideo = document.getElementById('remote-video');
             const response = await fetch(`/api/open_dataset_folder/?${params}`);
             const payload = await response.json();
             if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
-            if (payload.opened) {
-                setMessage(`已開啟資料夾：${payload.path}`);
-            } else {
+            if (!payload.opened) {
                 setMessage(`資料夾位置：${payload.path}`);
             }
         } catch (error) {

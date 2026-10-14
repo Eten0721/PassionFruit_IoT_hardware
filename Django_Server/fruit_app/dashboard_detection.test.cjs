@@ -5,21 +5,78 @@ const vm = require('node:vm');
 const elements = new Map();
 function element(id) {
     if (!elements.has(id)) elements.set(id, {
-        textContent: '', dataset: {}, hidden: false, disabled: false,
-        addEventListener() {},
+        textContent: '', value: '', dataset: {}, hidden: false, disabled: false,
+        classList: { add() {}, remove() {}, toggle() {} },
+        setAttribute(name, value) { this[name] = value; },
+        getAttribute(name) { return this[name]; },
+        removeAttribute(name) { delete this[name]; },
+        replaceChildren(...children) { this.children = children; },
+        append() {},
+        appendChild() {},
+        querySelector: (selector) => element(`${id} ${selector}`),
+        querySelectorAll: () => [],
+        addEventListener(event, handler) { this[event] = handler; },
     });
     return elements.get(id);
 }
 const buttons = ['high', 'medium', 'low', 'processing'].map(element);
-const context = vm.createContext({
-    document: {
-        getElementById: element,
-        querySelectorAll: (selector) => selector === '.manual-grade-button' ? buttons : [],
-        addEventListener() {},
-    },
-    window: { setTimeout() {}, clearTimeout() {} },
+const dashboardScript = fs.readFileSync(`${__dirname}/static/fruit_app/js/dashboard.js`, 'utf8');
+function loadDashboard(storage = { getItem() { return null; }, setItem() {} }) {
+    const context = vm.createContext({
+        document: {
+            getElementById: element,
+            createElement: (tag) => element(Symbol(tag)),
+            createTextNode: (text) => ({ textContent: text }),
+            querySelectorAll: (selector) => selector === '.manual-grade-button' ? buttons : [],
+            addEventListener() {},
+        },
+        window: {
+            localStorage: storage, timers: [], selectionCleared: false,
+            setTimeout(handler, delay) { this.timers.push({ handler, delay }); }, clearTimeout() {},
+            getSelection() { return { removeAllRanges: () => { this.selectionCleared = true; } }; },
+        },
+        Option: function(text, value) { return { textContent: text, value }; },
+    });
+    vm.runInContext(dashboardScript, context);
+    return context;
+}
+
+const savedSettings = new Map();
+const storage = {
+    getItem: (key) => savedSettings.get(key) ?? null,
+    setItem: (key, value) => savedSettings.set(key, value),
+};
+let diagnosticsContext = loadDashboard(storage);
+assert.equal(element('diagnostics').hidden, true);
+element('dashboard-title').dblclick();
+assert.equal(element('diagnostics').hidden, false);
+assert.equal(element('message').textContent, '已顯示診斷資訊');
+assert.equal(diagnosticsContext.window.selectionCleared, true);
+assert.equal(diagnosticsContext.window.timers.at(-1).delay, 10000);
+diagnosticsContext.window.timers.at(-1).handler();
+assert.equal(element('message').textContent, '');
+diagnosticsContext = loadDashboard(storage);
+assert.equal(element('diagnostics').hidden, false);
+element('dashboard-title').dblclick();
+assert.equal(element('diagnostics').hidden, true);
+assert.equal(element('message').textContent, '已隱藏診斷資訊');
+loadDashboard(storage);
+assert.equal(element('diagnostics').hidden, true);
+element('diagnostics').hidden = false;
+loadDashboard({
+    getItem() { throw new Error('storage blocked'); },
+    setItem() { throw new Error('storage blocked'); },
 });
-vm.runInContext(fs.readFileSync(`${__dirname}/static/fruit_app/js/dashboard.js`, 'utf8'), context);
+assert.equal(element('diagnostics').hidden, true);
+assert.doesNotThrow(() => element('dashboard-title').dblclick());
+assert.equal(element('diagnostics').hidden, false);
+assert.equal(element('message').textContent, '已顯示診斷資訊');
+assert.doesNotThrow(() => element('dashboard-title').dblclick());
+assert.equal(element('diagnostics').hidden, true);
+console.log('PASS: hidden diagnostics toggle, reload persistence, selection cleanup and blocked storage.');
+
+const context = loadDashboard();
+element('message').textContent = '';
 
 function render(classification, sorting, storage = 'saved') {
     context.state = {
@@ -52,3 +109,60 @@ render({ status: 'needs_review' }, { status: 'skipped' });
 assert.equal(element('btn-manual-abandon').hidden, false);
 assert.equal(element('btn-manual-abandon').disabled, false);
 console.log('PASS: 11 Dashboard classification, storage, sorting and manual takeover states.');
+
+context.dashboardState = {
+    work_mode: 'detection', hardware_mode: 'photo_only', status: 'idle',
+    dataset_path: 'D:/Dataset/detection', legacy_dataset_path: 'D:/Dataset',
+    legacy_detection_path: 'D:/detection_results',
+};
+function renderDashboard(overrides = {}) {
+    Object.assign(context.dashboardState, overrides);
+    vm.runInContext('renderState(dashboardState)', context);
+    return element('network-setup-summary-status');
+}
+let badge = renderDashboard();
+assert.equal(badge.textContent, '未連線');
+assert.equal(badge.dataset.state, 'error');
+assert.equal(element('dataset-scope').textContent, '目前模式：自動檢測');
+assert.equal(element('legacy-dataset-location').textContent, '');
+badge = renderDashboard({ esp32_online: true });
+assert.equal(badge.textContent, '已連線');
+assert.equal(badge.dataset.state, 'ready');
+badge = renderDashboard({ esp32_online: false, network: { esp32: { online: true } } });
+assert.equal(badge.textContent, '已連線（診斷）');
+assert.equal(badge.dataset.state, 'ready');
+badge = renderDashboard({ network: { esp32: { online: false } }, last_error_reason: 'motor_failed' });
+assert.equal(badge.textContent, '未連線');
+assert.equal(badge.dataset.state, 'error');
+assert.equal(element('error-reason').hidden, false);
+assert.equal(element('error-reason').textContent, 'motor_failed');
+renderDashboard({ work_mode: 'collection', last_error_reason: '' });
+assert.equal(element('dataset-scope').textContent, '目前模式：蒐集');
+assert.equal(element('error-reason').hidden, true);
+vm.runInContext("setStreamStatus('RTC 預覽無法建立：rtc_failed；仍可正式拍攝。')", context);
+assert.equal(element('stream-status').textContent, 'RTC 預覽無法建立：rtc_failed；仍可正式拍攝。');
+console.log('PASS: Dashboard connection badges, path-free modes and visible failure reasons.');
+
+async function testDatasetFolderFeedback() {
+    context.URLSearchParams = URLSearchParams;
+    vm.runInContext("lastState = { work_mode: 'detection' };", context);
+    let requestedUrl;
+    let response = { ok: true, json: async () => ({ opened: true, path: 'D:/Dataset/detection' }) };
+    context.fetch = async (url) => { requestedUrl = url; return response; };
+    await element('btn-open-folder').click();
+    assert.equal(requestedUrl, '/api/open_dataset_folder/?dataset_mode=detection');
+    assert.equal(element('message').textContent, '');
+
+    response = { ok: false, json: async () => ({ message: 'folder_open_failed' }) };
+    await element('btn-open-folder').click();
+    assert.equal(element('message').textContent, '開啟資料夾失敗：folder_open_failed');
+    response = { ok: true, json: async () => ({ opened: true }) };
+    await element('btn-open-folder').click();
+    assert.equal(element('message').textContent, '開啟資料夾失敗：folder_open_failed');
+
+    response = { ok: true, json: async () => ({ opened: false, path: 'D:/Dataset/detection' }) };
+    await element('btn-open-folder').click();
+    assert.equal(element('message').textContent, '資料夾位置：D:/Dataset/detection');
+    console.log('PASS: silent folder success preserves errors and folder fallback reminders.');
+}
+testDatasetFolderFeedback().catch((error) => { console.error(error); process.exitCode = 1; });

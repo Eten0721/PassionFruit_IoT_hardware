@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from . import grading
-from .detection import CONTRACT_VERSION
+from .detection import CONTRACT_VERSION, DEFECT_COLORS, DEFECT_MARKED_SUFFIX
 
 
 DEFECT_NAMES = {
     'abrasion': '擦傷', 'anthracnose': '疑似炭疽病',
-    'insect_bite': '蟲咬', 'insect_track': '蟲跡',
+    'insect_bite': '蟲咬', 'insect_track': '畫圖蟲',
 }
 PHOTO_NAMES = ('img_01.jpg', 'img_02.jpg', 'img_03.jpg')
 PANEL_WIDTH = 640
@@ -85,17 +86,24 @@ def generate_notification(result_path: Path, *, output_dir: Path | None = None,
             photos.append(photo)
         if not any(photo is not None for photo in photos):
             return {'ok': False, 'reason': 'no_images'}
-        heading = '測試：百香果加工通知' if result['hardware_mode'] == 'photo_only' else '百香果加工通知'
-        decision = '人工判為加工等級' if classification['source'] == 'manual' else '加工等級'
+        heading = '測試 |瑕疵通知|' if result['hardware_mode'] == 'photo_only' else '|瑕疵通知|'
+        decision = '加工（人工判定）' if classification['source'] == 'manual' else '加工'
+        observed = list(dict.fromkeys(
+            observation for view in views if view['detection_complete']
+            for observation in view['observations']
+        ))
+        unfinished = [str(view['photo_number']) for view in views if not view['detection_complete']]
+        findings = '、'.join(observed) or (
+            '無可用檢測結果' if len(unfinished) == 3 else
+            '已完成檢測的照片未偵測到瑕疵' if unfinished else '未偵測到瑕疵'
+        )
+        detected_at = datetime.fromisoformat(capture_time).strftime('%Y-%m-%d %H:%M:%S') if capture_time else '未記錄'
         text = '\n'.join([
-            heading, f"原檢測時間：{result.get('capture_time') or '未記錄'}",
-            f'果實識別：{result_id}', f'等級：{decision}', '外觀觀察：',
-            *(f"照片 {view['photo_number']}：{view['label']}" for view in views),
+            heading, f'偵測時間：{detected_at}', f'等級：{decision}', f'發現瑕疵：{findings}',
+            *([f"備註：照片 {'、'.join(unfinished)} 未完成檢測，未列入瑕疵觀察"] if unfinished else []),
         ]) + '\n'
-        if not any(view['observations'] or view['detection_complete'] for view in views):
-            text += '無可用檢測結果。\n'
         font_path = Path(font_path) if font_path is not None else Path('C:/Windows/Fonts/msjh.ttc')
-        font = _font(font_path, text)
+        font = _font(font_path, text + ''.join(view['label'] for view in views))
         output_dir = Path(output_dir).resolve() if output_dir is not None else result_path.parent
         if output_dir.exists() and not output_dir.is_dir():
             raise NotADirectoryError(f'輸出路徑必須是目錄：{output_dir}')
@@ -178,10 +186,11 @@ def _view(index, image, root):
         for role in ('color', 'wrinkle', 'defect')
     )
     artifacts = image.get('artifacts') or {}
+    marked_filename = artifacts.get('defect_marked')
+    marked_available = (isinstance(marked_filename, str)
+                        and marked_filename.endswith(DEFECT_MARKED_SUFFIX))
     legend = []
-    if complete and artifacts.get('defect_marked'):
-        from ultralytics.utils.plotting import colors
-
+    if complete and marked_available:
         for detection in defect['detections']:
             class_index = detection.get('class_index')
             if type(class_index) is not int or class_index < 0:
@@ -189,11 +198,11 @@ def _view(index, image, root):
             legend.append({
                 'label': DEFECT_NAMES[detection['class_name']],
                 'class_index': class_index,
-                'color': list(reversed(colors(class_index, True))),
+                'color': list(DEFECT_COLORS[detection['class_name']]),
             })
     photo = None
     source_path = None
-    if complete and artifacts.get('defect_marked'):
+    if complete and marked_available:
         source_path = _artifact_path(root, artifacts['defect_marked'])
         photo = _read_photo(source_path)
     marked = photo is not None
@@ -270,7 +279,7 @@ def _compose(views, photos, font):
         for legend_index, entry in enumerate(view['legend']):
             top = 16 + (len(lines) + legend_index) * LINE_HEIGHT
             draw.rectangle((left + 16, top + 6, left + 39, top + 29),
-                           fill=tuple(entry['color']))
+                           fill=tuple(entry['color']), outline='#222222', width=2)
             draw.text((left + 52, top), entry['label'], font=font, fill='#222222')
         if photo is None:
             draw.rectangle((left, header_height, left + PANEL_WIDTH - 1, composite.height - 1),

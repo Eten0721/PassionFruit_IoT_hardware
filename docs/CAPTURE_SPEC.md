@@ -48,7 +48,7 @@
 - 使用電腦或相機手機連入設定熱點，由 ESP32 本機提供獨立設定頁，選擇目標 Wi-Fi 並輸入密碼；不依賴 Django Dashboard 可連線。短暫斷線先重試既有設定，不自動清除設定。
 - 成功加入目標 Wi-Fi 並取得 IP 後保存設定，設定頁啟用「退出連線」按鈕；按下後才關閉設定熱點，保留對目標 Wi-Fi 的連線，不要求再次按 BOOT，也不等待 Django 上線或網際網路可用。
 - 密碼錯誤或連線逾時時保留設定熱點，允許修改、重試。不需變更時可按設定頁「取消設定」或再按一下 BOOT，關閉熱點並恢復已保存的 Wi-Fi；已有保存設定時，設定頁閒置逾時也會自動取消，不讓無人操作的熱點卡住機台。設定端在熱點關閉後切回目標 Wi-Fi；不保證手機或電腦會自動切回。
-- 只允許安全閒置時進入配網；送料、拍攝或分類途中按 BOOT 不切換網路，須等本輪完成或人工安全復原後再操作。Dashboard 底部在停穩設定與送料校正之後，以獨立的「ESP32 網路設定」摺疊區（`dashboard.html` 的 `network-setup`）顯示配網狀態、阻擋原因與按一下 BOOT 的操作指引；ESP32 離線時顯示無法確認，不宣稱可安全配網。
+- 只允許安全閒置時進入配網；送料、拍攝或分類途中按 BOOT 不切換網路，須等本輪完成或人工安全復原後再操作。Dashboard 底部以獨立的「ESP32 網路設定」摺疊區（`dashboard.html` 的 `network-setup`）顯示配網狀態、阻擋原因與按一下 BOOT 的操作指引；ESP32 離線時顯示無法確認，不宣稱可安全配網。
 
 ### 手機加入與斷線恢復
 
@@ -381,7 +381,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 新流程的蒐集資料根目錄為 `DATASET_ROOT/collection/`，檢測為 `DATASET_ROOT/detection/`；各自維護 `temp/`、`counter.json`、`reset_state.json`、`discard_state.json` 與 `_delete_pending/`。只有蒐集分區有四級照片目錄與 `metadata.csv`；檢測分區不建立，啟動時移除空的級距目錄與只有標題列的 `metadata.csv`，有內容者保留原位。檢測原圖、處理圖及 `result.json` 保存於檢測分區的 `results/fruit_NNN/`，總表為檢測分區的 `detection_summary.csv`，契約見[檢測資料](#檢測資料與-line-通知)。
 
-既有 `DATASET_ROOT` 根目錄及舊 `Django_Server/detection_results/` 保留原位，只作歷史資料，不自動搬遷、升級或納入新流程的恢復與清理。Dashboard 明示目前資料區及歷史位置；開啟、編號、刪除與重置只作用於目前模式。檢測的 `result.json` 與總表列都保存成功後，純拍攝立即清除該輪 `temp/`（原圖已存於 `results/`）；硬體有效判級在持久保存 sorter intent 後推進 counter、清理暫存，再建立分槽命令，待人工判級或安全移除的輪次則保留暫存。Dashboard 的跳過／刪除只處理暫存與未保存成功的部分產物，不刪除已保存的檢測結果，已保存結果只隨重置檢測分區清除。重置檢測包含 `results/` 與總表；Windows 占用沿用隔離、延後清理及忽略標記，未能隔離的舊產物不得被覆寫或展示為新結果。
+既有 `DATASET_ROOT` 根目錄及舊 `Django_Server/detection_results/` 保留原位，只作歷史資料，不自動搬遷、升級或納入新流程的恢復與清理。Dashboard 資料管理只顯示目前模式，不顯示目前與歷史目錄路徑，重置區明示只影響目前模式；開啟、編號、刪除與重置只作用於目前模式。檢測的 `result.json` 與總表列都保存成功後，純拍攝立即清除該輪 `temp/`（原圖已存於 `results/`）；硬體有效判級在持久保存 sorter intent 後推進 counter、清理暫存，再建立分槽命令，待人工判級或安全移除的輪次則保留暫存。Dashboard 的跳過／刪除只處理暫存與未保存成功的部分產物，不刪除已保存的檢測結果，已保存結果只隨重置檢測分區清除。重置檢測包含 `results/` 與總表；Windows 占用沿用隔離、延後清理及忽略標記，未能隔離的舊產物不得被覆寫或展示為新結果。
 
 目前模式與硬體選項原子保存於 runtime 的 `dataset_options.json`，重啟先恢復模式再讀取該分區；紀錄損壞時禁止資料變更、開始拍攝與接收照片，並顯示具體原因。硬體 command sequence、timing 與復原鎖仍共用，不隨分區重置。開始後固定本輪模式；有處理中工作或安全鎖時拒絕切換。Dashboard 的資料操作附 `dataset_mode`，缺少或與目前模式不符回 `409 stale_dataset_mode`；照片 URL 帶 `work_mode`，缺少或模式不符回 `404` 並要求快取重新驗證。
 
@@ -439,9 +439,9 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
   ```
 
   `result_status` 等於 JSON 頂層 `status`（只有 `complete` 時為 `completed`，人工接手為 `manual_completed`，放棄為 `manual_abandoned`），`classification_status` 為分類狀態，`reason` 取頂層原因、否則取分類原因；未判級的等級欄位留空；`model_version` 為兩個模型 SHA-256 前 12 碼；`result_json` 相對於檢測分區。失敗輪次也留紀錄，完整特徵由 JSON 保存。原圖與所有執行產物均不納入 Git。
-- LINE 對接交付程式已使用的 Messaging API，目標收件對象為模擬農夫群組的畢專群組；綁定與實際收件對象尚未驗證。只對最終等級為加工的果實通知，正文使用農夫可理解的等級、時間、果實識別與實際成功偵測的瑕疵，並附圖片；不放 grade code、模型 confidence 或程式欄位。疑似病害須保留「疑似」，不得把觀察項目宣稱為 XGBoost 判為加工的因果解釋；無可用瑕疵結果時如實表達，不捏造原因。
-- 通知附圖將三個視角的 `defect_marked` 合成一張；此產物只保留遮罩／框，不含英文類別或 confidence，Dashboard 繼續使用 `defect_annotated`。每格標示照片編號，以依 `detections[].class_index` 對應的同色塊搭配中文瑕疵名稱，讓圖例與標示位置相符。舊結果缺少 `defect_marked` 時使用原圖並註明「無標示圖」，保留已有觀察與檢測完成狀態；某張檢測失敗時使用已取得原圖並標明「未完成檢測」，不得產生虛構標示。採用 Cloudinary 免費方案提供通知合成圖的 HTTPS 網址，只上傳通知所需合成圖，完整原圖與檢測資料留在本機；雲端圖片保留至畢專展示結束，再由操作員手動清理，不新增自動刪除。清理後舊通知附圖可能無法重新載入，本機資料不受影響。
-- 人工判為加工同樣列入通知，文字明示「人工判為加工等級」，只列已有的有效瑕疵觀察；沒有可用檢測結果時如實說明。推論失敗而尚無人工判級的紀錄不發加工通知。
+- LINE 對接交付程式已使用的 Messaging API，目標收件對象為模擬農夫群組的畢專群組；綁定與實際收件對象尚未驗證。只對最終等級為加工的果實通知，正文依序為「|瑕疵通知|」「偵測時間：YYYY-MM-DD HH:MM:SS」「等級：加工」「發現瑕疵：…」；純拍攝第一行為「測試 |瑕疵通知|」。正文不顯示果實識別，檔名、回傳值與 command 輸出保留 `result_id`。瑕疵取已完成檢測視角的成功觀察聯集，依照片 1→3 與各照片內既有順序去重；`insect_track` 的文字與圖例皆為「畫圖蟲」，病害仍為「疑似炭疽病」。所有視角完成且無觀察時寫「發現瑕疵：未偵測到瑕疵」；僅部分完成且無觀察時寫「發現瑕疵：已完成檢測的照片未偵測到瑕疵」；無完成視角時寫「發現瑕疵：無可用檢測結果」。未完成視角最後列「備註：照片 2 未完成檢測，未列入瑕疵觀察」，多張以「照片 1、3」列出。不放 grade code、模型 confidence 或程式欄位，不宣稱已分槽或保證可食用；不得把觀察項目宣稱為 XGBoost 判為加工的因果解釋。
+- 通知附圖將三個視角的 `defect_marked` 合成一張；此產物只保留遮罩／框，不含英文類別或 confidence，Dashboard 繼續使用 `defect_annotated`。每格保留照片編號、逐張說明及中文圖例；四類依 `class_name` 共用固定高對比配色，圖例色塊加深色外框，標示圖直接以實際遮罩與框座標繪製，不使用 Ultralytics 預設調色盤。新配色檔名以 `_defect_marked_farmer_v1.jpg` 識別；舊配色或缺少 `defect_marked` 時使用原圖並註明「無標示圖」，保留已有觀察與檢測完成狀態；某張檢測失敗時使用已取得原圖並標明「未完成檢測」，不得產生虛構標示。採用 Cloudinary 免費方案提供通知合成圖的 HTTPS 網址，只上傳通知所需合成圖，完整原圖與檢測資料留在本機；雲端圖片保留至畢專展示結束，再由操作員手動清理，不新增自動刪除。清理後舊通知附圖可能無法重新載入，本機資料不受影響。
+- 人工判為加工同樣列入通知，等級行為「等級：加工（人工判定）」。推論失敗而尚無人工判級的紀錄不發加工通知。
 - 本機預覽：在 `Django_Server/` 執行 `C:\Users\qoqoo\anaconda3\envs\PF\python.exe -s manage.py preview_processing_notification <result.json>`；可用 `--output-dir <目錄>` 與 `--font-path <中文字型>` 指定輸出與字型（預設 Windows 微軟正黑體 `C:/Windows/Fonts/msjh.ttc`）。預設在該果實結果目錄新增 `notification_<result_id>.txt`、`notification_<result_id>.jpg` 與 `notification_<result_id>_preview.jpg`，不改寫原始結果。兩張圖為 JPEG，原圖與預覽圖分別限制為 `10 MB`／`1 MB`，依 [LINE image message](https://developers.line.biz/en/reference/messaging-api/#image-message)；此指令不發送訊息。
 - 每顆加工果最終分類結果保存成功即排送一則通知，不等待分槽完成，也不宣稱已完成實體分槽。通知失敗不阻塞本地檢測與分槽，恢復網路後補送並標明原檢測時間；同一結果須去重，分槽或通知狀態更新不得觸發重送。
 - 純拍攝預設不發送 LINE；操作員明確啟用後才允許測試通知，訊息開頭加「測試」。Dashboard 的操作摺疊區提供 LINE 通知啟用／關閉控制與狀態，憑證留在後端，不顯示在頁面。
@@ -457,7 +457,8 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 - 檢測執行中，`/api/state/` 的 `detection_progress` 提供最後完成的 `stage`（`originals／roi／color／wrinkle／defect`）與各張已保存產物、`artifact_urls` 及模型狀態；只在對應產物原子保存後更新，最終結果寫入 `detection_result` 時清空。畫面依此逐步替換，不以動畫推測完成。
 - 「四模型檢測結果」移至原手機預覽所在的左側主區，以三張照片分組、各列 ROI／color／wrinkle／defect，共十二格；成功產物逐步更新，有跳過、缺失或失敗時不得顯示整輪完整成功。
 - 手機即時畫面移至右側原流程操作位置；整顆分類結果也放在檢測區右手邊，以醒目級距文字區分等待、有效結果與待覆核，不只靠顏色表示。
-- 詳細設定、校正、診斷與資料管理保留在底部摺疊區。阻擋原因與安全復原提示直接可見；檢測展示重用真實前處理產物，既有橢圓 ROI 遮罩演算法不因版面調整而更改。
+- 底部摺疊區依序為「資料管理 → ESP32 網路設定 → 停穩設定與送料校正 → 診斷與流程紀錄」。ESP32 網路設定收合時仍以既有連線狀態顯示文字徽章。診斷區預設隱藏，雙擊頁首標題可切換顯示／隱藏並清除文字選取；狀態保存在瀏覽器 `localStorage`，讀寫失敗不影響頁面操作，讀不到時預設隱藏，顯示時仍可用鍵盤展開摺疊區。
+- 全域訊息列沒有內容時整列隱藏；開啟 Dataset 資料夾成功不顯示路徑訊息，其他錯誤與提醒保留。切換診斷區時短暫提示「已顯示診斷資訊」／「已隱藏診斷資訊」，時間沿用既有訊息慣例。阻擋原因、安全復原提示與串流失敗原因直接可見；檢測展示重用真實前處理產物，既有橢圓 ROI 遮罩演算法不因版面調整而更改。
 
 ## 驗收
 

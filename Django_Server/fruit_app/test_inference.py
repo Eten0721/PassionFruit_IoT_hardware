@@ -68,6 +68,7 @@ class StandaloneInferenceTests(SimpleTestCase):
             )
         return SimpleNamespace(
             boxes=None, masks=None, names=self.models[role].names,
+            orig_img=image.copy(),
             orig_shape=image.shape[:2], plot=lambda **_: image.copy(),
         )
 
@@ -148,7 +149,7 @@ class StandaloneInferenceTests(SimpleTestCase):
         self.assertIn('wrinkle_gray', artifacts[0])
         self.assertNotIn('defect_annotated', artifacts[0])
 
-    def test_farmer_artifact_uses_real_plot_without_confidence_or_labels(self):
+    def test_farmer_artifact_uses_real_geometry_without_confidence_or_labels(self):
         from ultralytics.engine.results import Results
 
         results = []
@@ -170,8 +171,9 @@ class StandaloneInferenceTests(SimpleTestCase):
         self.assertEqual(reports[0]['models']['defect']['detections'][0]['class_index'], 1)
         self.assertIn('defect_marked', detection.ARTIFACT_NAMES)
         for result, artifact in zip(results, artifacts, strict=True):
-            result.plot.assert_any_call(conf=False, labels=False)
-            result.plot.assert_any_call()
+            result.plot.assert_called_once_with()
+            self.assertEqual(artifact['defect_marked'][1, 12].tolist(),
+                             list(reversed(detection.DEFECT_COLORS['anthracnose'])))
             self.assertFalse(np.array_equal(artifact['defect_annotated'],
                                             artifact['defect_marked']))
 
@@ -180,15 +182,56 @@ class StandaloneInferenceTests(SimpleTestCase):
             results = []
             for image in source:
                 result = self._result('defect', image)
-                result.plot = mock.Mock(side_effect=[image.copy(), RuntimeError('plot failed')])
                 results.append(result)
             return results
 
         self.models['defect'].predict.side_effect = defect_results
-        reports, artifacts = detection.execute_model_batch(self.paths, self.weights)
+        with mock.patch('fruit_app.detection.render_defect_marked',
+                        side_effect=RuntimeError('plot failed')):
+            reports, artifacts = detection.execute_model_batch(self.paths, self.weights)
         for report, artifact in zip(reports, artifacts, strict=True):
             self.assertTrue(report['ok'])
             self.assertEqual(report['models']['defect']['status'], 'ok')
             self.assertNotIn('unavailable', detection.view_features(report))
             self.assertIn('defect_annotated', artifact)
             self.assertNotIn('defect_marked', artifact)
+
+    def test_farmer_colors_cover_all_classes_and_contrast_with_white(self):
+        self.assertEqual(set(detection.DEFECT_COLORS), detection.DEFECT_CLASSES)
+        self.assertEqual(len(set(detection.DEFECT_COLORS.values())), 4)
+        for name, (red, green, blue) in detection.DEFECT_COLORS.items():
+            with self.subTest(name=name):
+                luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+                self.assertGreaterEqual(255 - luminance, 140)
+
+    def test_marked_masks_and_boxes_follow_names_even_when_class_indexes_change(self):
+        from ultralytics.engine.results import Results
+
+        original = np.full((120, 120, 3), 80, dtype=np.uint8)
+        for index, name in enumerate(reversed(tuple(detection.DEFECT_COLORS))):
+            with self.subTest(name=name):
+                masks = torch.zeros((1, 120, 120))
+                masks[:, 20:100, 20:100] = 1
+                result = Results(original.copy(), path='fixture.jpg', names={index: name},
+                                 boxes=torch.tensor([[20, 20, 100, 100, 0.87, index]]),
+                                 masks=masks)
+                result.plot = mock.Mock(side_effect=AssertionError('No text renderer'))
+                marked = detection.render_defect_marked(result)
+                bgr = np.asarray(detection.DEFECT_COLORS[name][::-1])
+                self.assertEqual(marked[20, 60].tolist(), bgr.tolist())
+                self.assertEqual(marked[60, 60].tolist(), (40 + bgr * 0.5).astype(np.uint8).tolist())
+                self.assertTrue(np.array_equal(original, result.orig_img))
+                result.plot.assert_not_called()
+
+    def test_farmer_masks_remove_letterbox_padding_before_overlay(self):
+        from ultralytics.engine.results import Results
+
+        original = np.full((100, 200, 3), 80, dtype=np.uint8)
+        masks = torch.zeros((1, 200, 200))
+        masks[:, 70:90, 40:60] = 1  # Original coordinates y=20:40, with 50 px padding.
+        result = Results(original, path='fixture.jpg', names={0: 'insect_bite'},
+                         boxes=torch.tensor([[40, 20, 60, 40, 0.87, 0]]), masks=masks)
+        marked = detection.render_defect_marked(result)
+        bgr = np.asarray(detection.DEFECT_COLORS['insect_bite'][::-1])
+        self.assertEqual(marked[30, 50].tolist(), (40 + bgr * 0.5).astype(np.uint8).tolist())
+        self.assertEqual(marked[80, 50].tolist(), [80, 80, 80])

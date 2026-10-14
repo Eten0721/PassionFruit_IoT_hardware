@@ -28,6 +28,12 @@ ARTIFACT_NAMES = (
 )
 MODEL_ROLES = ('roi', 'color', 'wrinkle', 'defect')
 DEFECT_CLASSES = {'abrasion', 'anthracnose', 'insect_bite', 'insect_track'}
+# RGB; shared by farmer markings and Chinese legends, independent of class indexes.
+DEFECT_COLORS = {
+    'abrasion': (210, 35, 45), 'anthracnose': (20, 85, 210),
+    'insect_bite': (0, 130, 85), 'insect_track': (165, 35, 175),
+}
+DEFECT_MARKED_SUFFIX = '_defect_marked_farmer_v1.jpg'
 CONTRACT_VERSION = 1
 MANUAL_SOURCE = 'manual'
 SUMMARY_FIELDS = [
@@ -212,6 +218,35 @@ def _segmentation_summary(result, elapsed_ms, roi_mask):
     }
 
 
+def render_defect_marked(result):
+    """Draw real masks/boxes with fixed farmer colors and no text, in BGR."""
+    marked = result.orig_img.copy()
+    boxes = getattr(result, 'boxes', None)
+    if boxes is None or not len(boxes):
+        return marked
+    masks = getattr(result, 'masks', None)
+    if masks is None:
+        raise ValueError('瑕疵標示缺少 segmentation masks。')
+    from ultralytics.utils.ops import scale_masks
+
+    classes = boxes.cls.detach().cpu().numpy().astype(int)
+    coordinates = boxes.xyxy.detach().cpu().numpy()
+    height, width = marked.shape[:2]
+    instances = scale_masks(masks.data.detach().cpu()[None], (height, width))[0].numpy()
+    colors = []
+    for class_index, instance in zip(classes, instances, strict=True):
+        color = tuple(reversed(DEFECT_COLORS[result.names[int(class_index)]]))
+        colors.append(color)
+        mask = instance > 0.5
+        marked[mask] = (marked[mask] * 0.5 + np.asarray(color) * 0.5).astype(np.uint8)
+    for bbox, color in zip(coordinates, colors, strict=True):
+        x1, y1, x2, y2 = np.rint(bbox).astype(int)
+        # A white halo keeps the colored outline visible on dark fruit skins.
+        cv2.rectangle(marked, (x1, y1), (x2, y2), (255, 255, 255), 8)
+        cv2.rectangle(marked, (x1, y1), (x2, y2), color, 4)
+    return marked
+
+
 def _summarise_role(role, ready_indices, results, elapsed_ms, reports, artifacts_list):
     for index, result in zip(ready_indices, results, strict=True):
         try:
@@ -230,7 +265,7 @@ def _summarise_role(role, ready_indices, results, elapsed_ms, reports, artifacts
             continue
         if role == 'defect':
             try:
-                artifacts_list[index]['defect_marked'] = result.plot(conf=False, labels=False)
+                artifacts_list[index]['defect_marked'] = render_defect_marked(result)
             except Exception:
                 pass  # Optional farmer preview falls back to the original image.
 
@@ -702,6 +737,8 @@ def run_and_save(
                     continue
                 written[source.name].add(name)
                 relative = f'{source.stem}_{name}.jpg'
+                if name == 'defect_marked':
+                    relative = f'{source.stem}{DEFECT_MARKED_SUFFIX}'
                 try:
                     _write_artifact(run_dir / relative, artifact)
                     image['artifacts'][name] = relative
@@ -857,6 +894,8 @@ def save_interrupted_result(
             )
         for name in ARTIFACT_NAMES:
             filename = f'{source.stem}_{name}.jpg'
+            if name == 'defect_marked':
+                filename = f'{source.stem}{DEFECT_MARKED_SUFFIX}'
             if (run_dir / filename).is_file():
                 artifacts[name] = filename
     return _finalise(
