@@ -33,7 +33,7 @@
 - 無法判級時標記待人工處理；操作員可人工選四級或放棄本輪，人工結果與原模型分類分開保存。
 - Dashboard 主區以三張 × 四模型逐步顯示真實產物，右側顯示整顆結果、人工接手與手機預覽，操作列可收合。
 - 硬體模式下，模型或人工等級在 JSON／CSV 保存後經既有 `classify_fruit` 分槽；只有相符的分類完成回報、自動運轉仍啟用且安全條件成立時才送下一顆，人工接手不能繞過失聯或復原鎖。實機連續分槽仍待驗收。
-- 加工果可用 `preview_processing_notification` 在本機產生農夫版通知文字與三視角合成圖；尚未上傳 Cloudinary 或發送 LINE。
+- 加工果結果保存後排入持久待送，背景經 Cloudinary／LINE 發送圖文通知，Dashboard 可開關並顯示狀態；契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#檢測資料與-line-通知)。實際帳號、群組與發送尚待人工驗收。
 
 ### 環境與模型資產
 
@@ -46,7 +46,7 @@
 ## 已接受但尚未完成
 
 - 硬體模式下的 AI／人工分類後安全分槽與連續檢測尚未接通，由 Issue [#33](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/33) 追蹤。
-- 加工果 LINE 圖文通知、Cloudinary 附圖與通知開關尚未實作，由 Issue [#34](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/34)、[#35](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/35) 追蹤；整合驗收見 Issue [#36](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/36)。
+- LINE／Cloudinary 實際帳號設定、群組核對與 Issue [#35](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/35) 的人工驗收尚未執行；整合驗收見 Issue [#36](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/36)。
 - 資料分區的瀏覽器、手機與操作員觀察驗收（蒐集／檢測各一輪、只刪檢測、重置後重啟、處理中切換）尚未執行。
 - 離線換網、換電腦與各階段斷線復原的實機驗收由 Issue [#27](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/27) 追蹤；BOOT 候選腳位、換網與斷電保存仍待操作員驗證。
 

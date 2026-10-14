@@ -1387,6 +1387,20 @@ textarea {
     margin: 0;
 }
 
+.notification-block {
+    display: grid;
+    justify-items: start;
+    gap: 8px;
+}
+
+#notification-status {
+    white-space: pre-line;
+}
+
+.operation-details > summary .summary-badge {
+    margin-left: auto;
+}
+
 .operation-content .classify-panel {
     padding-top: 14px;
     border-top: 1px solid var(--border);

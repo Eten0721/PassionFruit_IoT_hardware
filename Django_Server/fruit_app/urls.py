@@ -37,6 +37,7 @@ urlpatterns = [
         views.manual_grade_api,
         name='manual_grade_api',
     ),
+    path('api/notification/', views.notification_api, name='notification_api'),
     path('api/reset_dataset/', views.reset_dataset_api, name='reset_dataset_api'),
     path('api/image/<str:fruit_id>/<str:filename>/', views.dataset_image_api, name='dataset_image_api'),
     path(

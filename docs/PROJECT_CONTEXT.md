@@ -35,7 +35,7 @@ ESP32 Firmware
 
 Django 是 capture 與 sorter 的狀態來源。它負責工作階段、拍攝 token、照片原子保存、單一 motor command slot、command ID、Dataset 搬移及錯誤復原。
 
-`runtime_state.py`、`capture_timing.py`、`api_payloads.py`、`capture_session.py`、`dataset_store.py` 與 `webrtc_signaling.py` 承擔可獨立責任；`detection.py` 負責四模型推論、單顆 `result.json`／檢測總表保存與人工接手寫回，`grading.py` 負責兩階段 XGBoost 特徵契約與最差視角判級，兩者只回結構化結果，不接觸硬體；`views.py` 仍負責 HTTP 整合、Dataset 生命週期與部分狀態機 helper，後續應延續現有邊界逐步縮小。
+`runtime_state.py`、`capture_timing.py`、`api_payloads.py`、`capture_session.py`、`dataset_store.py` 與 `webrtc_signaling.py` 承擔可獨立責任；`detection.py` 負責四模型推論、單顆 `result.json`／檢測總表保存與人工接手寫回，`grading.py` 負責兩階段 XGBoost 特徵契約與最差視角判級，兩者只回結構化結果，不接觸硬體；`notification.py` 從共同結果產生加工果通知文字與合成圖，`notification_delivery.py` 以持久待送在背景經 Cloudinary／LINE 發送，失敗不影響本地流程；`views.py` 仍負責 HTTP 整合、Dataset 生命週期與部分狀態機 helper，後續應延續現有邊界逐步縮小。
 
 ### ESP32 Firmware
 

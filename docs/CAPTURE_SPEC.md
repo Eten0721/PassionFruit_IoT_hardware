@@ -443,9 +443,13 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 - 通知附圖將三個視角的 `defect_marked` 合成一張；此產物只保留遮罩／框，不含英文類別或 confidence，Dashboard 繼續使用 `defect_annotated`。每格保留照片編號、逐張說明及中文圖例；四類依 `class_name` 共用固定高對比配色，圖例色塊加深色外框，標示圖直接以實際遮罩與框座標繪製，不使用 Ultralytics 預設調色盤。新配色檔名以 `_defect_marked_farmer_v1.jpg` 識別；舊配色或缺少 `defect_marked` 時使用原圖並註明「無標示圖」，保留已有觀察與檢測完成狀態；某張檢測失敗時使用已取得原圖並標明「未完成檢測」，不得產生虛構標示。採用 Cloudinary 免費方案提供通知合成圖的 HTTPS 網址，只上傳通知所需合成圖，完整原圖與檢測資料留在本機；雲端圖片保留至畢專展示結束，再由操作員手動清理，不新增自動刪除。清理後舊通知附圖可能無法重新載入，本機資料不受影響。
 - 人工判為加工同樣列入通知，等級行為「等級：加工（人工判定）」。推論失敗而尚無人工判級的紀錄不發加工通知。
 - 本機預覽：在 `Django_Server/` 執行 `C:\Users\qoqoo\anaconda3\envs\PF\python.exe -s manage.py preview_processing_notification <result.json>`；可用 `--output-dir <目錄>` 與 `--font-path <中文字型>` 指定輸出與字型（預設 Windows 微軟正黑體 `C:/Windows/Fonts/msjh.ttc`）。預設在該果實結果目錄新增 `notification_<result_id>.txt`、`notification_<result_id>.jpg` 與 `notification_<result_id>_preview.jpg`，不改寫原始結果。兩張圖為 JPEG，原圖與預覽圖分別限制為 `10 MB`／`1 MB`，依 [LINE image message](https://developers.line.biz/en/reference/messaging-api/#image-message)；此指令不發送訊息。
-- 每顆加工果最終分類結果保存成功即排送一則通知，不等待分槽完成，也不宣稱已完成實體分槽。通知失敗不阻塞本地檢測與分槽，恢復網路後補送並標明原檢測時間；同一結果須去重，分槽或通知狀態更新不得觸發重送。
-- 純拍攝預設不發送 LINE；操作員明確啟用後才允許測試通知，訊息開頭加「測試」。Dashboard 的操作摺疊區提供 LINE 通知啟用／關閉控制與狀態，憑證留在後端，不顯示在頁面。
-- 主動關閉通知時保留並暫停尚未送出的訊息，重新開啟後續送；關閉期間新產生的結果不加入待送，之後開啟也不回溯排送。已交付 LINE 的請求不因關閉開關而撤回。
+- 待送與發送由 `notification_delivery.py` 負責：每顆加工果（含人工判定）的最終分類 JSON／CSV 保存成功即在 `runtime_config/notification_outbox.json` 以 `result_id` 建立一筆持久待送，不等待分槽，也不宣稱已分槽；只在 `runsslserver` 的背景 worker（約每 `5 s` 及排入時喚醒）產生合成圖、上傳並發送，Cloudinary 或 LINE 失敗不阻塞本地檢測、人工接手與分槽。合成圖暫存於 `runtime_config/notification_images/`，不改寫結果目錄。
+- 每筆只上傳一次通知合成圖至 Cloudinary（簽章上傳、`public_id=passionfruit_notifications/<result_id>`、`overwrite=false`），取得 HTTPS 原圖網址，預覽圖以同一張圖的 `c_limit,w_960,h_960,q_auto:good,f_jpg` 轉換網址提供。LINE 以 Messaging API push 對群組發送一個請求，內含一則文字與一則圖片 message object（上限 5 則）；文字使用保存時的原檢測時間，補送不改時間。
+- 防重：同一 `result_id` 只建立一筆，分槽狀態或 JSON 更新不會再排送；每筆持久保存一個 `X-Line-Retry-Key`，發送前先落盤再請求。`200`／`409`（已接受）都記為已送出；timeout、連線中斷或 `5xx` 視為送達不明，沿用同一 key 重試；DNS 失敗、連線被拒或網路／主機無法到達視為未送出。已有送達不明紀錄時，後續 `4xx` 不清除該紀錄；若為不可重試的拒絕則標記「送達不明」而非失敗。自第一次可能送達起超過 `23 h`（LINE retry key 有效 `24 h`）仍無法確認時標記「送達不明」，保留追蹤且不自動重送。重試間隔 `30 s` 起倍增、上限 `600 s`。
+- 錯誤：憑證或權限被拒（`401／403`）與額度／速率限制（Cloudinary `420／429`、LINE `429`）保留待送並顯示原因；其他 `4xx`（如檔案過大、訊息格式錯誤）與結果檔遺失標記失敗並明確回報。雲端圖片不自動刪除。
+- 憑證只放後端私密檔 `Django_Server/runtime_config/notification_credentials.json`（已被 Git 忽略），欄位為 `line_channel_access_token`、`line_group_id`、`cloudinary_cloud_name`、`cloudinary_api_key`、`cloudinary_api_secret`；缺檔或缺欄位時保留待送並在 Dashboard 顯示缺少項目。憑證與群組 ID 不進網頁、待送檔、`result.json` 或 log；待送檔只保存首次產生的通知文字與雲端網址，確保重試內容一致。首次實際發送前須核對群組，並先以純拍攝（帶「測試」）驗證。
+- 開關依硬體選項分開保存，`hardware` 與 `photo_only` 預設皆關閉；`POST /api/notification/ {"enabled": true|false}` 切換目前硬體選項的開關，`/api/state/` 的 `notification` 提供目前硬體選項的開關、設定狀態、待送／已送出／送達不明／失敗／略過數、暫停數、最近錯誤與本輪狀態。純拍攝開啟後訊息開頭加「測試」。Dashboard 操作摺疊區提供切換與狀態，收合時摘要列仍顯示開關與待送數。
+- 主動關閉通知時保留並暫停該模式尚未送出的訊息，重新開啟後續送；關閉期間新產生的結果記為「略過」而不加入待送，之後開啟或重複保存也不回溯排送。已交付 LINE 的請求不因關閉開關而撤回。
 
 ### UI 展示與操作摘要
 

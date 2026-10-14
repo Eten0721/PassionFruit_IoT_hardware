@@ -45,6 +45,10 @@ const remoteVideo = document.getElementById('remote-video');
     const manualAbandonButton = document.getElementById('btn-manual-abandon');
     const stageChips = document.getElementById('stage-chips');
     const operationModeSummary = document.getElementById('operation-mode-summary');
+    const notificationSummary = document.getElementById('notification-summary-status');
+    const notificationToggle = document.getElementById('btn-notification-toggle');
+    const notificationModeLabel = document.getElementById('notification-mode-label');
+    const notificationStatus = document.getElementById('notification-status');
     const actionGuidance = document.getElementById('action-guidance');
     const operationDetails = document.getElementById('operation-details');
     const operationToggle = document.getElementById('btn-operation-toggle');
@@ -554,6 +558,8 @@ const remoteVideo = document.getElementById('remote-video');
         renderStageChips(data);
         renderBoard(data);
         renderGradeCard(data);
+        renderNotification(data.notification);
+        notificationToggle.disabled ||= !data.network?.selected;
         setTextIfChanged(document.getElementById('dataset-scope'),
             `目前模式：${data.work_mode === 'detection' ? '自動檢測' : '蒐集'}`);
         renderTiming(data.timing || {});
@@ -1227,6 +1233,68 @@ const remoteVideo = document.getElementById('remote-video');
                 : `照片 ${index + 1}：無法判級（${grade.reason || '未知原因'}）`;
         }).filter(Boolean);
         return parts.length ? parts.join('｜') : '尚無視角等級';
+    }
+
+    const NOTIFICATION_RESULT_TEXT = {
+        pending: '待送',
+        sent: '已送出',
+        failed: '送出失敗',
+        uncertain: '送達不明，請到群組確認',
+        skipped: '通知關閉時保存，不排送',
+    };
+
+    function renderNotification(notification) {
+        if (!notification || notification.error) {
+            const error = notification?.error || '通知狀態無法取得';
+            setTextIfChanged(notificationSummary, 'LINE 通知：狀態錯誤');
+            notificationSummary.dataset.state = 'error';
+            setTextIfChanged(notificationStatus, error);
+            notificationToggle.disabled = true;
+            return;
+        }
+        const counts = notification.counts || {};
+        const enabled = Boolean(notification.enabled);
+        const attention = !notification.configured || counts.uncertain || counts.failed;
+        const queue = enabled
+            ? (counts.pending ? `・待送 ${counts.pending}` : '')
+            : (notification.paused ? `・暫停 ${notification.paused}` : '');
+        setTextIfChanged(notificationSummary, `LINE 通知：${enabled ? '開啟' : '關閉'}${queue}`);
+        notificationSummary.dataset.state = attention ? 'error' : (enabled ? 'ready' : '');
+        notificationSummary.classList.toggle('neutral', !enabled && !attention);
+        setTextIfChanged(notificationModeLabel,
+            notification.mode === 'photo_only' ? '純拍攝：訊息加「測試」' : '使用硬體');
+        setTextIfChanged(notificationToggle, enabled ? '關閉通知' : '開啟通知');
+        notificationToggle.setAttribute('aria-pressed', String(enabled));
+        notificationToggle.disabled = Boolean(controlActionInFlight);
+        const current = notification.current;
+        const lines = [
+            enabled
+                ? '只通知最終等級為加工的結果，保存後於背景補送，不影響檢測與分槽。'
+                : '已關閉：既有待送暫停，關閉期間的新結果不排送；已交付 LINE 的訊息無法撤回。',
+            notification.configured ? null : `尚未完成設定：${notification.config_reason}`,
+            `待送 ${counts.pending || 0}（暫停 ${notification.paused || 0}）・已送出 ${counts.sent || 0}`
+                + `・送達不明 ${counts.uncertain || 0}・失敗 ${counts.failed || 0}`,
+            current ? `本輪：${NOTIFICATION_RESULT_TEXT[current.status] || current.status}`
+                + (current.reason && current.status !== 'sent' ? `（${current.reason}）` : '') : null,
+            notification.last_error ? `最近錯誤：${notification.last_error}` : null,
+        ];
+        setTextIfChanged(notificationStatus, lines.filter(Boolean).join('\n'));
+    }
+
+    async function toggleNotification() {
+        const enabled = !lastState?.notification?.enabled;
+        if (!beginControlAction('notification', notificationToggle)) {
+            return;
+        }
+        try {
+            const payload = await postJson('/api/notification/', { enabled });
+            lastState = payload;
+            renderState(payload);
+        } catch (error) {
+            setMessage(`通知開關切換失敗：${error.message}`);
+        } finally {
+            endControlAction(notificationToggle);
+        }
     }
 
     function renderGradeCard(data) {
@@ -2089,6 +2157,7 @@ const remoteVideo = document.getElementById('remote-video');
             endControlAction(hardwareModeSelect);
         }
     });
+    notificationToggle.addEventListener('click', toggleNotification);
     recaptureButton.addEventListener('click', recaptureCurrent);
     document.getElementById('btn-open-folder').addEventListener('click', openDatasetFolder);
     discardButton.addEventListener('click', discardCurrent);

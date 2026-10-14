@@ -26,6 +26,7 @@ from . import (
     detection,
     grading,
     motor_commands,
+    notification_delivery,
     webrtc_signaling,
 )
 from .runtime_state import RuntimeState
@@ -1871,6 +1872,7 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir, session):
     except Exception as exc:
         result = None
         error = f'{type(exc).__name__}: {exc}'
+    notice = _queue_notification(result)
 
     with STATE_LOCK:
         if not APP_STATE.operation_matches(operation_token):
@@ -1888,7 +1890,7 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir, session):
         terminal_status = (
             'detection_completed' if complete else 'detection_failed'
         )
-        message = _detection_message(fruit_id, result)
+        message = _detection_message(fruit_id, result) + notice
         if _photo_only_session():
             if _saved_detection_result(fruit_id) is not None:
                 message += _clear_saved_photo_input(fruit_dir, fruit_id)
@@ -2065,6 +2067,7 @@ def manual_grade_api(request):
             APP_STATE.finish_dataset_operation(operation_token)
         raise
 
+    notice = _queue_notification(outcome.get('result'))
     with STATE_LOCK:
         APP_STATE.finish_dataset_operation(operation_token)
         if not outcome['ok']:
@@ -2076,7 +2079,7 @@ def manual_grade_api(request):
             if current.get('hardware_mode') == 'photo_only':
                 APP_STATE['message'] = (
                     f'{fruit_id} {decision}並更新檢測紀錄；'
-                    '原檢測失敗資訊仍保留。純拍攝不啟動硬體或下一輪。'
+                    '原檢測失敗資訊仍保留。純拍攝不啟動硬體或下一輪。' + notice
                 )
             elif not outcome['duplicate']:
                 _start_saved_detection_sorting(outcome['result'])
@@ -2108,6 +2111,60 @@ def _manual_grade_failure_response(outcome):
             '請排除磁碟問題後以同一等級重送，以同步總表。'
         )
     return _json_error(message, status=503, reason=reason)
+
+
+def notification_outbox():
+    runtime_root = Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).parent
+    return notification_delivery.Outbox(
+        runtime_root / 'notification_outbox.json',
+        runtime_root / 'notification_credentials.json',
+    )
+
+
+def _queue_notification(result):
+    """Queue a saved processing result for LINE; return a message suffix.
+
+    Runs outside ``STATE_LOCK`` and never raises: notifications must not block
+    detection, manual takeover or sorting.
+    """
+    if not result or not result.get('fruit_id'):
+        return ''
+    try:
+        queued = notification_outbox().enqueue(
+            result, _detection_output_root() / result['fruit_id'] / 'result.json',
+        )
+    except (OSError, ValueError) as exc:
+        return f' LINE 通知未能排入待送：{exc}'
+    return ' 已排入 LINE 加工果通知待送。' if queued['queued'] else ''
+
+
+def _notification_payload():
+    mode = APP_STATE.get('hardware_mode')
+    result_id = (APP_STATE.get('detection_result') or {}).get('result_id')
+    try:
+        return notification_outbox().status(mode, result_id)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return {'ok': False, 'reason': 'outbox_unreadable', 'mode': mode, 'enabled': False,
+                'error': f'通知待送檔無法讀取：{exc}'}
+
+
+@csrf_exempt
+@require_POST
+@network_required
+def notification_api(request):
+    """Switch LINE notifications for the current capture mode on or off."""
+    enabled = _request_data(request).get('enabled')
+    if type(enabled) is not bool:
+        return _json_error('通知開關必須是 true 或 false。', reason='invalid_notification_switch')
+    with STATE_LOCK:
+        mode = APP_STATE.get('hardware_mode')
+    try:
+        notification_outbox().set_enabled(mode, enabled)
+    except (OSError, ValueError) as exc:
+        return _json_error(f'無法保存通知開關：{exc}', status=503,
+                           reason='notification_switch_persist_failed')
+    with STATE_LOCK:
+        return JsonResponse(_state_payload())
 
 
 def _saved_detection_result(fruit_id):
@@ -5000,6 +5057,7 @@ def _state_payload(extra=None):
         'detection_progress': _with_artifact_urls(APP_STATE.get('detection_progress')),
         'photo_detection_interval_ms': round(PHOTO_DETECTION_INTERVAL_SECONDS * 1000),
         'detection_error': APP_STATE.get('detection_error'),
+        'notification': _notification_payload(),
         'can_manual_grade': manual_grade_disabled_reason is None,
         'can_manual_abandon': manual_grade_disabled_reason is None and _photo_only_session(),
         'manual_grade_disabled_reason': manual_grade_disabled_reason,

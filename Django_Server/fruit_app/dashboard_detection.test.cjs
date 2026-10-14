@@ -143,6 +143,44 @@ vm.runInContext("setStreamStatus('RTC 預覽無法建立：rtc_failed；仍可�
 assert.equal(element('stream-status').textContent, 'RTC 預覽無法建立：rtc_failed；仍可正式拍攝。');
 console.log('PASS: Dashboard connection badges, path-free modes and visible failure reasons.');
 
+function renderNotification(notification) {
+    context.notificationState = notification;
+    vm.runInContext('renderNotification(notificationState)', context);
+    return element('notification-status').textContent;
+}
+const counts = { pending: 0, sent: 0, failed: 0, uncertain: 0 };
+let notificationText = renderNotification({
+    mode: 'photo_only', enabled: false, configured: true, counts, paused: 0, current: null,
+});
+assert.equal(element('notification-summary-status').textContent, 'LINE 通知：關閉');
+assert.equal(element('btn-notification-toggle').textContent, '開啟通知');
+assert.equal(element('notification-mode-label').textContent, '純拍攝：訊息加「測試」');
+assert.match(notificationText, /關閉期間的新結果不排送/);
+notificationText = renderNotification({
+    mode: 'hardware', enabled: false, configured: true, counts: { ...counts, pending: 2 },
+    paused: 2, current: { status: 'pending', reason: null },
+});
+assert.equal(element('notification-summary-status').textContent, 'LINE 通知：關閉・暫停 2');
+assert.match(notificationText, /本輪：待送/);
+notificationText = renderNotification({
+    mode: 'hardware', enabled: true, configured: false,
+    config_reason: '尚未設定通知憑證：請建立 notification_credentials.json',
+    counts: { ...counts, pending: 1, uncertain: 1 }, paused: 0,
+    current: { status: 'uncertain', reason: '無法確認是否已送達' },
+    last_error: 'LINE 連線中斷，送達狀態待確認',
+});
+assert.equal(element('notification-summary-status').textContent, 'LINE 通知：開啟・待送 1');
+assert.equal(element('notification-summary-status').dataset.state, 'error');
+assert.equal(element('btn-notification-toggle').textContent, '關閉通知');
+assert.equal(element('btn-notification-toggle')['aria-pressed'], 'true');
+assert.match(notificationText, /尚未完成設定：尚未設定通知憑證/);
+assert.match(notificationText, /本輪：送達不明，請到群組確認（無法確認是否已送達）/);
+assert.match(notificationText, /最近錯誤：LINE 連線中斷/);
+renderNotification({ mode: 'hardware', enabled: false, error: '通知待送檔無法讀取：bad json' });
+assert.equal(element('btn-notification-toggle').disabled, true);
+assert.equal(element('notification-status').textContent, '通知待送檔無法讀取：bad json');
+console.log('PASS: LINE notification switch, paused queue, setup reason and unknown delivery text.');
+
 async function testDatasetFolderFeedback() {
     context.URLSearchParams = URLSearchParams;
     vm.runInContext("lastState = { work_mode: 'detection' };", context);

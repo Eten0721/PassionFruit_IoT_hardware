@@ -63,6 +63,7 @@
                     <strong id="operation-title">目前流程與操作設定</strong>
                     <small id="operation-mode-summary">工作模式與硬體選項載入中</small>
                 </span>
+                <span id="notification-summary-status" class="summary-badge neutral" title="LINE 加工果通知">LINE 通知載入中</span>
                 <span id="state-badge" class="state-badge" data-state="idle"><span class="status-dot" aria-hidden="true"></span><strong id="state-label">閒置</strong></span>
             </summary>
             <div class="operation-content">
@@ -102,6 +103,15 @@
                         <li id="readiness-timing" data-state="pending"><span class="readiness-mark" aria-hidden="true"></span><span>設定同步</span><strong>檢查中</strong></li>
                         <li id="readiness-calibration" data-state="pending"><span class="readiness-mark" aria-hidden="true"></span><span>送料校正</span><strong>檢查中</strong></li>
                     </ul>
+                </div>
+
+                <div class="notification-block">
+                    <div class="subheading-row">
+                        <h3>LINE 加工果通知</h3>
+                        <span id="notification-mode-label">依目前硬體選項</span>
+                    </div>
+                    <button id="btn-notification-toggle" type="button" class="button" aria-pressed="false" aria-describedby="notification-status">開啟通知</button>
+                    <p id="notification-status" class="control-guidance" aria-live="polite"></p>
                 </div>
 
                 <fieldset id="classification-panel" class="classify-panel">
