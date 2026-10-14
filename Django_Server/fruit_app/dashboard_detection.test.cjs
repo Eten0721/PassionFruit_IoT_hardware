@@ -134,11 +134,11 @@ assert.equal(badge.dataset.state, 'ready');
 badge = renderDashboard({ network: { esp32: { online: false } }, last_error_reason: 'motor_failed' });
 assert.equal(badge.textContent, '未連線');
 assert.equal(badge.dataset.state, 'error');
-assert.equal(element('error-reason').hidden, false);
-assert.equal(element('error-reason').textContent, 'motor_failed');
+// The reason moved from the removed #error-reason line to the state badge tooltip.
+assert.equal(element('state-badge').title, 'motor_failed');
 renderDashboard({ work_mode: 'collection', last_error_reason: '' });
 assert.equal(element('dataset-scope').textContent, '目前模式：蒐集');
-assert.equal(element('error-reason').hidden, true);
+assert.equal(element('state-badge').title, '');
 vm.runInContext("setStreamStatus('RTC 預覽無法建立：rtc_failed；仍可正式拍攝。')", context);
 assert.equal(element('stream-status').textContent, 'RTC 預覽無法建立：rtc_failed；仍可正式拍攝。');
 console.log('PASS: Dashboard connection badges, path-free modes and visible failure reasons.');
