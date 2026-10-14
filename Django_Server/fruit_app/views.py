@@ -630,7 +630,10 @@ def _observe_device(data):
         and receipt == {'generation': _safe_int(data.get('recovery_generation')),
                         'command_id': _safe_int(data.get('command_id')), 'boot_id': data.get('boot_id')}
     )
-    if APP_STATE['esp32_interlocked'] and not APP_STATE.get('network_recovery') and not completing_receipt:
+    # Photo-only never commands motors, so the device's own NVS lock waits until hardware mode
+    # is selected again; relocking here would undo every photo-only recovery on the next poll.
+    if (APP_STATE['esp32_interlocked'] and not APP_STATE.get('network_recovery') and not completing_receipt
+            and APP_STATE.get('hardware_mode') != 'photo_only'):
         _lock_network('esp32_network_interlocked', force=True)
     return None
 
@@ -647,11 +650,38 @@ def esp32_heartbeat_api(request):
 
 
 def _recovery_can_confirm():
-    return (not APP_STATE.get('active_fruit_id') and not APP_STATE.get('dataset_operation')
-            and not _has_unclassified_temp_fruit() and not APP_STATE.get('motor_command')
-            and local_network.NETWORK.snapshot()['selected'] and _camera_is_ready()
-            and (APP_STATE.get('hardware_mode') == 'photo_only'
-                 or (_esp32_is_online() and APP_STATE.get('esp32_network_capable'))))
+    return _recovery_confirm_disabled_reason() is None
+
+
+# Recovery only homes the motors and clears the lock; HC-SR04, timing sync and feeder
+# calibration stay required by the next production start, not by the confirmation.
+def _recovery_confirm_disabled_reason():
+    if APP_STATE.get('dataset_operation'):
+        return 'dataset_operation_in_progress'
+    if APP_STATE.get('active_fruit_id') or _has_unclassified_temp_fruit():
+        return 'temp_fruit_exists'
+    if APP_STATE.get('motor_command'):
+        return 'pending_motor_command'
+    if not local_network.NETWORK.snapshot()['selected']:
+        return 'network_selection_required'
+    if not _camera_is_ready():
+        return 'camera_not_ready'
+    if APP_STATE.get('hardware_mode') == 'photo_only':
+        return None
+    if not _esp32_is_online():
+        return 'esp32_offline'
+    if not APP_STATE.get('esp32_network_capable'):
+        return 'network_capability_missing'
+    return None
+
+
+def _network_recovery_ui_reason():
+    recovery = APP_STATE.get('network_recovery')
+    if not recovery:
+        return 'network_recovery_not_required'
+    if recovery.get('phase') in ('homing', 'committing'):
+        return 'network_recovery_in_progress'
+    return _recovery_confirm_disabled_reason()
 
 
 def _confirm_network_recovery(data):
@@ -1365,6 +1395,13 @@ def esp32_trigger_api(request):
     return JsonResponse(payload)
 
 
+def _record_esp32_capabilities(data):
+    feeder_state = (data.get('feeder_state') or '').strip()
+    APP_STATE['esp32_feeder_capable'] = data.get('capability') == 'feeder_v1'
+    APP_STATE['esp32_sorter_capable'] = data.get('sorter_capability') == 'gate3_sorter_v1'
+    APP_STATE['esp32_feeder_state'] = feeder_state if feeder_state in ('idle', 'awaiting_fruit') else None
+
+
 @require_GET
 @control_response
 @network_required
@@ -1386,6 +1423,9 @@ def esp32_command_api(request):
             else None
         )
         if APP_STATE.get('network_recovery'):
+            # Recovery confirmation is gated on these; a Django restart during a lock would
+            # otherwise leave them empty and the 開始執行 confirmation permanently disabled.
+            _record_esp32_capabilities(request.GET)
             command = APP_STATE.get('motor_command') or {}
             payload = (command if command.get('command') == 'recover_network'
                        else {'command': 'none', 'command_id': 0})
@@ -1511,13 +1551,7 @@ def esp32_command_api(request):
                 details={'previous_boot_id': previous_boot_id, 'boot_id': boot_id},
             )
         APP_STATE['esp32_boot_id'] = boot_id
-        APP_STATE['esp32_feeder_capable'] = request.GET.get('capability') == 'feeder_v1'
-        APP_STATE['esp32_sorter_capable'] = (
-            request.GET.get('sorter_capability') == 'gate3_sorter_v1'
-        )
-        APP_STATE['esp32_feeder_state'] = (
-            feeder_state if feeder_state in ('idle', 'awaiting_fruit') else None
-        )
+        _record_esp32_capabilities(request.GET)
         APP_STATE['esp32_last_feed_command_id'] = max(
             _safe_int(request.GET.get('last_feed_command_id')) or 0,
             0,
@@ -2203,7 +2237,7 @@ def _notification_payload():
 
 @csrf_exempt
 @require_POST
-@network_required
+@network_required(cleanup=True)  # A notification preference never moves hardware.
 def notification_api(request):
     """Switch LINE notifications for the current capture mode on or off."""
     enabled = _request_data(request).get('enabled')
@@ -5085,6 +5119,7 @@ def _state_payload(extra=None):
         'can_test_feeder': _feeder_test_disabled_reason() is None,
         'feeder_test_disabled_reason': _feeder_test_disabled_reason(),
         'can_start_auto_run': _auto_run_disabled_reason(allow_recovery=True) is None,
+        'network_recovery_confirm_disabled_reason': _network_recovery_ui_reason(),
         'auto_run_disabled_reason': _auto_run_disabled_reason(),
         'last_esp32_poll_at': APP_STATE.get('last_esp32_poll_at'),
         'last_esp32_report_at': APP_STATE.get('last_esp32_report_at'),

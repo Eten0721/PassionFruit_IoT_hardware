@@ -188,6 +188,50 @@ class NetworkSafetyTests(SimpleTestCase):
         self.assertIsNone(views.APP_STATE.get('network_recovery'))
         self.assertIsNone(views.APP_STATE['motor_command'])
 
+    def test_locked_command_poll_refreshes_capabilities_lost_by_django_restart(self):
+        self.prepare()
+        self.lock()
+        self.assertTrue(views.APP_STATE.get('network_recovery'))
+        # A restarted Django reloads the persisted lock but starts with empty device facts.
+        views.APP_STATE.update(esp32_feeder_capable=False, esp32_sorter_capable=False, esp32_feeder_state=None)
+        locked = self.client.get('/api/esp32/command/', self.device(network_interlocked='1')).json()
+        self.assertEqual(locked['command'], 'none')
+        self.assertTrue(views.APP_STATE['esp32_feeder_capable'])
+        self.assertTrue(views.APP_STATE['esp32_sorter_capable'])
+        self.assertEqual(views.APP_STATE['esp32_feeder_state'], 'idle')
+
+    def test_photo_only_ignores_device_interlock_until_hardware_mode_returns(self):
+        self.prepare(photo_only=True)
+        self.client.get('/api/esp32/heartbeat/', self.device(network_interlocked='1'))
+        self.assertIsNone(views.APP_STATE.get('network_recovery'))
+        self.assertEqual(self.post('/api/notification/', {'enabled': True}).status_code, 200)
+        self.assertEqual(self.post('/api/collection_options/', {
+            'work_mode': 'collection', 'hardware_mode': 'hardware',
+        }).status_code, 200)
+        self.client.get('/api/esp32/heartbeat/', self.device(network_interlocked='1'))
+        self.assertEqual(views.APP_STATE['network_recovery']['reason'], 'esp32_network_interlocked')
+        self.assertEqual(self.post('/api/notification/', {'enabled': False}).status_code, 200)
+
+    def test_recovery_confirmation_needs_only_esp32_and_camera_not_feeder_sensor(self):
+        self.prepare()
+        self.lock()
+        self.client.get('/api/esp32/command/', self.device(network_interlocked='1', feeder_sensor_state='unavailable'))
+        state = self.client.get('/api/state/').json()
+        # The lock only needs ESP32 + phone camera; HC-SR04 gates the next production start instead.
+        self.assertTrue(state['can_start_auto_run'])
+        self.assertEqual(state['auto_run_disabled_reason'], 'system_not_idle')
+        self.assertIsNone(state['network_recovery_confirm_disabled_reason'])
+        frame = views.APP_STATE['camera_last_live_frame_monotonic']
+        views.APP_STATE['camera_last_live_frame_monotonic'] = None
+        state = self.client.get('/api/state/').json()
+        self.assertFalse(state['can_start_auto_run'])
+        self.assertEqual(state['network_recovery_confirm_disabled_reason'], 'camera_not_ready')
+        views.APP_STATE['camera_last_live_frame_monotonic'] = frame
+        response = self.post('/api/auto_run/', {'enabled': True, 'recovery_confirmed': True})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.json()['recovery_pending'])
+        self.assertEqual(response.json()['network_recovery_confirm_disabled_reason'], 'network_recovery_in_progress')
+
     def test_hardware_recovery_requires_two_commits_and_duplicates_do_not_repeat_home(self):
         self.prepare()
         self.lock()

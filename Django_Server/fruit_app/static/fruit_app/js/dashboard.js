@@ -736,6 +736,12 @@ const remoteVideo = document.getElementById('remote-video');
         if (data.auto_run_finishing) {
             return '正在完成目前果實，完成後不會送入下一顆。';
         }
+        if (data.network_recovery) {
+            const recoveryReason = data.network_recovery_confirm_disabled_reason;
+            return recoveryReason
+                ? `目前無法確認安全復原：${reasonText(recoveryReason)}`
+                : '按「開始執行」確認人工安全復原；只會讓馬達歸位並解除安全鎖，不會送料。正式運轉仍需 HC-SR04 與設定同步。';
+        }
         if (timingInputsDirty) {
             return '停穩設定尚未套用，請先在進階設定保存數值。';
         }
@@ -843,6 +849,7 @@ const remoteVideo = document.getElementById('remote-video');
         feed_arrival_unconfirmed: '送料到位尚未確認',
         gate3_manual_removal_required: 'Gate 3 待人工安全復原',
         network_selection_required: '尚未確認本次使用的網路',
+        network_recovery_in_progress: '安全復原進行中，等待 ESP32 歸位與清鎖交握',
         no_active_fruit: '沒有待分類的資料',
         pending_motor_command: '有待執行的馬達命令',
         photo_only_required: '目前不是純拍攝',
