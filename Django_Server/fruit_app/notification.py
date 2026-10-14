@@ -15,7 +15,7 @@ from .detection import CONTRACT_VERSION, DEFECT_COLORS, DEFECT_MARKED_SUFFIX
 
 
 DEFECT_NAMES = {
-    'abrasion': '擦傷', 'anthracnose': '疑似炭疽病',
+    'abrasion': '擦傷', 'anthracnose': '炭疽病',
     'insect_bite': '蟲咬', 'insect_track': '畫圖蟲',
 }
 PHOTO_NAMES = ('img_01.jpg', 'img_02.jpg', 'img_03.jpg')

@@ -180,8 +180,9 @@ class NotificationTests(SimpleTestCase):
         self.assertEqual(preview['text'], '測試 |瑕疵通知|\n偵測時間：2026-10-14 09:00:00\n'
                          '等級：加工（人工判定）\n發現瑕疵：擦傷\n'
                          '備註：照片 1、3 未完成檢測，未列入瑕疵觀察\n')
-        self.assertIn('疑似炭疽病', preview['views'][0]['label'])
-        self.assertNotIn('疑似炭疽病', preview['text'])
+        self.assertIn('炭疽病', preview['views'][0]['label'])
+        self.assertNotIn('疑似', preview['views'][0]['label'])
+        self.assertNotIn('炭疽病', preview['text'])
         result['images']['img_02.jpg']['models']['defect']['detections'] = []
         self.write_fixture(result)
         preview = generate_notification(self.result_path)
@@ -236,7 +237,7 @@ class NotificationTests(SimpleTestCase):
         self.assertEqual(preview['text'].count('未偵測到瑕疵'), 1)
         self.assertNotIn('擦傷', preview['text'])
 
-    def test_disease_and_other_successful_observations_are_chinese_and_suspected(self):
+    def test_disease_and_other_successful_observations_use_product_chinese_names(self):
         result = self.processing_fixture()
         first = result['images']['img_01.jpg']['models']
         first['color']['class_name'] = 'bad_color'
@@ -249,11 +250,12 @@ class NotificationTests(SimpleTestCase):
         preview = generate_notification(self.result_path)
         self.assertTrue(preview['ok'])
         self.assertEqual(preview['views'][0]['observations'],
-                         ['色澤異常', '皺褶', '擦傷', '疑似炭疽病', '蟲咬', '畫圖蟲'])
+                         ['色澤異常', '皺褶', '擦傷', '炭疽病', '蟲咬', '畫圖蟲'])
         self.assertNotIn('蟲跡', preview['text'])
         self.assertIn('畫圖蟲', preview['views'][0]['label'])
         self.assertIn('畫圖蟲', [entry['label'] for entry in preview['views'][0]['legend']])
-        self.assertIn('疑似炭疽病', preview['text'])
+        self.assertIn('炭疽病', preview['text'])
+        self.assertNotIn('疑似', preview['text'])
         for forbidden in ('0.987654', 'anthracnose', 'insect_bite', 'insect_track',
                           '因此', '因為', '導致', '已分槽', '可食用'):
             self.assertNotIn(forbidden, preview['text'])
@@ -268,7 +270,7 @@ class NotificationTests(SimpleTestCase):
         view = preview['views'][1]
         self.assertEqual(view['label'], '未完成檢測')
         self.assertEqual(view['image_path'], str(self.root / 'img_02_original.jpg'))
-        self.assertNotIn('疑似炭疽病', preview['text'])
+        self.assertNotIn('炭疽病', preview['text'])
         with Image.open(preview['image_path']) as image:
             self.assertLess(image.getpixel((960, image.height - 240))[0], 5)
             self.assertGreater(image.getpixel((960, image.height - 240))[1], 120)
@@ -348,8 +350,9 @@ class NotificationTests(SimpleTestCase):
         self.assertEqual(first['image_path'], str(self.root / f'img_01{DEFECT_MARKED_SUFFIX}'))
         self.assertEqual(first['legend'], [
             {'label': '擦傷', 'class_index': 3, 'color': list(DEFECT_COLORS['abrasion'])},
-            {'label': '疑似炭疽病', 'class_index': 0, 'color': list(DEFECT_COLORS['anthracnose'])},
+            {'label': '炭疽病', 'class_index': 0, 'color': list(DEFECT_COLORS['anthracnose'])},
         ])
+        self.assertNotIn('疑似', str(first['legend']))
         with Image.open(preview['image_path']) as image:
             # Each expected color must occupy a visible swatch in photo 1's caption.
             with image.crop((0, 0, 640, image.height - 480)) as caption:
@@ -400,7 +403,7 @@ class NotificationTests(SimpleTestCase):
         preview = generate_notification(self.result_path)
         font = ImageFont.truetype(preview['font_path'], 28)
         missing = bytes(font.getmask('\u0378'))
-        for char in '照片擦傷疑似炭疽病未完成檢測取得影像':
+        for char in '照片擦傷炭疽病未完成檢測取得影像':
             with self.subTest(char=char):
                 glyph = font.getmask(char)
                 self.assertIsNotNone(glyph.getbbox())
