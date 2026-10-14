@@ -181,35 +181,42 @@ class DetectionFlowTests(SimpleTestCase):
     @mock.patch(
         'fruit_app.detection.execute_model_batch', side_effect=_external_result
     )
-    def test_hardware_detection_is_single_round_and_keeps_gate3_locked(self, execute):
+    def test_hardware_detection_saves_then_classifies_without_feeding(self, execute):
         fruit_id = self._start_hardware_detection()
         third = self._upload_hardware_stations(fruit_id)
         self.assertIn(third.json()['detection_status'], ('pending', 'running'))
 
         state = self._wait_for_detection()
         self.assertEqual(state['detection_status'], 'completed')
-        self.assertEqual(state['active_fruit_id'], fruit_id)
-        self.assertTrue(state['gate3_manual_removal_required'])
-        self.assertEqual(
-            state['operator_alert']['reason'], 'gate3_manual_removal_required'
-        )
-        self.assertFalse(state['auto_run_enabled'])
-        self.assertEqual(state['motor_command']['command'], 'none')
+        self.assertIsNone(state['active_fruit_id'])
+        self.assertFalse(state['gate3_manual_removal_required'])
+        self.assertTrue(state['auto_run_enabled'])
+        command = state['motor_command']
+        self.assertEqual(command['command'], 'classify_fruit')
+        self.assertEqual(command['fruit_id'], fruit_id)
+        self.assertEqual(command['classification_code'],
+                         state['detection_result']['classification']['code'])
+        self.assertEqual(self._saved_result(fruit_id)['storage']['status'], 'saved')
+        self.assertEqual(len(self._summary_rows()), 1)
+        self.assertEqual(state['detection_result']['sorting']['status'], 'pending')
+        issued = [entry['details']['command'] for entry in state['transition_trace']
+                  if entry['event'] == 'motor_command_issued']
+        self.assertEqual(issued, ['start_sequence', 'release_gate', 'release_gate',
+                                  'classify_fruit'])
         self.assertEqual(execute.call_count, 1)
 
         duplicate = self._report('capture_sequence_finished')
-        self.assertEqual(duplicate.status_code, 200)
-        self.assertTrue(duplicate.json()['ignored'])
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(views.APP_STATE['motor_command']['command_id'], command['command_id'])
         self.assertEqual(execute.call_count, 1)
-        self.assertEqual(
-            self._post_json('/api/auto_run/', {'enabled': True}).json()['reason'],
-            'active_fruit_exists',
-        )
+        restarted = self._post_json('/api/auto_run/', {'enabled': True})
+        self.assertEqual(restarted.status_code, 200)
+        self.assertEqual(restarted.json()['motor_command']['command_id'], command['command_id'])
         self.assertEqual(
             self._post_json('/api/collection_options/', {
                 'work_mode': 'detection', 'hardware_mode': 'photo_only',
             }).json()['reason'],
-            'active_fruit_exists',
+            'auto_run_active',
         )
 
     @mock.patch('fruit_app.detection.execute_model_batch')
@@ -229,17 +236,13 @@ class DetectionFlowTests(SimpleTestCase):
 
         self.assertEqual(state['detection_status'], 'failed')
         self.assertEqual(state['active_fruit_id'], fruit_id)
+        self.assertTrue(state['can_manual_grade'])
         self.assertTrue(state['gate3_manual_removal_required'])
-        self.assertFalse(state['auto_run_enabled'])
+        self.assertTrue(state['auto_run_enabled'])
         self.assertEqual(state['motor_command']['command'], 'none')
 
-    @mock.patch(
-        'fruit_app.detection.execute_model_batch', side_effect=_external_result
-    )
-    def test_hardware_detection_recovery_requires_explicit_confirmation(self, _execute):
-        fruit_id = self._start_hardware_detection()
-        self._upload_hardware_stations(fruit_id)
-        self._wait_for_detection()
+    def test_hardware_detection_recovery_requires_explicit_confirmation(self):
+        fruit_id, _ = self._hardware_needs_review_round()
 
         discarded = self._post_json('/api/discard/', {
             'fruit_id': fruit_id,
@@ -268,32 +271,35 @@ class DetectionFlowTests(SimpleTestCase):
     @mock.patch(
         'fruit_app.detection.execute_model_batch', side_effect=_external_result
     )
-    def test_restart_after_completed_hardware_detection_keeps_gate3_locked(
+    def test_restart_after_committed_hardware_detection_never_replays_sorting(
         self, _execute
     ):
         fruit_id = self._start_hardware_detection()
         self._upload_hardware_stations(fruit_id)
-        self.assertEqual(self._wait_for_detection()['detection_status'], 'completed')
+        before = self._wait_for_detection()
+        command = before['motor_command']
+        self.assertEqual(before['detection_status'], 'completed')
 
         views.reset_runtime_state_for_tests()
         views._ensure_dataset_structure()
         state = self.client.get('/api/state/').json()
 
         self.assertEqual(state['detection_status'], 'completed')
-        self.assertEqual(state['active_fruit_id'], fruit_id)
-        self.assertTrue(state['gate3_manual_removal_required'])
+        self.assertIsNone(state['active_fruit_id'])
+        self.assertTrue(state['sorter_recovery_required'])
+        self.assertTrue(state['detection_result']['sorting']['recovery_required'])
         self.assertFalse(state['auto_run_enabled'])
         self.assertEqual(state['motor_command']['command'], 'none')
+        report = self._report('classification_sorter_completed',
+                              command_id=command['command_id'],
+                              classification_code=command['classification_code'])
+        self.assertTrue(report.json()['duplicate'])
+        self.assertEqual(views.APP_STATE['motor_command'], None)
+        self.assertTrue(self._saved_result(fruit_id)['complete'])
+        self.assertEqual(len(self._summary_rows()), 1)
 
-    @mock.patch(
-        'fruit_app.detection.execute_model_batch', side_effect=_external_result
-    )
-    def test_restart_after_discard_keeps_persisted_gate3_recovery_lock(
-        self, _execute
-    ):
-        fruit_id = self._start_hardware_detection()
-        self._upload_hardware_stations(fruit_id)
-        self._wait_for_detection()
+    def test_restart_after_discard_keeps_persisted_gate3_recovery_lock(self):
+        fruit_id, _ = self._hardware_needs_review_round()
         discarded = self._post_json('/api/discard/', {
             'fruit_id': fruit_id,
             'capture_token': views.APP_STATE['capture_token'],
@@ -1016,6 +1022,285 @@ class DetectionFlowTests(SimpleTestCase):
 
     # --- Manual takeover of a needs-review round (#32) ---
 
+    def _hardware_needs_review_round(self):
+        reports, artifacts = self._external_result(
+            [Path(f'img_{index:02d}.jpg') for index in range(1, 4)], {},
+        )
+        reports[0]['models']['defect'] = {'status': 'failed', 'reason': 'inference_failed'}
+        artifacts[0].pop('defect_annotated')
+        with mock.patch('fruit_app.detection.execute_model_batch', return_value=(reports, artifacts)):
+            fruit_id = self._start_hardware_detection()
+            self._upload_hardware_stations(fruit_id)
+            return fruit_id, self._wait_for_detection()
+
+    @mock.patch('fruit_app.detection.execute_model_batch', side_effect=_external_result)
+    def test_matching_sorter_completion_feeds_once_and_continues_detection(self, _execute):
+        fruit_id = self._start_hardware_detection()
+        self._upload_hardware_stations(fruit_id)
+        state = self._wait_for_detection()
+        command = state['motor_command']
+        self.assertEqual(command['command'], 'classify_fruit')
+        self.assertFalse(views.APP_STATE['auto_feed_pending'])
+        self.assertEqual(self._esp32_command()['command_id'], command['command_id'])
+        self.assertEqual(self.client.get('/api/state/').json()['detection_result']['sorting']['status'], 'running')
+        fields = {'command_id': command['command_id'],
+                  'classification_code': command['classification_code'], 'fruit_id': fruit_id}
+        for wrong, reason in (
+            ({'command_id': command['command_id'] + 10}, 'command_id_mismatch'),
+            ({'classification_code': 'invalid'}, 'classification_code_mismatch'),
+            ({'fruit_id': 'fruit_999'}, 'fruit_id_mismatch'),
+        ):
+            with self.subTest(reason=reason):
+                report = self._report('classification_sorter_completed', **{**fields, **wrong})
+                self.assertEqual(report.status_code, 409)
+                self.assertEqual(report.json()['reason'], reason)
+                self.assertEqual(views.APP_STATE['motor_command']['command_id'], command['command_id'])
+        accepted = self._report('classification_sorter_completed', **fields)
+        self.assertEqual(accepted.status_code, 200)
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(state['detection_result']['sorting']['status'], 'completed')
+        self.assertFalse(state['detection_result']['sorting']['recovery_required'])
+        next_feed = state['motor_command']
+        self.assertEqual(next_feed['command'], 'feed_one')
+        duplicate = self._report('classification_sorter_completed', **fields)
+        self.assertTrue(duplicate.json()['duplicate'])
+        self.assertEqual(views.APP_STATE['motor_command']['command_id'], next_feed['command_id'])
+        self.assertEqual(self._report_feed_success(next_feed).status_code, 200)
+        next_fruit = self._report('hcsr04_trigger').json()['fruit_id']
+        self.assertEqual(next_fruit, 'fruit_002')
+        self.assertIsNone(self.client.get('/api/state/').json()['detection_result'])
+        duplicate = self._report('classification_sorter_completed', **fields)
+        self.assertTrue(duplicate.json()['duplicate'])
+        self.assertEqual(views.APP_STATE['motor_command']['command'], 'start_sequence')
+        self._upload_hardware_stations(next_fruit)
+        self.assertEqual(self._wait_for_detection()['motor_command']['command'], 'classify_fruit')
+        self.assertEqual(len(self._summary_rows()), 2)
+
+    @mock.patch('fruit_app.detection.execute_model_batch')
+    def test_pause_during_detection_finishes_sorting_without_next_feed(self, execute):
+        fruit_id = self._start_hardware_detection()
+        entered, release = threading.Event(), threading.Event()
+        def blocked(*args, **kwargs):
+            entered.set()
+            release.wait(2)
+            return self._external_result(*args, **kwargs)
+        execute.side_effect = blocked
+        self._upload_hardware_stations(fruit_id)
+        self.assertTrue(entered.wait(2))
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(state['motor_command']['command'], 'none')
+        self.assertEqual(state['detection_status'], 'running')
+        self.assertEqual(self._post_json('/api/auto_run/', {'enabled': False}).status_code, 200)
+        release.set()
+        self.assertEqual(self._wait_for_detection()['motor_command']['command'], 'classify_fruit')
+        command = self._esp32_command()
+        self._report('classification_sorter_completed', command_id=command['command_id'],
+                     classification_code=command['classification_code'])
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(state['sorter_status'], 'completed')
+        self.assertFalse(state['auto_run_enabled'])
+        self.assertFalse(state['auto_run_finishing'])
+        self.assertEqual(state['motor_command']['command'], 'none')
+
+    def test_manual_pause_finishes_sorting_without_next_feed(self):
+        fruit_id, state = self._hardware_needs_review_round()
+        self.assertEqual(state['motor_command']['command'], 'none')
+        self._post_json('/api/auto_run/', {'enabled': False})
+        self.assertEqual(self._manual_grade(state, '加工').status_code, 200)
+        command = self._esp32_command()
+        self._report('classification_sorter_completed', command_id=command['command_id'],
+                     classification_code='processing')
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(state['motor_command']['command'], 'none')
+        self.assertEqual(state['detection_result']['sorting']['status'], 'completed')
+        self.assertEqual(self._saved_result(fruit_id)['classification']['source'], 'manual')
+
+    @mock.patch('fruit_app.detection.execute_model_batch', side_effect=_external_result)
+    def test_hardware_json_failure_never_queues_sorting(self, _execute):
+        fruit_id = self._start_hardware_detection()
+        with mock.patch('fruit_app.detection._atomic_json', side_effect=OSError('read only')):
+            self._upload_hardware_stations(fruit_id)
+            state = self._wait_for_detection()
+        self.assertEqual(state['motor_command']['command'], 'none')
+        self.assertEqual(state['detection_result']['storage']['status'], 'failed')
+        self.assertIn('result_json_save_failed', state['detection_result']['storage']['reason'])
+        self.assertFalse(state['can_manual_grade'])
+        self.assertFalse(state['auto_run_enabled'])
+        self.assertTrue((self.dataset_root / 'temp' / fruit_id).is_dir())
+
+    @mock.patch('fruit_app.detection.execute_model_batch', side_effect=_external_result)
+    def test_hardware_csv_failure_never_queues_sorting(self, _execute):
+        fruit_id = self._start_hardware_detection()
+        with mock.patch('fruit_app.detection._write_summary_rows', side_effect=OSError('disk full')):
+            self._upload_hardware_stations(fruit_id)
+            state = self._wait_for_detection()
+        self.assertEqual(state['motor_command']['command'], 'none')
+        self.assertEqual(state['detection_result']['storage']['status'], 'failed')
+        self.assertIn('summary_save_failed', state['detection_result']['storage']['reason'])
+        self.assertFalse(self._saved_result(fruit_id)['complete'])
+        self.assertFalse(state['can_manual_grade'])
+
+    def test_hardware_manual_save_failure_never_queues_sorting(self):
+        fruit_id, state = self._hardware_needs_review_round()
+        original = self._saved_result(fruit_id)
+        with mock.patch('fruit_app.detection._write_summary_rows', side_effect=OSError('disk full')):
+            response = self._manual_grade(state, '下等')
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()['reason'], 'summary_save_failed')
+        self.assertEqual(self._saved_result(fruit_id), original)
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertTrue(self.client.get('/api/state/').json()['can_manual_grade'])
+        self.assertEqual(self._manual_grade(state, '下等').status_code, 200)
+        self.assertEqual(views.APP_STATE['motor_command']['command'], 'classify_fruit')
+
+    def test_hardware_manual_grade_cannot_bypass_safety_conditions(self):
+        fruit_id, state = self._hardware_needs_review_round()
+        original = self._saved_result(fruit_id)
+        for fields, reason in (
+            ({'last_esp32_poll_monotonic': None}, 'esp32_offline'),
+            ({'esp32_sorter_capable': False}, 'sorter_capability_missing'),
+            ({'gate3_waiting_boot_id': None}, 'gate3_boot_unconfirmed'),
+            ({'sorter_recovery_required': True}, 'sorter_recovery_required'),
+            ({'network_recovery': {'reason': 'esp32_connection_lost'}}, 'network_recovery_required'),
+        ):
+            with self.subTest(reason=reason):
+                previous = {key: views.APP_STATE.get(key) for key in fields}
+                views.APP_STATE.update(fields)
+                self.assertFalse(self.client.get('/api/state/').json()['can_manual_grade'])
+                response = self._manual_grade(state, '中等')
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.json()['reason'],
+                                 'esp32_connection_lost' if reason == 'network_recovery_required' else reason)
+                self.assertIsNone(views.APP_STATE['motor_command'])
+                self.assertEqual(self._saved_result(fruit_id), original)
+                views.APP_STATE.update(previous)
+
+    def test_hardware_abandon_requires_safe_discard(self):
+        fruit_id, state = self._hardware_needs_review_round()
+        self.assertFalse(state['can_manual_abandon'])
+        response = self._manual_grade(state, None, abandon=True)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'hardware_abandon_requires_discard')
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertEqual(self._saved_result(fruit_id)['classification']['status'], 'needs_review')
+
+    @mock.patch('fruit_app.detection.execute_model_batch', side_effect=_external_result)
+    def test_sorter_failure_keeps_committed_detection_and_requires_recovery(self, _execute):
+        fruit_id = self._start_hardware_detection()
+        self._upload_hardware_stations(fruit_id)
+        self._wait_for_detection()
+        before = self._saved_result(fruit_id)
+        command = self._esp32_command()
+        self._report('classification_sorter_failed', command_id=command['command_id'],
+                     classification_code=command['classification_code'], message='motor_failed')
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(self._saved_result(fruit_id), before)
+        self.assertEqual(len(self._summary_rows()), 1)
+        self.assertEqual(state['detection_result']['sorting']['status'], 'failed')
+        self.assertEqual(state['detection_result']['sorting']['reason'], 'motor_failed')
+        self.assertTrue(state['detection_result']['sorting']['recovery_required'])
+        self.assertEqual(state['motor_command']['command'], 'none')
+        self.assertFalse(state['auto_run_enabled'])
+
+    @mock.patch('fruit_app.detection.execute_model_batch', side_effect=_external_result)
+    def test_sorter_timeout_and_late_report_keep_committed_detection(self, _execute):
+        fruit_id = self._start_hardware_detection()
+        self._upload_hardware_stations(fruit_id)
+        self._wait_for_detection()
+        command = self._esp32_command()
+        views.APP_STATE['sorter_deadline_monotonic'] = 0
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(state['detection_result']['sorting']['status'], 'timeout')
+        self.assertTrue(state['detection_result']['sorting']['recovery_required'])
+        report = self._report('classification_sorter_completed', command_id=command['command_id'],
+                              classification_code=command['classification_code'])
+        self.assertTrue(report.json()['duplicate'])
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertTrue(self._saved_result(fruit_id)['complete'])
+        self.assertEqual(len(self._summary_rows()), 1)
+
+    @mock.patch('fruit_app.detection.execute_model_batch', side_effect=_external_result)
+    def test_sorter_completion_waits_for_feeder_conditions_without_replaying(self, _execute):
+        fruit_id = self._start_hardware_detection()
+        self._upload_hardware_stations(fruit_id)
+        self._wait_for_detection()
+        command = self._esp32_command()
+        views.APP_STATE['camera_last_live_frame_monotonic'] = None
+        report = self._report('classification_sorter_completed', command_id=command['command_id'],
+                              classification_code=command['classification_code'])
+        self.assertEqual(report.status_code, 200)
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        views.APP_STATE['camera_last_live_frame_monotonic'] = views.time.monotonic()
+        for fields in (
+            {'esp32_feeder_capable': False}, {'esp32_sorter_capable': False},
+            {'esp32_feeder_sensor_state': 'blocked'},
+            {'last_esp32_poll_monotonic': None},
+            {'camera_last_live_frame_monotonic': None}, {'sorter_recovery_required': True},
+        ):
+            with self.subTest(fields=fields):
+                previous = {key: views.APP_STATE.get(key) for key in fields}
+                views.APP_STATE.update(fields)
+                self.client.get('/api/esp32/heartbeat/')
+                duplicate = self._report('classification_sorter_completed', command_id=command['command_id'],
+                                         classification_code=command['classification_code'])
+                self.assertTrue(duplicate.json()['duplicate'])
+                self.assertIsNone(views.APP_STATE['motor_command'])
+                views.APP_STATE.update(previous)
+        self.client.get('/api/camera/state/?camera_ready=1')
+        self.assertEqual(views.APP_STATE['motor_command']['command'], 'feed_one')
+
+    def test_real_disconnect_locks_manual_takeover_across_restart(self):
+        fruit_id, state = self._hardware_needs_review_round()
+        original = self._saved_result(fruit_id)
+        self.safety_monitor_patcher.stop()
+        views.APP_STATE['last_esp32_poll_monotonic'] = views.time.monotonic() - 6.1
+        locked = self.client.get('/api/state/').json()
+        self.assertEqual(locked['auto_run_recovery_reason'], 'esp32_connection_lost')
+        self.assertFalse(locked['can_manual_grade'])
+        self.assertTrue(views._network_recovery_path().is_file())
+        response = self._manual_grade(state, '上等')
+        self.assertEqual(response.status_code, 409)
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertEqual(self._saved_result(fruit_id), original)
+        views.reset_runtime_state_for_tests()
+        locked = self.client.get('/api/state/').json()
+        self.assertFalse(locked['can_manual_grade'])
+        self.assertEqual(locked['motor_command']['command'], 'none')
+
+    def test_disconnect_during_manual_save_keeps_grade_without_releasing(self):
+        from . import detection
+        fruit_id, state = self._hardware_needs_review_round()
+        original = self._saved_result(fruit_id)
+        write_rows = detection._write_summary_rows
+        def disconnect_then_save(*args, **kwargs):
+            self.safety_monitor_patcher.stop()
+            views.APP_STATE['last_esp32_poll_monotonic'] = views.time.monotonic() - 6.1
+            self.client.get('/api/state/')
+            return write_rows(*args, **kwargs)
+        with mock.patch('fruit_app.detection._write_summary_rows', side_effect=disconnect_then_save):
+            response = self._manual_grade(state, '中等')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._saved_result(fruit_id)['classification']['source'], 'manual')
+        self.assertEqual(self._saved_result(fruit_id)['model_classification'], original['classification'])
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertTrue(response.json()['detection_result']['sorting']['recovery_required'])
+        self.assertFalse(response.json()['auto_run_enabled'])
+
+    def test_restart_of_needs_review_requires_recovery_before_manual_grade(self):
+        fruit_id, state = self._hardware_needs_review_round()
+        views.reset_runtime_state_for_tests()
+        state = self.client.get('/api/state/').json()
+        self.assertFalse(state['can_manual_grade'])
+        self.assertTrue(state['detection_result']['sorting']['recovery_required'])
+        # A fresh poll cannot re-establish the old Gate 3 confirmation.
+        self.client.get('/api/esp32/command/', {'boot_id': 'boot-new', 'capability': 'feeder_v1',
+                                             'sorter_capability': 'gate3_sorter_v1',
+                                             'feeder_state': 'idle', 'feeder_sensor_state': 'clear'})
+        response = self._manual_grade(state, '加工')
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'gate3_boot_unconfirmed')
+        self.assertEqual(self._saved_result(fruit_id)['classification']['status'], 'needs_review')
+
     def _run_needs_review_round(self):
         reports, artifacts = self._external_result(
             [Path(f'img_{index:02d}.jpg') for index in range(1, 4)], {}
@@ -1258,7 +1543,7 @@ class DetectionFlowTests(SimpleTestCase):
         self.assertEqual(len(self._summary_rows()), 1)
 
     @mock.patch('fruit_app.detection.execute_model_batch')
-    def test_hardware_needs_review_keeps_gate3_lock_until_hardware_ticket(
+    def test_hardware_manual_grade_saves_evidence_then_classifies_once(
         self, execute,
     ):
         reports, artifacts = self._external_result(
@@ -1273,17 +1558,22 @@ class DetectionFlowTests(SimpleTestCase):
         self._upload_hardware_stations(fruit_id)
         state = self._wait_for_detection()
 
-        self.assertFalse(state['can_manual_grade'])
-        self.assertEqual(
-            state['manual_grade_disabled_reason'], 'hardware_takeover_pending',
-        )
+        self.assertTrue(state['can_manual_grade'])
+        original = self._saved_result(fruit_id)
         response = self._manual_grade(state, '上等')
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()['reason'], 'hardware_takeover_pending')
+        self.assertEqual(response.status_code, 200)
         state = self.client.get('/api/state/').json()
-        self.assertTrue(state['gate3_manual_removal_required'])
-        self.assertEqual(state['motor_command']['command'], 'none')
-        self.assertEqual(
-            self._saved_result(fruit_id)['classification']['status'],
-            'needs_review',
-        )
+        self.assertEqual(state['motor_command']['command'], 'classify_fruit')
+        self.assertEqual(state['motor_command']['classification_code'], 'high')
+        command_id = state['motor_command']['command_id']
+        saved = self._saved_result(fruit_id)
+        self.assertEqual(saved['model_classification'], original['classification'])
+        self.assertEqual(saved['inference'], original['inference'])
+        self.assertEqual(saved['images'], original['images'])
+        self.assertEqual(saved['classification']['source'], 'manual')
+        self.assertEqual(len(self._summary_rows()), 1)
+        repeated = self._manual_grade(state, '上等')
+        self.assertEqual(repeated.status_code, 200)
+        self.assertTrue(repeated.json()['duplicate'])
+        self.assertEqual(repeated.json()['motor_command']['command_id'], command_id)
+        self.assertEqual(len(self._summary_rows()), 1)

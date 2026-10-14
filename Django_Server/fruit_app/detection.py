@@ -507,7 +507,7 @@ def _finalise(
             upsert_summary(summary_path, result, replace=replace)
         except Exception:
             pass
-        raise
+        return result
     try:
         upsert_summary(summary_path, result, replace=replace)
     except Exception as error:

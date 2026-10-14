@@ -37,6 +37,7 @@ const remoteVideo = document.getElementById('remote-video');
     const gradePanel = document.getElementById('grade-panel');
     const detectionGrade = document.getElementById('detection-grade');
     const gradeDetail = document.getElementById('detection-grade-detail');
+    const detectionFlowStatus = document.getElementById('detection-flow-status');
     const viewGrades = document.getElementById('detection-view-grades');
     const manualGradePanel = document.getElementById('manual-grade-panel');
     const manualGradeGuidance = document.getElementById('manual-grade-guidance');
@@ -814,7 +815,9 @@ const remoteVideo = document.getElementById('remote-video');
         dataset_operation_in_progress: '資料處理中',
         detection_in_progress: '檢測進行中',
         detection_mode: '自動檢測由模型判級，不開放人工分類',
-        hardware_takeover_pending: '使用硬體的人工接手放行尚未接通，Gate 3 維持關閉',
+        esp32_offline: 'ESP32 已離線，Gate 3 維持關閉',
+        sorter_capability_missing: 'Firmware 缺少安全分槽能力',
+        gate3_boot_unconfirmed: 'Gate 3 狀態需人工安全復原',
         network_recovery_required: '待完成網路安全復原',
         result_not_saved: '檢測結果尚未保存成功',
         dataset_busy: '資料處理中',
@@ -1212,8 +1215,30 @@ const remoteVideo = document.getElementById('remote-video');
         gradePanel.dataset.state = grade.state;
         setTextIfChanged(detectionGrade, grade.title);
         setTextIfChanged(gradeDetail, grade.detail);
+        setTextIfChanged(detectionFlowStatus, detectionFlowText(data));
         setTextIfChanged(viewGrades, viewGradesText(data));
         renderManualGrade(data, grade);
+    }
+
+    function detectionFlowText(data) {
+        const result = data.detection_result;
+        if (!result) return '等待判級與保存';
+        const graded = result.classification?.status === 'graded';
+        const saved = result.storage?.status === 'saved';
+        const steps = [graded ? '已判級' : '尚未判級', saved ? '已保存' : '保存失敗'];
+        const sorting = result.sorting || {};
+        const labels = {
+            skipped: '純拍攝略過分槽',
+            not_started: '尚未分槽，Gate 3 保持關閉',
+            pending: '分槽中：等待 ESP32',
+            running: '分槽中：控制流程執行中',
+            completed: '分槽完成：控制流程已回報',
+            failed: '分槽失敗',
+            timeout: '分槽失敗：回報逾時',
+        };
+        steps.push(labels[sorting.status] || '尚未分槽');
+        if (sorting.recovery_required) steps.push(`需復原：${reasonText(sorting.reason)}`);
+        return steps.join(' → ');
     }
 
     function renderManualGrade(data, grade) {
@@ -1223,10 +1248,12 @@ const remoteVideo = document.getElementById('remote-video');
         manualGradePanel.hidden = grade.state !== 'review'
             || !data.detection_result
             || ['not_detection_mode', 'already_manual_graded', 'not_needs_review'].includes(reason);
-        [...manualGradeButtons, manualAbandonButton].forEach((button) => {
+        manualGradeButtons.forEach((button) => {
             button.disabled = Boolean(controlActionInFlight) || !data.can_manual_grade;
             button.title = data.can_manual_grade ? '' : `無法人工處理：${reasonText(reason)}`;
         });
+        manualAbandonButton.hidden = data.hardware_mode !== 'photo_only';
+        manualAbandonButton.disabled = Boolean(controlActionInFlight) || !data.can_manual_abandon;
         setTextIfChanged(manualGradeGuidance, data.can_manual_grade
             ? '檢查左側三張照片與失敗原因後選擇等級；人工結果與模型輸出分開保存。'
             : `目前無法人工判級：${reasonText(reason)}`);

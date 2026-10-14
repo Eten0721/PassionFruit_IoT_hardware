@@ -185,6 +185,70 @@ class NetworkSafetyTests(SimpleTestCase):
         self.assertTrue(self.post('/api/esp32/report/', ack).json()['duplicate'])
         self.assertIsNone(views.APP_STATE.get('network_recovery'))
 
+    def test_recovery_refreshes_blocked_sensor_before_committing_new_feed(self):
+        self.prepare()
+        views.APP_STATE['capture_timing']['feeder_calibrated'] = True
+        applied = self.post('/api/esp32/report/', self.device(
+            event='timing_config_applied', timing_revision=views.APP_STATE['capture_timing_revision'],
+        ))
+        self.assertEqual(applied.status_code, 200)
+        self.client.get('/api/esp32/command/', self.device(feeder_sensor_state='blocked'))
+        self.lock()
+        locked = self.client.get('/api/esp32/command/', self.device(
+            network_interlocked='1', feeder_sensor_state='blocked',
+        )).json()
+        self.assertEqual(locked['command'], 'none')
+        self.assertEqual(self.post('/api/auto_run/', {
+            'enabled': True, 'recovery_confirmed': True,
+        }).status_code, 200)
+        command = self.client.get('/api/esp32/command/', self.device(
+            network_interlocked='1', feeder_sensor_state='clear',
+        )).json()
+        self.assertEqual(command['command'], 'recover_network')
+        self.assertFalse(command['control_allowed'])
+        self.assertFalse(views.APP_STATE['auto_run_enabled'])
+        ack = self.device(event='network_recovery_completed',
+                          command_id=command['command_id'], network_interlocked='1')
+        self.assertTrue(self.post('/api/esp32/report/', ack).json()['recovery_commit'])
+        self.assertEqual(views.APP_STATE['motor_command']['command'], 'recover_network')
+        ack.update(event='network_recovery_committed')
+        self.assertTrue(self.post('/api/esp32/report/', ack).json()['recovery_committed'])
+        feed = views.APP_STATE['motor_command']
+        self.assertIsNotNone(feed, views._auto_run_disabled_reason())
+        self.assertEqual(feed['command'], 'feed_one')
+        self.assertTrue(self.post('/api/esp32/report/', ack).json()['duplicate'])
+        self.assertEqual(views.APP_STATE['motor_command'], feed)
+
+    def test_recovery_sensor_blockers_never_commit_new_feed(self):
+        self.prepare()
+        views.APP_STATE['capture_timing']['feeder_calibrated'] = True
+        applied = self.post('/api/esp32/report/', self.device(
+            event='timing_config_applied', timing_revision=views.APP_STATE['capture_timing_revision'],
+        ))
+        self.assertEqual(applied.status_code, 200)
+        for sensor in ('blocked', 'unavailable', 'invalid', ''):
+            with self.subTest(sensor=sensor):
+                self.client.get('/api/esp32/command/', self.device())
+                self.lock()
+                locked = self.client.get('/api/esp32/command/', self.device(
+                    network_interlocked='1', feeder_sensor_state=sensor,
+                )).json()
+                self.assertEqual(locked['command'], 'none')
+                self.assertEqual(self.post('/api/auto_run/', {
+                    'enabled': True, 'recovery_confirmed': True,
+                }).status_code, 200)
+                command = self.client.get('/api/esp32/command/', self.device(
+                    network_interlocked='1', feeder_sensor_state=sensor,
+                )).json()
+                self.assertEqual(command['command'], 'recover_network')
+                ack = self.device(event='network_recovery_completed',
+                                  command_id=command['command_id'], network_interlocked='1')
+                self.assertTrue(self.post('/api/esp32/report/', ack).json()['recovery_commit'])
+                ack.update(event='network_recovery_committed')
+                self.assertTrue(self.post('/api/esp32/report/', ack).json()['recovery_committed'])
+                self.assertIsNone(views.APP_STATE['motor_command'])
+                self.assertFalse(views.APP_STATE['auto_run_enabled'])
+
     def test_wrong_ack_and_timeout_keep_diagnostic_lock(self):
         self.prepare()
         self.lock()

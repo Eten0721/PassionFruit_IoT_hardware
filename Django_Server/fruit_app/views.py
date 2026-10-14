@@ -1334,6 +1334,12 @@ def esp32_command_api(request):
         reason = _observe_device(request.GET)
         if reason:
             return local_network.network_error(reason)
+        feeder_sensor_state = (request.GET.get('feeder_sensor_state') or '').strip()
+        APP_STATE['esp32_feeder_sensor_state'] = (
+            feeder_sensor_state
+            if feeder_sensor_state in ('clear', 'blocked', 'unavailable')
+            else None
+        )
         if APP_STATE.get('network_recovery'):
             command = APP_STATE.get('motor_command') or {}
             payload = (command if command.get('command') == 'recover_network'
@@ -1344,7 +1350,6 @@ def esp32_command_api(request):
         previous_boot_id = APP_STATE.get('esp32_boot_id')
         boot_id = (request.GET.get('boot_id') or '').strip() or None
         feeder_state = (request.GET.get('feeder_state') or '').strip()
-        feeder_sensor_state = (request.GET.get('feeder_sensor_state') or '').strip()
         current_command = APP_STATE.get('motor_command') or {}
         if (
             previous_boot_id
@@ -1467,11 +1472,6 @@ def esp32_command_api(request):
         )
         APP_STATE['esp32_feeder_state'] = (
             feeder_state if feeder_state in ('idle', 'awaiting_fruit') else None
-        )
-        APP_STATE['esp32_feeder_sensor_state'] = (
-            feeder_sensor_state
-            if feeder_sensor_state in ('clear', 'blocked', 'unavailable')
-            else None
         )
         APP_STATE['esp32_last_feed_command_id'] = max(
             _safe_int(request.GET.get('last_feed_command_id')) or 0,
@@ -1894,12 +1894,17 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir, session):
                 message += _clear_saved_photo_input(fruit_dir, fruit_id)
             _clear_active_state(message, status=terminal_status)
             return
-        _disable_auto_run()
-        APP_STATE['auto_run_finishing'] = False
+        if complete:
+            _start_saved_detection_sorting(result)
+            return
         APP_STATE['status'] = terminal_status
         APP_STATE['message'] = (
-            f'{message} Gate 3 仍保持關閉，請依人工安全復原提示處理果實。'
+            f'{message} Gate 3 仍保持關閉，等待人工判級或安全移除。'
         )
+        if not result or (result.get('storage') or {}).get('status') != 'saved':
+            _disable_auto_run()
+            APP_STATE['auto_run_finishing'] = False
+        _check_network_safety()
         _clear_wait_timer()
         _record_transition(
             terminal_status,
@@ -1908,14 +1913,69 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir, session):
         )
 
 
+def _sorter_start_disabled_reason():
+    """Shared hardware conditions for collection and detection classification."""
+    _check_network_safety()
+    if APP_STATE.get('network_recovery'):
+        return 'network_recovery_required'
+    if APP_STATE.get('sorter_recovery_required'):
+        return 'sorter_recovery_required'
+    reason = _network_hardware_disabled_reason()
+    if reason:
+        return reason
+    if not _esp32_is_online():
+        return 'esp32_offline'
+    if not APP_STATE.get('esp32_sorter_capable'):
+        return 'sorter_capability_missing'
+    boot_id = APP_STATE.get('esp32_boot_id')
+    if not boot_id or APP_STATE.get('gate3_waiting_boot_id') != boot_id:
+        return 'gate3_boot_unconfirmed'
+    return None
+
+
+def _start_saved_detection_sorting(result):
+    """Consume a saved grade once; never retry physical sorting from disk."""
+    fruit_id = result['fruit_id']
+    classification = result.get('classification') or {}
+    label = classification.get('label')
+    code = classification.get('code')
+    reason = None
+    if (result.get('storage') or {}).get('status') != 'saved':
+        reason = 'result_not_saved'
+    elif classification.get('status') != 'graded' or label not in LABELS or CLASSIFICATION_CODES[label] != code:
+        reason = 'invalid_classification'
+    elif APP_STATE.get('active_fruit_id') != fruit_id:
+        reason = 'stale_detection_result'
+    else:
+        reason = _sorter_start_disabled_reason()
+    if reason:
+        _set_sorter_failed(fruit_id, label, code, reason)
+        return
+    try:
+        # Intent survives a crash between committed data and command publication.
+        _write_sorter_recovery_intent(fruit_id, label, code)
+        APP_STATE['sorter_recovery_required'] = True
+        _write_counter(max(_read_counter(), _fruit_number(fruit_id) + 1))
+        _discard_temp_fruit(_temp_dir() / fruit_id, fruit_id)
+    except (OSError, DatasetFileBusyError) as exc:
+        _set_sorter_failed(fruit_id, label, code, 'detection_sorter_prepare_failed')
+        APP_STATE['message'] += f'：{exc}'
+        return
+    _clear_classified_dataset_state(fruit_id, label)
+    _record_transition('fruit_classified', fruit_id=fruit_id, details={'label': label})
+    _queue_sorter_command(fruit_id, label)
+
+
 MANUAL_GRADE_MESSAGES = {
     'not_detection_mode': '目前不是自動檢測模式。',
     'no_detection_result': '目前沒有待人工處理的檢測結果。',
     'dataset_busy': '已有資料操作進行中，請稍後再試。',
     'network_recovery_required': '請先完成網路安全復原。',
-    'hardware_takeover_pending': (
-        '使用硬體的人工接手放行尚未接通；Gate 3 維持關閉，請依安全復原提示處理。'
-    ),
+    'sorter_recovery_required': '分類器結果不確定，請先完成安全復原。',
+    'esp32_offline': 'ESP32 已離線，Gate 3 維持關閉。',
+    'sorter_capability_missing': 'Firmware 缺少 gate3_sorter_v1，不能放行。',
+    'gate3_boot_unconfirmed': 'Gate 3 等待狀態無法與目前 ESP32 boot 確認，請安全復原。',
+    'hardware_abandon_requires_discard': '使用硬體時請用跳過／刪除本輪，並依斷電程序安全移除果實。',
     'result_not_saved': '本輪檢測結果尚未保存成功，無法人工接手；請刪除本輪重拍。',
     'already_manual_graded': '本輪已由人工處理（判級或放棄）。',
     'not_needs_review': '本輪已由模型判級，不需人工接手。',
@@ -1935,8 +1995,6 @@ def _manual_grade_disabled_reason():
         return 'dataset_busy'
     if APP_STATE.get('network_recovery'):
         return 'network_recovery_required'
-    if result.get('hardware_mode') != 'photo_only':
-        return 'hardware_takeover_pending'
     if (result.get('storage') or {}).get('status') != 'saved':
         return 'result_not_saved'
     classification = result.get('classification') or {}
@@ -1944,6 +2002,8 @@ def _manual_grade_disabled_reason():
         return 'already_manual_graded'
     if classification.get('status') != 'needs_review':
         return 'not_needs_review'
+    if result.get('hardware_mode') != 'photo_only':
+        return _sorter_start_disabled_reason()
     return None
 
 
@@ -1951,7 +2011,7 @@ def _manual_grade_disabled_reason():
 @require_POST
 @network_required
 def manual_grade_api(request):
-    """Operator grade, or ``abandon``, for a photo-only needs-review round."""
+    """Save an operator decision before entering the shared sorter path."""
     data = _request_data(request)
     abandon = data.get('abandon') is True
     label = None if abandon else data.get('label')
@@ -1982,8 +2042,11 @@ def manual_grade_api(request):
         ).get('grade') == grade
         if reason and not duplicate:
             return _json_error(
-                MANUAL_GRADE_MESSAGES[reason], status=409, reason=reason,
+                MANUAL_GRADE_MESSAGES.get(reason, f'無法人工判級：{reason}'), status=409, reason=reason,
             )
+        if abandon and current.get('hardware_mode') != 'photo_only':
+            return _json_error(MANUAL_GRADE_MESSAGES['hardware_abandon_requires_discard'],
+                               status=409, reason='hardware_abandon_requires_discard')
         fruit_id = current['fruit_id']
         operation_token = APP_STATE.begin_dataset_operation(
             'manual_grade', fruit_id,
@@ -1997,21 +2060,29 @@ def manual_grade_api(request):
             result_id=data['result_id'],
             grade=grade,
         )
-    finally:
+    except Exception:
         with STATE_LOCK:
             APP_STATE.finish_dataset_operation(operation_token)
+        raise
 
-    if not outcome['ok']:
-        return _manual_grade_failure_response(outcome)
     with STATE_LOCK:
+        APP_STATE.finish_dataset_operation(operation_token)
+        if not outcome['ok']:
+            return _manual_grade_failure_response(outcome)
         if (APP_STATE.get('detection_result') or {}).get('result_id') == data['result_id']:
             APP_STATE['detection_result'] = outcome['result']
             APP_STATE['detection_error'] = None
             decision = '已放棄本輪、不分級' if abandon else f'已人工判為「{label}」'
-            APP_STATE['message'] = (
-                f'{fruit_id} {decision}並更新檢測紀錄；'
-                '原檢測失敗資訊仍保留。純拍攝不啟動硬體或下一輪。'
-            )
+            if current.get('hardware_mode') == 'photo_only':
+                APP_STATE['message'] = (
+                    f'{fruit_id} {decision}並更新檢測紀錄；'
+                    '原檢測失敗資訊仍保留。純拍攝不啟動硬體或下一輪。'
+                )
+            elif not outcome['duplicate']:
+                _start_saved_detection_sorting(outcome['result'])
+            elif APP_STATE.get('active_fruit_id') == fruit_id:
+                _set_sorter_failed(fruit_id, label, CLASSIFICATION_CODES[label],
+                                   'manual_decision_uncertain')
         _record_transition(
             'detection_manual_decided', fruit_id=fruit_id,
             details={'label': label, 'abandoned': abandon,
@@ -2292,24 +2363,11 @@ def classify_api(request):
             return _json_error(f'{fruit_id} 尚未完成 {IMAGE_COUNT} 張照片上傳。', status=409)
         photo_only = _photo_only_session()
         if not photo_only:
-            if not _esp32_is_online():
+            reason = _sorter_start_disabled_reason()
+            if reason:
                 return _json_error(
-                    'ESP32 已離線；Gate 3 上的果實與暫存照片都會保留，請先恢復連線。',
-                    status=409,
-                    reason='esp32_offline',
-                )
-            if not APP_STATE.get('esp32_sorter_capable'):
-                return _json_error(
-                    'Firmware 不相容：缺少 gate3_sorter_v1，已保留暫存照片與 Gate 3 上的果實。',
-                    status=409,
-                    reason='sorter_capability_missing',
-                )
-            if APP_STATE.get('gate3_waiting_boot_id') != APP_STATE.get('esp32_boot_id'):
-                return _json_error(
-                    'Gate 3 等待狀態無法與目前 ESP32 boot 確認；已保留暫存照片與果實，'
-                    '請依斷電程序檢查並重新拍攝或刪除。',
-                    status=409,
-                    reason='gate3_boot_unconfirmed',
+                    f'無法安全分類（{reason}）；已保留暫存照片與 Gate 3 上的果實。',
+                    status=409, reason=reason,
                 )
 
         dest_dir = _dataset_root() / label / fruit_id
@@ -3090,6 +3148,10 @@ def _restore_sorter_recovery_marker():
         'Django 在分類器 terminal report 確認前重新啟動；不會重送實體命令，'
         '請檢查 Gate 3 與分類器後明確確認復原。'
     )
+    if APP_STATE.get('work_mode') == 'detection' and payload.get('fruit_id'):
+        result = detection.load_result(_detection_output_root(), payload['fruit_id'])
+        APP_STATE['detection_result'] = result
+        APP_STATE['detection_status'] = 'completed' if result and result.get('complete') else 'failed'
 
 
 def _clear_sorter_recovery_marker():
@@ -3711,6 +3773,11 @@ def _start_new_capture_session(fruit_id, source, status, message):
     APP_STATE['source'] = source
     APP_STATE['session_work_mode'] = APP_STATE['work_mode']
     APP_STATE['session_hardware_mode'] = APP_STATE['hardware_mode']
+    if APP_STATE['session_work_mode'] == 'detection':
+        APP_STATE['detection_status'] = 'idle'
+        APP_STATE['detection_result'] = None
+        APP_STATE['detection_progress'] = None
+        APP_STATE['detection_error'] = None
     APP_STATE['active_station_index'] = None
     APP_STATE['station_statuses'] = {str(index): 'pending' for index in range(1, IMAGE_COUNT + 1)}
     APP_STATE['motor_command'] = None
@@ -3917,11 +3984,15 @@ def _handle_sorter_report(event, data, command_id):
             '分類器回報的 classification_code 與目前命令不符。',
             reason='classification_code_mismatch',
         )
+    if data.get('fruit_id') and data['fruit_id'] != APP_STATE.get('sorter_fruit_id'):
+        raise CaptureCommandError('分類器回報的 fruit_id 與目前命令不符。',
+                                  reason='fruit_id_mismatch')
 
     current_command = APP_STATE.get('motor_command') or {}
     if (
         current_command.get('command') != 'classify_fruit'
         or current_command.get('command_id') != command_id
+        or current_command.get('fruit_id') != APP_STATE.get('sorter_fruit_id')
     ):
         raise CaptureCommandError(
             '目前 motor command slot 不是這筆分類命令。',
@@ -4535,6 +4606,8 @@ def _feeder_hardware_disabled_reason(*, allow_recovery=False):
 
 
 def _auto_run_disabled_reason(*, allow_recovery=False):
+    if APP_STATE.get('sorter_recovery_required') and not allow_recovery:
+        return 'sorter_recovery_required'
     reason = _feeder_hardware_disabled_reason(allow_recovery=allow_recovery)
     if reason:
         return reason
@@ -4681,7 +4754,8 @@ def _operator_alert_payload():
     ):
         return None
     reason = (
-        ('gate3_manual_removal_required' if _gate3_manual_removal_required() else None)
+        ('gate3_manual_removal_required' if _gate3_manual_removal_required()
+         and _manual_grade_disabled_reason() is not None else None)
         or APP_STATE.get('last_error_reason')
         or APP_STATE.get('auto_run_recovery_reason')
         or (
@@ -4789,13 +4863,7 @@ def _classification_disabled_reason(active_fruit_id, image_total):
         return 'capture_incomplete'
     if _photo_only_session():
         return None
-    if not _esp32_is_online():
-        return 'esp32_offline'
-    if not APP_STATE.get('esp32_sorter_capable'):
-        return 'sorter_capability_missing'
-    if APP_STATE.get('gate3_waiting_boot_id') != APP_STATE.get('esp32_boot_id'):
-        return 'gate3_boot_unconfirmed'
-    return None
+    return _sorter_start_disabled_reason()
 
 
 def _gate3_manual_removal_required():
@@ -4933,6 +5001,7 @@ def _state_payload(extra=None):
         'photo_detection_interval_ms': round(PHOTO_DETECTION_INTERVAL_SECONDS * 1000),
         'detection_error': APP_STATE.get('detection_error'),
         'can_manual_grade': manual_grade_disabled_reason is None,
+        'can_manual_abandon': manual_grade_disabled_reason is None and _photo_only_session(),
         'manual_grade_disabled_reason': manual_grade_disabled_reason,
         **_sorter_state_payload(),
     }
@@ -4968,7 +5037,21 @@ def _state_payload(extra=None):
 
 
 def _detection_result_payload():
-    return _with_artifact_urls(APP_STATE.get('detection_result'))
+    payload = _with_artifact_urls(APP_STATE.get('detection_result'))
+    if not payload or payload.get('hardware_mode') == 'photo_only':
+        return payload
+    if payload['fruit_id'] == APP_STATE.get('sorter_fruit_id'):
+        payload['sorting'] = {
+            'status': APP_STATE.get('sorter_status'),
+            'command_id': APP_STATE.get('sorter_command_id'),
+            'reason': APP_STATE.get('sorter_error'),
+            'recovery_required': bool(APP_STATE.get('sorter_recovery_required') or APP_STATE.get('network_recovery')),
+        }
+    elif (APP_STATE.get('network_recovery') or not APP_STATE.get('gate3_waiting_boot_id')
+          or APP_STATE.get('gate3_waiting_boot_id') != APP_STATE.get('esp32_boot_id')):
+        payload['sorting'] = {'status': 'not_started', 'reason': 'gate3_boot_unconfirmed',
+                              'recovery_required': True}
+    return payload
 
 
 def _with_artifact_urls(result):

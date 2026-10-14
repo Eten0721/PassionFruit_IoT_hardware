@@ -1,5 +1,6 @@
 #pragma once
 #include "Arduino.h"
+#include "IPAddress.h"
 #include <map>
 constexpr int HTTP_GET = 0;
 constexpr int HTTP_POST = 1;
@@ -8,6 +9,7 @@ struct SetupRequest { std::string path; int method; std::map<std::string, std::s
 inline std::deque<SetupRequest> setupRequests;
 inline std::vector<std::pair<int, std::string>> setupResponses;
 inline bool setupServer = false;
+inline std::string setupClientIP = "192.168.4.1";
 inline void setupRequest(const std::string& path, int method = HTTP_GET, std::map<std::string, std::string> args = {}) {
   std::lock_guard<std::mutex> lock(mutex);
   setupRequests.push_back({path, method, args});
@@ -19,6 +21,8 @@ inline std::vector<std::pair<int, std::string>> setupSnapshot() {
 }
 class WebServer {
  public:
+  struct Client { IPAddress localIP() { return IPAddress(Fake::setupClientIP.c_str()); } };
+  Client client() { return {}; }
   explicit WebServer(int) {}
   void on(const char* path, int method, std::function<void()> handler) { handlers_[{path, method}] = handler; }
   void begin() { Fake::setupServer = true; }

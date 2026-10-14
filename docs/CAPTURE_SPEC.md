@@ -259,7 +259,7 @@ ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、送料能力
 
 ### 下一顆果實
 
-目前由人工分類按鈕提供四級分類結果，未來 AI 只可取代結果來源並進入相同分類邊界。Django 確認 `gate3_sorter_v1` 後，仍先提交 Dataset，再建立 `classify_fruit`。只有相符的 `classification_sorter_completed` 已清除 command slot，且自動運轉、相機 readiness 與全部開始條件仍成立時，Django 才建立下一個 `feed_one`。Sorter failed／timeout、Capture timeout、相機 stale 或任何 blocking error 都不得建立下一次送料。現行程式在等待下一顆且相機恢復時仍可自動繼續，其他錯誤由操作員優雅暫停並排除；此相機自動恢復行為與上述「裝置網路連線目標」有差異，尚未完成遷移。
+蒐集模式的人工分類、自動檢測的 AI 與人工接手共用既有 `classify_fruit` 邊界。Django 確認 `gate3_sorter_v1` 後，先提交 Dataset 或檢測 JSON／CSV，再建立分槽命令。只有相符的 `classification_sorter_completed` 已清除 command slot，且自動運轉、相機 readiness 與全部開始條件仍成立時，Django 才建立下一個 `feed_one`；命令 ID 綁定果實與分類 code，回報若附 `fruit_id` 也必須相符。Sorter failed／timeout、Capture timeout、相機 stale 或任何復原鎖都不得建立下一次送料。相機暫時未 ready 時可等待恢復；達到裝置失聯門檻後則依網路安全復原契約鎖定，不自動續跑。
 
 ### 安全逾時、感測異常與延遲抵達
 
@@ -381,7 +381,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 新流程的蒐集資料根目錄為 `DATASET_ROOT/collection/`，檢測為 `DATASET_ROOT/detection/`；各自維護 `temp/`、`counter.json`、`reset_state.json`、`discard_state.json` 與 `_delete_pending/`。只有蒐集分區有四級照片目錄與 `metadata.csv`；檢測分區不建立，啟動時移除空的級距目錄與只有標題列的 `metadata.csv`，有內容者保留原位。檢測原圖、處理圖及 `result.json` 保存於檢測分區的 `results/fruit_NNN/`，總表為檢測分區的 `detection_summary.csv`，契約見[檢測資料](#檢測資料與-line-通知)。
 
-既有 `DATASET_ROOT` 根目錄及舊 `Django_Server/detection_results/` 保留原位，只作歷史資料，不自動搬遷、升級或納入新流程的恢復與清理。Dashboard 明示目前資料區及歷史位置；開啟、編號、刪除與重置只作用於目前模式。檢測的 `result.json` 與總表列都保存成功後，純拍攝立即清除該輪 `temp/`（原圖已存於 `results/`），硬體模式於 Gate 3 人工復原的刪除時清除；Dashboard 的跳過／刪除只處理暫存與未保存成功的部分產物，不刪除已保存的檢測結果，已保存結果只隨重置檢測分區清除。重置檢測包含 `results/` 與總表；Windows 占用沿用隔離、延後清理及忽略標記，未能隔離的舊產物不得被覆寫或展示為新結果。
+既有 `DATASET_ROOT` 根目錄及舊 `Django_Server/detection_results/` 保留原位，只作歷史資料，不自動搬遷、升級或納入新流程的恢復與清理。Dashboard 明示目前資料區及歷史位置；開啟、編號、刪除與重置只作用於目前模式。檢測的 `result.json` 與總表列都保存成功後，純拍攝立即清除該輪 `temp/`（原圖已存於 `results/`）；硬體有效判級在持久保存 sorter intent 後推進 counter、清理暫存，再建立分槽命令，待人工判級或安全移除的輪次則保留暫存。Dashboard 的跳過／刪除只處理暫存與未保存成功的部分產物，不刪除已保存的檢測結果，已保存結果只隨重置檢測分區清除。重置檢測包含 `results/` 與總表；Windows 占用沿用隔離、延後清理及忽略標記，未能隔離的舊產物不得被覆寫或展示為新結果。
 
 目前模式與硬體選項原子保存於 runtime 的 `dataset_options.json`，重啟先恢復模式再讀取該分區；紀錄損壞時禁止資料變更、開始拍攝與接收照片，並顯示具體原因。硬體 command sequence、timing 與復原鎖仍共用，不隨分區重置。開始後固定本輪模式；有處理中工作或安全鎖時拒絕切換。Dashboard 的資料操作附 `dataset_mode`，缺少或與目前模式不符回 `409 stale_dataset_mode`；照片 URL 帶 `work_mode`，缺少或模式不符回 `404` 並要求快取重新驗證。
 
@@ -415,8 +415,9 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 - 每張先判斷加工／非加工，再將非加工分為其餘三級；整顆取三張預測最低級距，`0／1／2／3` 對應加工／下等／中等／上等，再轉為既有 canonical code。沿用 [ADR-0012](adr/0012-defect-ratio-ai-contract.md)：未偵測瑕疵為 `0`，必要 ROI／推論失敗為 `null` 並待覆核，不補零硬判級距。
 - 部分失敗仍保留已取得原圖、成功產物與具體原因；無法產生的裁切或標示圖不建立，保存失敗不得顯示存檔成功。硬體尚未取得有效分類或資料尚未提交時，不得放行 Gate 3 或開始下一顆。
 - 無法取得完整模型判級時，標記「待人工處理」並允許操作員檢查照片後人工選級，再經相同的資料提交與安全分類邊界完成分槽；保留原推論失敗原因與模型輸出，另記錄最終分類來源為人工，不將人工結果偽裝成模型成功。人工接手仍屬檢測紀錄，不搬入人工蒐集 Dataset；純拍攝的人工接手也不得建立硬體命令。
-- 純拍攝人工接手使用 `POST /api/detection/manual_grade/`，附 `dataset_mode`、目前畫面的 `fruit_id`、`result_id`，以及 `label`（上等／中等／下等／加工）或 `abandon=true`（放棄本輪、不分級）；`/api/state/` 以 `can_manual_grade` 與 `manual_grade_disabled_reason` 表示可否接手。只接受目前 `detection_result`、已保存且 `needs_review` 的同一 `result_id`；不符或已開始新一輪回 `409 stale_detection_result`，模型已判級回 `409 not_needs_review`，已人工處理而改送不同決定回 `409 already_manual_graded`，相同決定重送回 `200` 與 `duplicate=true` 且只重新同步該列。JSON 或總表保存失敗回 `503 result_json_save_failed／summary_save_failed`，JSON 還原為原紀錄並維持待人工處理。成功後維持 idle，不建立 motor command、不自動開始下一輪。使用硬體的人工接手放行尚未接通，回 `409 hardware_takeover_pending` 並維持 Gate 3 安全鎖。
-- 使用硬體的目標為「三站拍攝 → YOLO → XGBoost → 保存 → `classify_fruit` → 下一顆」。資料提交後才執行實體分類，硬體失敗不回滾結果；只有相符的 sorter 完成回報與全部安全條件成立，才允許下一次送料。純拍攝維持單輪，完成後由操作員再按開始，不建立實體命令。
+- 人工接手使用 `POST /api/detection/manual_grade/`，附 `dataset_mode`、目前畫面的 `fruit_id`、`result_id` 與 `label`（上等／中等／下等／加工）；純拍攝另接受 `abandon=true`。`/api/state/` 以 `can_manual_grade`、`manual_grade_disabled_reason` 與 `can_manual_abandon` 表示可否操作。只接受目前 `detection_result`、已保存且 `needs_review` 的同一 `result_id`；不符或已開始新一輪回 `409 stale_detection_result`，模型已判級回 `409 not_needs_review`，已人工處理而改送不同決定回 `409 already_manual_graded`，相同決定重送回 `200 duplicate=true` 且只重新同步該列，不重建分槽命令。JSON 或總表保存失敗回 `503 result_json_save_failed／summary_save_failed`，嘗試還原 JSON 並維持待人工處理；還原也失敗時，同級重送可同步資料，但硬體結果視為不確定，必須安全復原。
+- 硬體人工判級前與保存後均檢查失聯／sorter 復原鎖、ESP32 在線、`gate3_sorter_v1` 與同一 boot 的 Gate 3 等待狀態。未處理 `needs_review` 不建立命令；有效人工判級保存後重用 AI 的安全分槽流程。硬體放棄回 `409 hardware_abandon_requires_discard`，操作員改用跳過／刪除與既有斷電移除程序，不把資料刪除當成實體放行。純拍攝成功後維持 idle，不建立 motor command、不自動開始下一輪。
+- 使用硬體的流程為「三站拍攝 → YOLO → XGBoost／人工判級 → 保存 → `classify_fruit` → 相符完成回報 → 下一顆」。Sorter intent／pending／running 沿用既有原子 recovery marker；重啟後只恢復已保存結果與安全鎖，不從結果檔重建命令。資料提交後的命令建立失敗、硬體失敗或 timeout 都不回滾結果；只有相符完成回報與全部安全條件成立，才允許下一次送料。優雅暫停仍完成目前果實但不送下一顆。純拍攝維持單輪，完成後由操作員再按開始，不建立實體命令。
 - Django／ESP32 重啟、重複上傳或 terminal report 不得重播實體動作；資料刪除不能代表實體果實已移除，仍須遵守既有人工安全復原契約。
 
 ### 檢測資料與 LINE 通知
@@ -427,7 +428,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
   - `inference`：`completed／failed` 與原因（`detection_incomplete`、`artifact_save_failed`、`service_restarted`）。
   - `classification`：最終分類，`graded` 或 `needs_review`，含 `grade`（`0～3`）、`label`、canonical `code`、`source`（模型為 `model`，人工接手為 `manual`，未判級為 `null`）、`worst_view` 與 `reason`；人工接手另含 `decided_at`；放棄本輪為 `status=abandoned`、`source=manual`、`reason=operator_abandoned`，等級欄位為 `null`。
   - `model_classification`：僅人工接手後存在，原封保存模型當時的 `needs_review` 分類與原因；`inference`、`images` 與各視角 `grade` 不因人工判級改寫。
-  - `storage`：`saved／failed`、原因及 JSON／CSV 相對位置；`sorting`：純拍攝為 `skipped`，硬體模式目前為 `not_started`。
+  - `storage`：`saved／failed`、原因及 JSON／CSV 相對位置；`sorting`：結果存檔時純拍攝為 `skipped`、硬體為 `not_started`。`/api/state/` 的 `detection_result.sorting` 依同顆 sorter runtime 補上 `pending／running／completed／failed／timeout`、`command_id`、`reason` 與 `recovery_required`；重啟或失聯以 recovery marker 表示需復原，不將存檔中的判級成功當成實體分槽完成。
   - `model`：YOLO 檔名，以及兩個 XGBoost 檔名、SHA-256、xgboost 版本與第一階段門檻。
   - `images.<img_0N.jpg>`：ROI、各模型結果、`artifacts` 檔名，以及 `grade` 內的 16 個特徵、第一階段機率、第二階段機率、單張等級或 `unavailable` 與具體原因（如 `roi:roi_not_detected`）。
 - 頂層 `complete` 只在推論完整、模型已判級且 JSON／CSV 都保存成功時為真；任一保存失敗記為 `storage.status=failed`，不顯示為完成。人工接手保存成功時 `status=manual_completed`（放棄為 `manual_abandoned`）、`complete=false`，`reason` 保留原推論或判級失敗原因。
@@ -451,7 +452,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 - 「確認本次使用的網路」下方新增操作摺疊列，收納目前流程、模式選項、啟動條件、開始／重新拍攝／跳過或刪除，以及人工分類。收合時仍在該列保留開始／重新拍攝／跳過等主要操作；按鈕可用性沿用狀態與安全限制，運轉時保留優雅暫停。
 - 移除獨立「三張原圖預覽」區塊；自動檢測每張原圖保存後先顯示於對應 ROI 格，待該張 ROI 產物可用才替換，未完成時明示等待／處理中，不把原圖冒充 ROI 結果。
-- 蒐集模式沿用左側同一展示區，只顯示三張原圖，隱藏未執行的模型格與自動分類結果；人工級距按鈕留在操作摺疊區。自動檢測無法判級時，右側結果卡顯示失敗原因並開放人工四級與「放棄本輪」按鈕，收合操作區後仍可見；人工完成後顯示「等級（人工判定）」或「已放棄本輪」與保留的原失敗原因。
+- 蒐集模式沿用左側同一展示區，只顯示三張原圖，隱藏未執行的模型格與自動分類結果；人工級距按鈕留在操作摺疊區。自動檢測無法判級時，右側結果卡顯示失敗原因並開放人工四級；純拍攝另顯示「放棄本輪」，硬體使用跳過／刪除的安全移除程序。收合操作區後仍可見人工接手入口；人工完成後顯示「等級（人工判定）」或「已放棄本輪」與保留的原失敗原因。結果卡另以文字區分已判級、已保存、分槽中、分槽完成／失敗與需復原；AI 成功不表示實體動作完成。
 - 檢測執行中，`/api/state/` 的 `detection_progress` 提供最後完成的 `stage`（`originals／roi／color／wrinkle／defect`）與各張已保存產物、`artifact_urls` 及模型狀態；只在對應產物原子保存後更新，最終結果寫入 `detection_result` 時清空。畫面依此逐步替換，不以動畫推測完成。
 - 「四模型檢測結果」移至原手機預覽所在的左側主區，以三張照片分組、各列 ROI／color／wrinkle／defect，共十二格；成功產物逐步更新，有跳過、缺失或失敗時不得顯示整輪完整成功。
 - 手機即時畫面移至右側原流程操作位置；整顆分類結果也放在檢測區右手邊，以醒目級距文字區分等待、有效結果與待覆核，不只靠顏色表示。

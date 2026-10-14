@@ -9,6 +9,7 @@
 #include <type_traits>
 
 #include "FakePlatform.h"
+#include "freertos/FreeRTOS.h"
 
 using std::min;
 

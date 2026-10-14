@@ -227,10 +227,12 @@ static void lostConnectionKeepsAP() {
   request(controller, "/exit", HTTP_POST);
   assert(Fake::setupSnapshot().back().first == 409 && Fake::ap);
   request(controller, "/status");
-  assert(response() == "wifi_connection_lost");
+  assert(response() == "connecting\nwifi_connection_lost");
   assert(Fake::wifiNvs == saved && Fake::requestSnapshot().empty());
-  save(controller); Fake::connected = true;
-  request(controller, "/status");
+  save(controller);
+  assert(Fake::setupSnapshot().back().first == 409 && response() == "setup_busy");
+  Fake::connected = true;
+  pump(controller, [&controller] { request(controller, "/status"); return response().find("saved") == 0; });
   request(controller, "/status");
   assert(response().find("saved") == 0);
   request(controller, "/exit", HTTP_POST);
@@ -238,7 +240,7 @@ static void lostConnectionKeepsAP() {
   Fake::connected = false;
   tick(controller, millis() + 500);
   request(controller, "/status");
-  assert(Fake::ap && response() == "wifi_connection_lost");
+  assert(Fake::ap && response() == "connecting\nwifi_connection_lost");
 }
 int main() {
   std::cout << std::unitbuf;
