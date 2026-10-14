@@ -97,12 +97,10 @@ PassionFruit_IoT_hardware/
 ├── Django_Server/      # Dashboard、API、狀態機、Dataset 管理與正式部署權重
 ├── firmware/           # 正式 ESP32 Firmware
 ├── docs/               # 架構、規格、現況、ADR 與部署
-├── record_image/       # 接線安全、驗收摘要、實際硬體與設計圖
-├── 環境部署/           # ESP32 快速燒錄準備與部署筆記
-└── external/           # 選用的模型訓練開發說明與 ignored checkout
+└── record_image/       # 接線安全、驗收摘要、實際硬體與設計圖
 ```
 
-模型訓練、研究推論 pipeline 與候選權重由獨立的 [ps-quality-detection-system](https://github.com/fcu-passionfruit-project/ps-quality-detection-system) Repository 維護，只有模型開發需要依 [external/README.md](external/README.md) 建立 checkout。正式部署與權重替換只使用本 Repository 的 [Django_Server/models/](Django_Server/models/README.md)。Dataset、原始照片、檢測產物與訓練輸出不納入本 Repository。
+模型訓練、研究推論 pipeline 與候選權重由獨立的 [ps-quality-detection-system](https://github.com/fcu-passionfruit-project/ps-quality-detection-system) Repository 維護，只有模型開發需要依 [模型開發環境](docs/模型開發環境.md) 在硬體 Repository 外建立 checkout。正式部署與權重替換只使用本 Repository 的 [Django_Server/models/](Django_Server/models/README.md)。Dataset、原始照片、檢測產物與訓練輸出不納入本 Repository。
 
 ## 文件導覽
 

@@ -1,8 +1,8 @@
 # ESP32 燒錄指南
 
-[完整部署與操作說明](../docs/環境部署說明文件.md)
+[完整部署與操作說明](環境部署說明文件.md)
 
-本頁只負責首次燒錄與 Firmware 更新。日常配網、固定設定網址及手機操作統一見 [部署說明：ESP32 Wi-Fi 設定](../docs/環境部署說明文件.md#4-esp32-首次燒錄與-wi-fi-設定)。
+本頁只負責首次燒錄與 Firmware 更新。日常配網、固定設定網址及手機操作統一見 [部署說明：ESP32 Wi-Fi 設定](環境部署說明文件.md#4-esp32-首次燒錄與-wi-fi-設定)。
 
 ## 1. 安裝 Arduino 環境
 
@@ -30,7 +30,7 @@ notepad firmware/Three_Gate_Data_Collection/setup.local.h
 
 將 `setupApPassword` 的空字串改為自己的 `8～63` 字元可列印 ASCII 密碼。這是手機連入 ESP32 設定熱點時使用的密碼；目標 Wi-Fi 的 SSID、密碼與 Django 備援網址在燒錄後由設定頁填入。
 
-`setup.local.h` 已被 Git 忽略，不加入 Git；缺少有效密碼時韌體會回報 `setup_ap_failed`。正常使用不需要 `secrets.h` 或 `network.local.h`。完整設定與安全限制見 [配網規格](../docs/CAPTURE_SPEC.md#esp32-配網與控制端識別)。
+`setup.local.h` 已被 Git 忽略，不加入 Git；缺少有效密碼時韌體會回報 `setup_ap_failed`。正常使用不需要 `secrets.h` 或 `network.local.h`。完整設定與安全限制見 [配網規格](CAPTURE_SPEC.md#esp32-配網與控制端識別)。
 
 ## 3. 編譯與上傳
 
@@ -42,7 +42,7 @@ notepad firmware/Three_Gate_Data_Collection/setup.local.h
 6. 如出現 `Failed to connect` 且 COM 埠保持存在，依 [官方 BOOT／EN 操作](https://docs.espressif.com/projects/esptool/en/latest/esp32/advanced-topics/boot-mode-selection.html#manual-bootloader) 進入下載模式後再上傳。
 7. 燒錄後讓 BOOT 保持放開，正常重新啟動；序列埠監視器使用 `115200 baud`，再依完整部署說明進行 Wi-Fi 設定。
 
-BOOT 在下載模式與日常配網有不同用途：進入設定頁須正常開機後在安全閒置時按一下 BOOT，詳見 [開啟設定熱點](../docs/環境部署說明文件.md#42-開啟設定熱點)。
+BOOT 在下載模式與日常配網有不同用途：進入設定頁須正常開機後在安全閒置時按一下 BOOT，詳見 [開啟設定熱點](環境部署說明文件.md#42-開啟設定熱點)。
 
 ## 4. 判斷燒錄結果與 USB 問題
 
@@ -60,4 +60,4 @@ BOOT 在下載模式與日常配網有不同用途：進入設定頁須正常開
 
 ## 舊資源
 
-本機 `環境部署/Arduino_Library/` 可能仍留有早期程式庫、Node-RED、SQL、PDF 或編譯產物；這些不是目前正式 Firmware 的必要依賴。配網與協定以 [CAPTURE_SPEC.md](../docs/CAPTURE_SPEC.md) 為準。
+本機 `環境部署/` 已被 Git 忽略，其中的 `Arduino_Library/` 可能仍留有早期程式庫、Node-RED、SQL、PDF 或編譯產物；這些不是目前正式 Firmware 的必要依賴。配網與協定以 [CAPTURE_SPEC.md](CAPTURE_SPEC.md) 為準。

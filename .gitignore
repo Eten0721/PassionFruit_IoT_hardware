@@ -41,10 +41,9 @@ Django_Server/runtime_config/
 
 # Project folders not tracked for now
 /output/
-/環境部署/Arduino_Library/
+/環境部署/
 Necessary_library/*
 !Necessary_library/README.md
-/external/ps-quality-detection-system/
 
 # Dataset and raw media
 **/dataset/
