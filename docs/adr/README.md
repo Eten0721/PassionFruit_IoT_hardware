@@ -23,5 +23,6 @@ ADR 記錄長期有效、跨模組或涉及安全與資料一致性的決策。�
 | [0017](0017-fixed-django-model-assets.md) | Accepted | Django 固定四模型部署權重與 Git LFS 管理 |
 | [0018](0018-local-network-onboarding.md) | Accepted（目標） | 區域網路獨立運作與裝置配網；尚未實作驗收 |
 | [0019](0019-deployed-two-stage-xgboost-grading.md) | Accepted | 部署兩階段 XGBoost 判級、16 特徵契約與固定資產 |
+| [0020](0020-single-network-recovery-policy.md) | Proposed | 網路安全鎖集中為單一復原政策 |
 
 完成項目的實作過程、版本進度與 commit 歷史不另建 ADR，由 Git、tag 與 release 保存。
