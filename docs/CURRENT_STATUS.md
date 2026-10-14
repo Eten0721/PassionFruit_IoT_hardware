@@ -6,40 +6,48 @@
 
 ## 現行穩定功能
 
-- Issue [#32](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/32) 已讓純拍攝自動檢測在無法判級時，由操作員於右側結果卡人工選級或放棄本輪（不分級）；人工等級與原模型分類分開保存在同顆 `result.json`，總表同列改為 `manual_completed` 或 `manual_abandoned`、來源 `manual`，不建立硬體命令或下一輪。檢測分區不再建立未使用的四級目錄與 `metadata.csv`。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#檢測與判級)，驗證與操作步驟見 [人工接手驗收](acceptance/issue-32-manual-takeover.md)。使用硬體的人工接手放行仍待 Issue [#33](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/33)；操作員已於 2026-10-14 完成人工驗收。
+### 拍攝與硬體流程
 
-- Issue [#31](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/31) 已套用檢測主畫面：網路確認下方為可收合的操作列，收合時仍保留開始／重新拍攝／跳過及阻擋原因；左側三張各四格依後端 `detection_progress` 逐步由原圖替換為真實產物，右側為醒目整顆結果與手機預覽，蒐集模式同區只顯示三張原圖。自動檢測純拍攝的照片間隔依 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#純拍攝-api-契約) 執行。通知開關尚未實作；自動化測試與瀏覽器檢查已通過，操作員人工驗收尚未進行。
+- Django 中央狀態機協調上游單顆送料、HC-SR04 觸發、手機單站拍攝與 ESP32 三站閘門；每站照片原子保存成功後才放行下一閘門，首站捷徑、timeout retry、transition trace 與未分類資料鎖定可運作。
+- Capture 與 sorter 共用單一 motor command slot，command ID 跨 Django 重啟遞增；ESP32／Django 重啟或 terminal report retry 不重送實體動作，結果不確定時須於 Dashboard 確認人工安全復原。
+- 第 3 張保存後 Gate 3 保持 Home；蒐集模式人工分類先提交 Dataset 與 metadata，再以 `classify_fruit` 依序完成分類器就位、Gate 3 放行與共同歸位，硬體失敗不回滾資料。
+- 送料由 HC-SR04 回授停止，另有 ESP32 本機最大運轉時間與 sensor unavailable 安全停止；正式自動運轉要求 `feeder_v1`、`gate3_sorter_v1`、送料校正、感測區、相機與三站流程皆就緒，分類完成後才送下一顆，並支援優雅暫停。
+- 純拍攝完全隔離 ESP32：一次手動觸發自動拍三張，不建立 motor command。
+- 正式 Firmware 依感測、閘門、分類器、HTTPS 與流程控制拆分模組。
 
-- Issue [#30](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/30) 已在 YOLO 後接入兩階段 XGBoost 判級，保存單顆 `result.json` 與檢測總表，現有檢測區顯示單張與整顆等級；契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#檢測與判級)。真實模型與交付範例比對一致，但訓練資料證據不足；結果與限制見 [XGBoost 判級驗收](acceptance/issue-30-xgboost-grading.md)，操作員已於 2026-10-14 完成人工驗收。硬體模式判級後仍保持 Gate 3 人工復原，實體分槽、硬體人工接手與通知由後續 Issues 處理。
+### 裝置網路
 
-- Issue [#29](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/29) 已分離蒐集與檢測資料區、編號、結果及清理範圍，保留所有舊資料原位；模式可跨重啟恢復，舊頁面請求與同編號照片不會混用分區。自動化驗證結果與人工驗收準備見 [資料分區驗收](acceptance/issue-29-dataset-modes.md)；人工操作尚未驗收。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#資料分區)。
+- 每次 HTTPS 服務啟動須在 Dashboard 確認網路介面，產生本機相機 QR 並檢查 origin／subnet；同介面換 IP 會撤銷舊工作並更新位址，介面消失須人工重選。
+- ESP32 以 `local_network_v1` 動態探索控制端，雙端依 lease／keepalive 與相機 readiness 停止後續動作；失聯後保存跨重啟安全鎖，經清理、人工確認、歸位與雙端提交才可重新開始。
+- 安全閒置時按一次 BOOT 進入配網頁，掃描 SSID、保存 NVS，正式 Firmware 不再編譯時固定 Wi-Fi。
+- iPhone Chrome 於新 DHCP 位址、另一台電腦與完全離線區網皆可開啟相機並保存三張照片（2026-10-11 操作員確認）。
 
-- Issue [#26](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/26) 已接入安全閒置 BOOT 單次按鍵配網、本機 SSID 掃描與設定頁、取得 IP 後保存 NVS、設定頁手動退出 AP 並保留 STA，以及 Dashboard 配網狀態。正式 Firmware 不再依賴編譯時的目標 Wi-Fi；中央拒絕與既有安全鎖仍阻擋配網，安全閒置的 Django 不可達情境可由本機重新設定。自動測試與編譯不代替實機驗收；BOOT 候選腳位、換網與斷電保存仍待操作員驗證。完整契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
+### 資料分區
 
-- Issue [#24](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/24) 的動態探索已接入 Issue [#25](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/25) 控制流程：正式 Firmware 宣告 `local_network_v1`，雙端依 lease／keepalive 與相機 readiness 停止後續動作，保存跨重啟安全鎖，經清理、人工確認、歸位與雙端提交後才能開始新一輪。同介面換 IP 會撤銷舊工作並更新 origin；介面消失仍須人工選擇。Django、host 與跨端 HTTP 交握已驗證，實機停止延遲與重啟保持位置尚未驗收。配網頁與免重燒錄 Wi-Fi 設定由 Issue #26 提供；契約集中於 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
+- 蒐集與檢測使用 `DATASET_ROOT/collection/`、`DATASET_ROOT/detection/` 兩個獨立分區，各自的暫存、編號、刪除與重置互不影響；模式跨重啟恢復，舊資料保留原位。只有蒐集分區有四級目錄與 `metadata.csv`。
 
-- Issue [#22](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/22) 已完成每次 HTTPS serving process 啟動的網路確認、本機 SVG 相機 QR、origin／subnet 檢查與本機 ICE；介面過期先阻擋新操作，保留資料檢查與清理。背景盤點不阻塞手機輪詢，tests／import／一般管理指令不啟動監測。純拍攝三張保存、QR 實際解碼與程序重設已通過自動測試；正式硬體操作目前回 `network_capability_missing`。完整運轉中遷移與復原仍屬後續切片。
+### 自動檢測
 
-- Issue [#23](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/23) 的 Chrome 新位址、另一台電腦與完全離線實機驗收已由操作員於 `2026-10-11` 確認完成，並授權關閉。手機診斷顯示新相機網址為 `https://192.168.0.93:8000/camera/`，User-Agent 回報 iOS `27.0.1`、Chrome `154.0.8037.55`，安全來源與相機 API 可用，影格為 `1080 × 1920`；`dataset/temp/fruit_005/` 的三張 JPEG 已由 agent 檢查保存成功並可完整解碼。其餘情境以操作員的實機確認為據；先前 RTC／ICE 為 `new` 的紀錄是拍攝前快照，不作為完成時狀態。驗收工具與操作範本見 [Chrome 新位址與離線拍攝驗收](acceptance/issue-23-chrome-camera.md)。
+- 三張照片保存後，本地依序執行 ROI、color、wrinkle、defect 四個 YOLO 模型，再以兩階段 XGBoost 逐張判級，整顆取三張最低級。
+- 每顆保存原圖、處理圖與 `result.json`，`detection_summary.csv` 每顆一列並包含失敗輪次。
+- 無法判級時標記待人工處理；純拍攝可由操作員人工選四級或放棄本輪，人工結果與原模型分類分開保存。
+- Dashboard 主區以三張 × 四模型逐步顯示真實產物，右側顯示整顆結果、人工接手與手機預覽，操作列可收合。
+- 硬體模式檢測後仍保持 Gate 3 人工復原，不自動分槽。
 
-- Issue [#17](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/17) 新增純拍攝：手機自動三張、人工分類保存與硬體隔離；Dashboard 分離工作模式與硬體選項。Issue [#18](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/18) 建立三張照片共十二格的四模型檢測、顯示與保存契約；Issue [#19](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/19) 已將同一流程接入上游送料、HC-SR04 與三站硬體模式。硬體檢測固定為單輪，完成或部分失敗都不放行 Gate 3、不建立 `classify_fruit` 或下一次 `feed_one`，並保留人工安全復原鎖。正式權重的三張既有照片驗證、API 模擬與 ESP32 編譯已通過；新機構實體驗收仍由 Issue #15、#16 追蹤。
+### 環境與模型資產
 
-- Django 中央狀態機可協調 HC-SR04 自動觸發、手機單站拍攝與 ESP32 三站閘門。
-- 每顆果實保存三張站點照片，照片保存成功後才放行下一閘門。
-- 首站捷徑、timeout retry、transition trace、照片原子保存與未分類資料鎖定可運作。
-- Capture 與 sorter 共用單一 motor command slot，command ID 可跨 Django 重啟保持遞增。
-- 第 3 張照片保存後，Gate 1／2 維持 Release、Gate 3 維持 Home；人工分類先提交 Dataset 與 metadata，再以同一筆 `classify_fruit` 命令驅動 Gate 3／位置型 MG996R 分類器，硬體失敗不回滾資料。
-- Dashboard 可管理拍攝 timing、檢查三張照片、分類與刪除；送料測試成功後勾選即保存人工確認，不需第二次測試或再次套用。手機頁使用 single in-flight polling，Dashboard 預覽依影片原始比例縮放。
-- 上游正式送料與測試送料共用 HC-SR04 回授停止，並具備 `1000～20000 ms`、間距 `500 ms` 的本機 max timeout、sensor unavailable 安全停止與同 revision 校正確認；推薦上限為 `5000 ms`。
-- 正式自動運轉會在 ESP32 同時回報 `feeder_v1` 與 `gate3_sorter_v1`、送料校正、感測區、相機與三站流程皆就緒時送入單顆果實；同一筆 HC-SR04 trigger 啟動首站，分類器 terminal report 完成後才允許下一顆。
-- 正式 Firmware 已按感測、閘門、分類器、HTTPS 與流程控制拆分模組。
 - Django 與模型開發統一使用 `PF` Conda 環境，基準為 Python `3.14.4` 與 Django `5.2.16` LTS。
-- Django 部署推論由本 Repository 自足維護，四個 YOLO 權重與兩個 XGBoost 判級模型固定存於 `Django_Server/models/` 並由 Git LFS 管理；外部 Repository 僅供模型訓練、研究推論與候選權重開發，照片快照存於獨立資料目錄。
+- 四個 YOLO 權重與兩個 XGBoost 模型固定存於 `Django_Server/models/`，由 Git LFS 管理；部署不需外部 Repository。
 - 目前 Dataset 快照包含 `327` 顆果實與 `981` 張照片，尚待建立正式 train／valid／test 切分與第二份備份。
 
-現行協定與數值見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
+各項協定與數值見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)；完成歷史以 Git 與已關閉 Issues 為準。
 
 ## 已接受但尚未完成
+
+- 硬體模式下的 AI／人工分類後安全分槽與連續檢測尚未接通，由 Issue [#33](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/33) 追蹤。
+- 加工果 LINE 圖文通知、Cloudinary 附圖與通知開關尚未實作，由 Issue [#34](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/34)、[#35](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/35) 追蹤；整合驗收見 Issue [#36](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/36)。
+- 資料分區的瀏覽器、手機與操作員觀察驗收（蒐集／檢測各一輪、只刪檢測、重置後重啟、處理中切換）尚未執行。
+- 離線換網、換電腦與各階段斷線復原的實機驗收由 Issue [#27](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/27) 追蹤；BOOT 候選腳位、換網與斷電保存仍待操作員驗證。
 
 原 Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 所涵蓋的單顆送料、HC-SR04 本機停止與 Django 自動運轉基礎整合已完成；分槽送料盤、XINHUI 馬達及單電源雙降壓分支屬 ADR-0016 的新實機驗收範圍。原 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 的 SG90 分類器擋臂已取消，不再是開發目標。
 
@@ -58,6 +66,7 @@ Issue [#14](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/14) 的
 - 2026-08-12 重開舊電池盒開關曾使送料 MG996R 暫時恢復。電壓下降、開關／接點電阻或電池盒供電能力都只是當時推論，沒有同步量測可確認根因；電池盒已退出目標方案。
 - 同日拆裝時發生不明放電／電擊感與電腦短暫黑屏；舊 ESP32 的 CH340 仍可枚舉但 ROM bootloader 無回應，已停止使用。新板接回前必須完成斷電極性、裸線、平台金屬件、USB 回灌與共地檢查。
 - 現有 metadata note 尚未正規化，不能直接作為完整模型特徵。
+- 交付 XGBoost 的訓練 CSV、所用 YOLO 權重與前處理紀錄不在本機任一 Repository；以交付範例重算 48 顆、144 張的單張與整顆等級全數一致，但缺訓練資料證據，不宣稱部署輸入分布與訓練一致。
 - 系統目前僅供可信任、隔離的實驗室區網使用；開發完成後重新評估安全稽核。
 
 ## 待實機驗證

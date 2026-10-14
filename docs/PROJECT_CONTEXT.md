@@ -2,7 +2,7 @@
 
 ## 專案目標
 
-本專案建立百香果照片蒐集、資料集管理與後續 AI 分級辨識流程。現階段以穩定取得每顆果實三個固定站點的清晰照片為主，再由人工分類與實體分類器完成資料與果實分流。
+本專案建立百香果照片蒐集、資料集管理與 AI 分級辨識流程。每顆果實在三個固定站點各取得一張清晰照片；蒐集模式由人工分類，自動檢測模式由本地 YOLO 與兩階段 XGBoost 判級，無法判級時由人工接手，最後經實體分類器分流。
 
 目標流程是上游單顆送料後，以三段閘門停止拍攝；舊版滾動連拍不再是開發方向。現行協定、硬體設定與驗收標準以 [CAPTURE_SPEC.md](CAPTURE_SPEC.md) 為唯一來源，實作進度以 [CURRENT_STATUS.md](CURRENT_STATUS.md) 為準。
 
@@ -19,7 +19,8 @@ Django
   -> 中央狀態機與互斥
   -> 手機拍攝請求
   -> ESP32 motor command
-  -> Dataset、metadata 與分類生命週期
+  -> 蒐集／檢測兩個資料分區與分類生命週期
+  -> 本地 YOLO 檢測、XGBoost 判級與單顆結果保存
 
 手機相機頁
   -> 輪詢 Django
@@ -34,7 +35,7 @@ ESP32 Firmware
 
 Django 是 capture 與 sorter 的狀態來源。它負責工作階段、拍攝 token、照片原子保存、單一 motor command slot、command ID、Dataset 搬移及錯誤復原。
 
-`runtime_state.py`、`capture_timing.py`、`api_payloads.py`、`capture_session.py`、`dataset_store.py` 與 `webrtc_signaling.py` 承擔可獨立責任；`views.py` 仍負責 HTTP 整合、Dataset 生命週期與部分狀態機 helper，後續應延續現有邊界逐步縮小。
+`runtime_state.py`、`capture_timing.py`、`api_payloads.py`、`capture_session.py`、`dataset_store.py` 與 `webrtc_signaling.py` 承擔可獨立責任；`detection.py` 負責四模型推論、單顆 `result.json`／檢測總表保存與人工接手寫回，`grading.py` 負責兩階段 XGBoost 特徵契約與最差視角判級，兩者只回結構化結果，不接觸硬體；`views.py` 仍負責 HTTP 整合、Dataset 生命週期與部分狀態機 helper，後續應延續現有邊界逐步縮小。
 
 ### ESP32 Firmware
 
@@ -44,7 +45,7 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 
 ### 手機與 Dashboard
 
-手機頁只負責即時預覽、相機 readiness、取得單站拍攝請求與上傳照片。Dashboard 負責開始／優雅暫停自動運轉、runtime profile、送料校正、狀態、照片檢查、分類與刪除。WebRTC 預覽失敗不得阻塞照片上傳流程。
+手機頁只負責即時預覽、相機 readiness、取得單站拍攝請求與上傳照片。Dashboard 負責開始／優雅暫停自動運轉、runtime profile、送料校正、狀態、照片檢查、分類與刪除；自動檢測時主區顯示三張 × 四模型的真實產物，右側顯示整顆等級與待人工處理的接手入口。WebRTC 預覽失敗不得阻塞照片上傳流程。
 
 ## Repository 邊界
 
@@ -67,9 +68,9 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 1. 操作員由 Dashboard 啟用自動運轉，Django 在安全邊界建立單顆送料命令。
 2. ESP32 驅動上游送料；HC-SR04 確認果實抵達後先在本機停止馬達，再建立採集工作階段。
 3. 前兩站皆遵守「果實停穩、手機上傳、Django 保存成功、下一閘門放行」；第 3 張保存後，果實繼續停留在 Gate 3。
-4. 使用者檢查並分類三張照片，Django 先提交 Dataset 與 metadata。
+4. 蒐集模式由使用者檢查並分類三張照片，Django 先提交 Dataset 與 metadata；自動檢測模式由 Django 本地推論與判級，先保存 `result.json` 與檢測總表，無法判級時待人工選級或放棄本輪。
 5. `classify_fruit` 先將下置式分類器轉到目標角度並完成 `500 ms` 開迴路就位等待，再放行 Gate 3；果實通過落料管後，三顆 Gate 與分類器才共同歸位並回報完成。
-6. 複合分類動作完成且安全條件仍成立時，Django 才建立下一次送料。
+6. 複合分類動作完成且安全條件仍成立時，Django 才建立下一次送料。自動檢測結果接入此分類邊界的硬體流程仍在 Issue 追蹤中，目前檢測後保持 Gate 3 人工復原。
 7. 未完成工作與實機驗證由 GitHub Issues 追蹤。
 
 完整事件、API、command 與 timeout 見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
@@ -88,6 +89,7 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 - 資料分類先於實體分類；硬體失敗不得回滾已提交的照片、metadata 或 counter。
 - 分類器、Gate 3 放行與歸位共同構成一次 `classify_fruit` 實體動作；結果不確定時不得自動重放。
 - AI 只能輸出結構化結果並進入既有分類邊界，不得直接控制 GPIO、角度或 PWM。
+- 必要檢測或判級失敗時不補零硬判；人工接手的結果另記來源，不得改寫原模型輸出或偽裝成模型成功。
 - 硬體供電、邏輯電壓與共地安全優先於持續執行。
 
 ## 延伸文件
