@@ -83,6 +83,7 @@ build/
 # Local editor, agent, and Drive temp state
 .vscode/
 .codex/
+.claude/
 .agents/
 .tmp.drive*/
 
