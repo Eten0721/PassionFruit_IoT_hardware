@@ -131,6 +131,7 @@ class DetectionFlowTests(SimpleTestCase):
                 'roi_annotated': image, 'masked_roi': image,
                 'wrinkle_gray': image[:, :, 0],
                 'defect_annotated': image,
+                'defect_marked': image,
             })
         return reports, artifacts
 
@@ -355,7 +356,7 @@ class DetectionFlowTests(SimpleTestCase):
             self.assertEqual(
                 list(image['artifacts']),
                 ['original', 'roi_annotated', 'masked_roi',
-                 'wrinkle_gray', 'defect_annotated'],
+                 'wrinkle_gray', 'defect_annotated', 'defect_marked'],
             )
 
         self.client.get('/api/camera/state/?camera_ready=1')
@@ -386,6 +387,43 @@ class DetectionFlowTests(SimpleTestCase):
         self.assertEqual(response.status_code, 409)
         self.assertTrue((self.detection_root / fruit_id / 'result.json').is_file())
         self.assertEqual(len(self._summary_rows()), 1)
+
+    @mock.patch(
+        'fruit_app.detection.execute_model_batch', side_effect=_external_result
+    )
+    def test_farmer_artifact_absence_or_write_failure_keeps_completed_result(self, execute):
+        from . import detection
+
+        write_artifact = detection._write_artifact
+
+        def fail_farmer_only(path, image):
+            if path.name.endswith('_defect_marked.jpg'):
+                raise OSError('farmer image unavailable')
+            write_artifact(path, image)
+
+        for failure in ('absent', 'write_failed'):
+            with self.subTest(failure=failure):
+                def execute_batch(paths, models, **kwargs):
+                    reports, artifacts = self._external_result(paths, models, **kwargs)
+                    if failure == 'absent':
+                        for artifact in artifacts:
+                            artifact.pop('defect_marked')
+                    return reports, artifacts
+
+                execute.side_effect = execute_batch
+                with mock.patch('fruit_app.detection._write_artifact',
+                                side_effect=fail_farmer_only):
+                    fruit_id, state = self._run_photo_round()
+                result = self._saved_result(fruit_id)
+                self.assertEqual(state['detection_status'], 'completed')
+                self.assertTrue(result['complete'])
+                self.assertEqual(result['inference']['status'], 'completed')
+                self.assertEqual(result['classification']['status'], 'graded')
+                self.assertEqual(result['save_errors'], [])
+                for image in result['images'].values():
+                    self.assertEqual(image['models']['defect']['status'], 'ok')
+                    self.assertIn('defect_annotated', image['artifacts'])
+                    self.assertNotIn('defect_marked', image['artifacts'])
 
     @mock.patch(
         'fruit_app.detection.execute_model_batch', side_effect=_external_result

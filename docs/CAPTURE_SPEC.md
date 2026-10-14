@@ -440,8 +440,9 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
   `result_status` 等於 JSON 頂層 `status`（只有 `complete` 時為 `completed`，人工接手為 `manual_completed`，放棄為 `manual_abandoned`），`classification_status` 為分類狀態，`reason` 取頂層原因、否則取分類原因；未判級的等級欄位留空；`model_version` 為兩個模型 SHA-256 前 12 碼；`result_json` 相對於檢測分區。失敗輪次也留紀錄，完整特徵由 JSON 保存。原圖與所有執行產物均不納入 Git。
 - LINE 對接交付程式已使用的 Messaging API，目標收件對象為模擬農夫群組的畢專群組；綁定與實際收件對象尚未驗證。只對最終等級為加工的果實通知，正文使用農夫可理解的等級、時間、果實識別與實際成功偵測的瑕疵，並附圖片；不放 grade code、模型 confidence 或程式欄位。疑似病害須保留「疑似」，不得把觀察項目宣稱為 XGBoost 判為加工的因果解釋；無可用瑕疵結果時如實表達，不捏造原因。
-- 通知附圖將三個視角的瑕疵標示圖合成一張，標示照片編號與中文瑕疵名稱；某張檢測失敗時使用已取得原圖並標明「未完成檢測」，不得產生虛構標示。採用 Cloudinary 免費方案提供通知合成圖的 HTTPS 網址，只上傳通知所需合成圖，完整原圖與檢測資料留在本機；雲端圖片保留至畢專展示結束，再由操作員手動清理，不新增自動刪除。清理後舊通知附圖可能無法重新載入，本機資料不受影響。
+- 通知附圖將三個視角的 `defect_marked` 合成一張；此產物只保留遮罩／框，不含英文類別或 confidence，Dashboard 繼續使用 `defect_annotated`。每格標示照片編號，以依 `detections[].class_index` 對應的同色塊搭配中文瑕疵名稱，讓圖例與標示位置相符。舊結果缺少 `defect_marked` 時使用原圖並註明「無標示圖」，保留已有觀察與檢測完成狀態；某張檢測失敗時使用已取得原圖並標明「未完成檢測」，不得產生虛構標示。採用 Cloudinary 免費方案提供通知合成圖的 HTTPS 網址，只上傳通知所需合成圖，完整原圖與檢測資料留在本機；雲端圖片保留至畢專展示結束，再由操作員手動清理，不新增自動刪除。清理後舊通知附圖可能無法重新載入，本機資料不受影響。
 - 人工判為加工同樣列入通知，文字明示「人工判為加工等級」，只列已有的有效瑕疵觀察；沒有可用檢測結果時如實說明。推論失敗而尚無人工判級的紀錄不發加工通知。
+- 本機預覽：在 `Django_Server/` 執行 `C:\Users\qoqoo\anaconda3\envs\PF\python.exe -s manage.py preview_processing_notification <result.json>`；可用 `--output-dir <目錄>` 與 `--font-path <中文字型>` 指定輸出與字型（預設 Windows 微軟正黑體 `C:/Windows/Fonts/msjh.ttc`）。預設在該果實結果目錄新增 `notification_<result_id>.txt`、`notification_<result_id>.jpg` 與 `notification_<result_id>_preview.jpg`，不改寫原始結果。兩張圖為 JPEG，原圖與預覽圖分別限制為 `10 MB`／`1 MB`，依 [LINE image message](https://developers.line.biz/en/reference/messaging-api/#image-message)；此指令不發送訊息。
 - 每顆加工果最終分類結果保存成功即排送一則通知，不等待分槽完成，也不宣稱已完成實體分槽。通知失敗不阻塞本地檢測與分槽，恢復網路後補送並標明原檢測時間；同一結果須去重，分槽或通知狀態更新不得觸發重送。
 - 純拍攝預設不發送 LINE；操作員明確啟用後才允許測試通知，訊息開頭加「測試」。Dashboard 的操作摺疊區提供 LINE 通知啟用／關閉控制與狀態，憑證留在後端，不顯示在頁面。
 - 主動關閉通知時保留並暫停尚未送出的訊息，重新開啟後續送；關閉期間新產生的結果不加入待送，之後開啟也不回溯排送。已交付 LINE 的請求不因關閉開關而撤回。

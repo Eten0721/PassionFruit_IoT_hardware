@@ -68,7 +68,7 @@ class StandaloneInferenceTests(SimpleTestCase):
             )
         return SimpleNamespace(
             boxes=None, masks=None, names=self.models[role].names,
-            orig_shape=image.shape[:2], plot=lambda: image.copy(),
+            orig_shape=image.shape[:2], plot=lambda **_: image.copy(),
         )
 
     def test_batch_needs_no_external_repository_or_import_path_changes(self):
@@ -130,7 +130,7 @@ class StandaloneInferenceTests(SimpleTestCase):
             SimpleNamespace(
                 boxes=boxes, names=model.names, orig_shape=image.shape[:2],
                 masks=SimpleNamespace(data=torch.ones((2, *image.shape[:2]))),
-                plot=lambda: image.copy(),
+                plot=lambda **_: image.copy(),
             ) for image in source
         ]
         reports, _ = detection.execute_model_batch(self.paths, self.weights)
@@ -147,3 +147,48 @@ class StandaloneInferenceTests(SimpleTestCase):
         self.assertEqual(reports[0]['models']['color']['status'], 'ok')
         self.assertIn('wrinkle_gray', artifacts[0])
         self.assertNotIn('defect_annotated', artifacts[0])
+
+    def test_farmer_artifact_uses_real_plot_without_confidence_or_labels(self):
+        from ultralytics.engine.results import Results
+
+        results = []
+
+        def defect_results(source, **_):
+            for image in source:
+                height, width = image.shape[:2]
+                result = Results(
+                    image, path='fixture.jpg', names=self.models['defect'].names,
+                    boxes=torch.tensor([[1, 1, width - 1, height - 1, 0.87, 1]]),
+                    masks=torch.ones((1, height, width)),
+                )
+                result.plot = mock.Mock(wraps=result.plot)
+                results.append(result)
+            return results
+
+        self.models['defect'].predict.side_effect = defect_results
+        reports, artifacts = detection.execute_model_batch(self.paths, self.weights)
+        self.assertEqual(reports[0]['models']['defect']['detections'][0]['class_index'], 1)
+        self.assertIn('defect_marked', detection.ARTIFACT_NAMES)
+        for result, artifact in zip(results, artifacts, strict=True):
+            result.plot.assert_any_call(conf=False, labels=False)
+            result.plot.assert_any_call()
+            self.assertFalse(np.array_equal(artifact['defect_annotated'],
+                                            artifact['defect_marked']))
+
+    def test_farmer_plot_failure_preserves_successful_detection_and_features(self):
+        def defect_results(source, **_):
+            results = []
+            for image in source:
+                result = self._result('defect', image)
+                result.plot = mock.Mock(side_effect=[image.copy(), RuntimeError('plot failed')])
+                results.append(result)
+            return results
+
+        self.models['defect'].predict.side_effect = defect_results
+        reports, artifacts = detection.execute_model_batch(self.paths, self.weights)
+        for report, artifact in zip(reports, artifacts, strict=True):
+            self.assertTrue(report['ok'])
+            self.assertEqual(report['models']['defect']['status'], 'ok')
+            self.assertNotIn('unavailable', detection.view_features(report))
+            self.assertIn('defect_annotated', artifact)
+            self.assertNotIn('defect_marked', artifact)

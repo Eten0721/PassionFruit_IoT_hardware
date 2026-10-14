@@ -24,6 +24,7 @@ ARTIFACT_NAMES = (
     'masked_roi',
     'wrinkle_gray',
     'defect_annotated',
+    'defect_marked',
 )
 MODEL_ROLES = ('roi', 'color', 'wrinkle', 'defect')
 DEFECT_CLASSES = {'abrasion', 'anthracnose', 'insect_bite', 'insect_track'}
@@ -226,6 +227,12 @@ def _summarise_role(role, ready_indices, results, elapsed_ms, reports, artifacts
             reports[index]['models'][role] = {
                 'status': 'error', 'reason': f'{type(error).__name__}: {error}',
             }
+            continue
+        if role == 'defect':
+            try:
+                artifacts_list[index]['defect_marked'] = result.plot(conf=False, labels=False)
+            except Exception:
+                pass  # Optional farmer preview falls back to the original image.
 
 
 def execute_model_batch(
@@ -416,7 +423,8 @@ def _image_complete(image: dict) -> bool:
         for role in MODEL_ROLES[1:]
     ):
         return False
-    return all(name in image['artifacts'] for name in ARTIFACT_NAMES)
+    return all(name in image['artifacts'] for name in ARTIFACT_NAMES
+               if name != 'defect_marked')
 
 
 def view_features(image: dict) -> dict:
@@ -698,9 +706,10 @@ def run_and_save(
                     _write_artifact(run_dir / relative, artifact)
                     image['artifacts'][name] = relative
                 except Exception as error:
-                    save_errors.append(
-                        f'{source.name}/{name}: {type(error).__name__}: {error}'
-                    )
+                    if name != 'defect_marked':
+                        save_errors.append(
+                            f'{source.name}/{name}: {type(error).__name__}: {error}'
+                        )
 
     def publish(stage):
         if progress is None:
