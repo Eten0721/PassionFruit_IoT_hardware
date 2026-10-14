@@ -70,7 +70,7 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 3. 前兩站皆遵守「果實停穩、手機上傳、Django 保存成功、下一閘門放行」；第 3 張保存後，果實繼續停留在 Gate 3。
 4. 蒐集模式由使用者檢查並分類三張照片，Django 先提交 Dataset 與 metadata；自動檢測模式由 Django 本地推論與判級，先保存 `result.json` 與檢測總表，無法判級時待人工選級或放棄本輪。
 5. `classify_fruit` 先將下置式分類器轉到目標角度並完成 `500 ms` 開迴路就位等待，再放行 Gate 3；果實通過落料管後，三顆 Gate 與分類器才共同歸位並回報完成。
-6. 複合分類動作完成且安全條件仍成立時，Django 才建立下一次送料。自動檢測結果接入此分類邊界的硬體流程仍在 Issue 追蹤中，目前檢測後保持 Gate 3 人工復原。
+6. 複合分類動作完成且安全條件仍成立時，Django 才建立下一次送料。自動檢測的模型或人工等級同樣在結果保存後進入此分類邊界。
 7. 未完成工作與實機驗證由 GitHub Issues 追蹤。
 
 完整事件、API、command 與 timeout 見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)。
