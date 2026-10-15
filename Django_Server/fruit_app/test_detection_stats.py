@@ -1,13 +1,14 @@
 """Read-only detection statistics and rule-based trend alerts on fake data."""
 
 import csv
+import inspect
 import json
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
-from django.test import SimpleTestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from . import detection_stats, notification_delivery, trend_alerts, views
 from .detection import SUMMARY_FIELDS
@@ -161,74 +162,153 @@ class TrendAlertTests(SimpleTestCase):
         self.data = FakeDataset(Path(temp.name) / 'detection')
         self.now = self.NOW
         self.outbox = FakeOutbox()
-        self.alerts = trend_alerts.TrendAlerts(Path(temp.name) / 'trend_alerts.json',
-                                               self.data.root, self.outbox, now=lambda: self.now)
+        self.state_path = Path(temp.name) / 'trend_alerts.json'
         self.fruit = 0
 
-    def add_fruits(self, count, *, days_ago, anthracnose=0, mode='hardware'):
+    def monitor(self, writer=None):
+        return trend_alerts.TrendAlerts(self.state_path, self.data.root, self.outbox,
+                                        writer=writer, now=lambda: self.now)
+
+    def add_fruits(self, count, *, days_ago, defects=None, grade=1, mode='hardware'):
+        """``defects`` maps a defect to how many of these fruits show it."""
         for index in range(count):
             self.fruit += 1
-            when = (self.NOW - timedelta(days=days_ago, minutes=index)).strftime('%Y-%m-%d %H:%M:%S')
-            defects = ['anthracnose'] if index < anthracnose else []
-            self.data.add(self.fruit, when, grade=1, mode=mode,
-                          views_=[_view(defects=defects), _view(), _view()])
+            when = (self.NOW - timedelta(days=days_ago, minutes=index + 1)).strftime('%Y-%m-%d %H:%M:%S')
+            found = [name for name, hits in (defects or {}).items() if index < hits]
+            local = [name for name in found if name not in ('bad_color', 'wrinkle')]
+            view = _view(defects=local, color='bad_color' if 'bad_color' in found else 'good_color',
+                         wrinkle='有皺褶（壞）' if 'wrinkle' in found else '無皺褶（好）')
+            self.data.add(self.fruit, when, grade=grade, mode=mode, views_=[view, _view(), _view()])
 
-    def test_disabled_by_default_and_needs_minimum_samples(self):
-        self.add_fruits(30, days_ago=1, anthracnose=30)
-        self.assertEqual(self.alerts.check()['reason'], 'trend_alerts_disabled')
-        self.alerts.update_settings({'enabled': True, 'min_samples': 31})
-        self.assertEqual(self.alerts.check()['alerts'], [])
+    def enable(self, **changes):
+        return self.monitor().update_settings({'enabled': True, **changes})
+
+    def test_disabled_by_default_and_category_minimum_samples(self):
+        self.add_fruits(30, days_ago=1, defects={'anthracnose': 30})
+        self.assertEqual(self.monitor().check()['reason'], 'trend_alerts_disabled')
+        self.enable(categories={'anthracnose': {'min_samples': 31}})
+        self.assertEqual(self.monitor().check()['alerts'], [])
         self.assertEqual(self.outbox.queued, [])
 
-    def test_threshold_alert_uses_template_and_cooldown(self):
-        self.add_fruits(20, days_ago=1, anthracnose=8)
-        self.add_fruits(10, days_ago=2, anthracnose=10, mode='photo_only')
-        self.alerts.update_settings({'enabled': True})
+    def test_threshold_alert_falls_back_to_template_and_respects_cooldown(self):
+        self.add_fruits(20, days_ago=1, defects={'anthracnose': 8})
+        self.add_fruits(10, days_ago=2, defects={'anthracnose': 10}, mode='photo_only')
+        self.enable()
 
-        outcome = self.alerts.check()
+        outcome = self.monitor().check()
 
-        self.assertEqual([alert['key'] for alert in outcome['alerts']], ['anthracnose'])
-        text = outcome['alerts'][0]['text']
-        self.assertIn('炭疽病數量近來有上升趨勢，須注意防疫。', text)
-        self.assertIn('最近 7 天：已判級 20 顆，炭疽病 8 顆（40.0%）', text)
-        self.assertIn('前 7 天：已判級 0 顆，樣本不足不比較', text)
-        self.assertIn('依據：比例達 30.0% 門檻', text)
-        self.assertEqual(self.outbox.queued, [(outcome['alerts'][0]['id'], text)])
+        [alert] = outcome['alerts']
+        self.assertEqual((alert['key'], alert['wording']), ('anthracnose', 'template'))
+        for line in ('炭疽病近來有上升趨勢', '最近 7 天：已判級 20 顆，炭疽病 8 顆（40.0%）',
+                     '前 7 天：已判級 0 顆，樣本不足不比較', '依據：比例達 20.0% 門檻',
+                     '說明：炭疽病比例近來偏高，須注意病害防疫。'):
+            self.assertIn(line, alert['text'])
+        self.assertEqual(self.outbox.queued, [(alert['id'], alert['text'])])
 
         self.now += timedelta(hours=23)
-        self.assertEqual(self.alerts.check()['alerts'], [])
+        self.assertEqual(self.monitor().check()['alerts'], [])
         self.now += timedelta(hours=1)
-        self.assertEqual(len(self.alerts.check()['alerts']), 1)
-        status = self.alerts.status()
+        self.assertEqual(len(self.monitor().check()['alerts']), 1)
+        status = self.monitor().status()
         self.assertEqual(len(status['recent']), 2)
         self.assertEqual(status['recent'][0]['delivery'], {'status': 'pending', 'reason': None})
 
-    def test_rise_against_previous_window(self):
-        self.add_fruits(20, days_ago=9, anthracnose=1)
-        self.add_fruits(20, days_ago=1, anthracnose=4)
-        self.alerts.update_settings({'enabled': True, 'ratio_threshold': 0.5})
+    def test_each_category_uses_its_own_parameters_and_direction(self):
+        self.add_fruits(20, days_ago=1, defects={'abrasion': 5, 'anthracnose': 3})
+        self.enable()
+        self.assertEqual(self.monitor().check()['alerts'], [])
 
-        alert = self.alerts.check()['alerts'][0]
+        self.enable(categories={'abrasion': {'threshold': 0.2}})
+        [alert] = self.monitor().check()['alerts']
 
-        self.assertEqual(alert['previous'], {'graded': 20, 'count': 1, 'ratio': 0.05,
-                                             'sufficient': True})
-        self.assertIn('依據：比前 7 天上升 10.0 個百分點以上', alert['text'])
-        self.assertIn('前 7 天：已判級 20 顆，炭疽病 1 顆（5.0%）', alert['text'])
+        self.assertEqual(alert['key'], 'abrasion')
+        self.assertIn('說明：擦傷比例近來偏高，請檢查採收與搬運作業。', alert['text'])
 
-    def test_no_alert_without_rise_or_threshold(self):
-        self.add_fruits(20, days_ago=9, anthracnose=3)
-        self.add_fruits(20, days_ago=1, anthracnose=4)
-        self.alerts.update_settings({'enabled': True})
-        self.assertEqual(self.alerts.check()['alerts'], [])
+    def test_rise_against_previous_window_lists_other_rising_categories(self):
+        self.add_fruits(20, days_ago=9)
+        self.add_fruits(20, days_ago=1, defects={'anthracnose': 3, 'wrinkle': 4})
+        self.enable()
+
+        alerts = {alert['key']: alert for alert in self.monitor().check()['alerts']}
+
+        self.assertEqual(set(alerts), {'anthracnose', 'wrinkle'})
+        text = alerts['anthracnose']['text']
+        self.assertIn('前 7 天：已判級 20 顆，炭疽病 0 顆（0.0%）', text)
+        self.assertIn('依據：比前 7 天上升 10.0 個百分點以上', text)
+        self.assertIn('同時上升：皺褶', text)
+        self.assertIn('同時上升：炭疽病', alerts['wrinkle']['text'])
+
+    def test_processing_share_uses_the_same_rules(self):
+        self.add_fruits(20, days_ago=1, grade=0)
+        self.add_fruits(20, days_ago=2, grade=2)
+        self.enable()
+        [alert] = self.monitor().check()['alerts']
+        self.assertEqual((alert['key'], alert['label']), ('processing', '加工果'))
+        self.assertIn('最近 7 天：已判級 40 顆，加工果 20 顆（50.0%）', alert['text'])
+
+    def test_same_day_spike_against_window_before_today(self):
+        self.add_fruits(20, days_ago=3, defects={'anthracnose': 1})
+        self.add_fruits(10, days_ago=0, defects={'anthracnose': 3})
+        self.enable()
+
+        [alert] = self.monitor().check()['alerts']
+
+        self.assertIn('炭疽病今日明顯偏高', alert['text'])
+        self.assertIn('今日：已判級 10 顆，炭疽病 3 顆（30.0%）；今日前 7 天為 5.0%', alert['text'])
+        self.assertIn('依據：今日比例達前 7 天的 2 倍以上', alert['text'])
+
+    def test_no_alert_without_any_rule(self):
+        self.add_fruits(20, days_ago=9, defects={'anthracnose': 2})
+        self.add_fruits(20, days_ago=1, defects={'anthracnose': 3})
+        self.enable()
+        self.assertEqual(self.monitor().check()['alerts'], [])
+
+    def test_writer_only_words_and_falls_back_to_template(self):
+        self.add_fruits(20, days_ago=1, defects={'anthracnose': 8})
+        self.enable()
+        cases = (
+            (lambda facts: {'ok': True, 'text': '近期病斑變多，建議加強清園與通風。'}, 'ai'),
+            (lambda facts: {'ok': True, 'text': '約有 40% 果實受影響'}, 'template_rejected'),
+            (lambda facts: {'ok': False, 'reason': 'assistant_offline'}, 'template_assistant_offline'),
+            (mock.Mock(side_effect=TimeoutError('slow')), 'template_writer_failed'),
+        )
+        seen = []
+        for writer, wording in cases:
+            with self.subTest(wording=wording):
+                self.now += timedelta(days=1, hours=1)
+                recorder = mock.Mock(side_effect=writer)
+                [alert] = self.monitor(writer=recorder).check()['alerts']
+                facts = recorder.call_args.args[0]
+                seen.append(facts)
+                self.assertEqual(alert['wording'], wording)
+                self.assertIn('最近 7 天：已判級', alert['text'])
+                if wording == 'ai':
+                    self.assertIn('說明（AI 依上列數據撰寫）：近期病斑變多，建議加強清園與通風。', alert['text'])
+                else:
+                    self.assertIn('說明：炭疽病比例近來偏高，須注意病害防疫。', alert['text'])
+                    self.assertNotIn('約有', alert['text'])
+        self.assertEqual(seen[0]['category'], '炭疽病')
+        self.assertEqual(seen[0]['reasons'], ['比例達門檻'])
+        self.assertEqual(seen[0]['current'], {'count': 8, 'graded': 20, 'ratio': 0.4})
+        self.assertEqual(len(self.outbox.queued), 4)
 
     def test_settings_are_validated(self):
         for changes in ({}, {'enabled': 'yes'}, {'window_days': 0}, {'window_days': 1.5},
-                        {'ratio_threshold': 2}, {'cooldown_hours': True}, {'unknown': 1}):
+                        {'spike_factor': 1}, {'cooldown_hours': True}, {'unknown': 1},
+                        {'categories': {'mold': {}}},
+                        {'categories': {'anthracnose': {'threshold': 2}}},
+                        {'categories': {'anthracnose': {'direction': 'magic'}}},
+                        {'categories': {'anthracnose': {'colour': 1}}}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
-                self.alerts.update_settings(changes)
-        saved = self.alerts.update_settings({'window_days': 14, 'ratio_threshold': 0.25})
+                self.monitor().update_settings(changes)
+        saved = self.monitor().update_settings({
+            'window_days': 14, 'categories': {'abrasion': {'threshold': 0.25, 'direction': 'quality'}}})
         self.assertEqual(saved['window_days'], 14)
         self.assertFalse(saved['enabled'])
+        self.assertEqual(saved['categories']['abrasion'],
+                         {'threshold': 0.25, 'rise': 0.1, 'min_samples': 20, 'direction': 'quality'})
+        self.assertEqual(saved['categories']['anthracnose'],
+                         trend_alerts.DEFAULT_CATEGORIES['anthracnose'])
 
 
 class TrendAlertOutboxTests(SimpleTestCase):
@@ -263,21 +343,36 @@ class TrendAlertOutboxTests(SimpleTestCase):
 
 
 class TrendAlertViewTests(SimpleTestCase):
-    def test_check_runs_only_for_saved_graded_hardware_results_and_never_raises(self):
+    def test_check_starts_in_background_only_for_saved_graded_hardware_results(self):
         saved = {'hardware_mode': 'hardware', 'storage': {'status': 'saved'},
                  'classification': {'status': 'graded'}}
-        monitor = mock.Mock()
-        monitor.check.return_value = {'ok': True, 'alerts': [{'label': '炭疽病'}], 'errors': []}
-        with mock.patch.object(views, 'trend_alert_monitor', return_value=monitor):
+        with mock.patch.object(views.threading, 'Thread') as thread:
             for skipped in ({**saved, 'hardware_mode': 'photo_only'},
                             {**saved, 'classification': {'status': 'needs_review'}},
                             {**saved, 'storage': {'status': 'failed'}}, None):
                 self.assertEqual(views._check_trend_alerts(skipped), '')
-            monitor.check.assert_not_called()
-            self.assertEqual(views._check_trend_alerts(saved), ' 已產生趨勢提醒：炭疽病。')
-            monitor.check.side_effect = ValueError('broken')
-            with self.assertLogs('fruit_app.views', 'ERROR'):
-                self.assertEqual(views._check_trend_alerts(saved), ' 趨勢提醒檢查失敗：ValueError')
+            thread.assert_not_called()
+            self.assertEqual(views._check_trend_alerts(saved), '')
+            thread.assert_called_once_with(target=views._run_trend_check,
+                                           name='trend-alert-check', daemon=True)
+            thread.return_value.start.assert_called_once_with()
+
+    def test_background_check_never_raises(self):
+        monitor = mock.Mock()
+        monitor.check.side_effect = ValueError('broken')
+        with mock.patch.object(views, 'trend_alert_monitor', return_value=monitor), \
+                self.assertLogs('fruit_app.views', 'ERROR'):
+            views._run_trend_check()
+
+    def test_settings_api_ignores_dashboard_dataset_mode(self):
+        monitor = mock.Mock()
+        request = RequestFactory().post('/api/trend_alerts/', data=json.dumps(
+            {'dataset_mode': 'detection', 'enabled': True}), content_type='application/json')
+        with mock.patch.object(views, 'trend_alert_monitor', return_value=monitor), \
+                mock.patch.object(views, '_state_payload', return_value={}):
+            response = inspect.unwrap(views.trend_alerts_api)(request)
+        self.assertEqual(response.status_code, 200)
+        monitor.update_settings.assert_called_once_with({'enabled': True})
 
     def test_stats_api_rejects_bad_parameters(self):
         with tempfile.TemporaryDirectory() as temp, override_settings(DATASET_ROOT=Path(temp)):

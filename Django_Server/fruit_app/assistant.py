@@ -97,7 +97,11 @@ SYSTEM_RULES = """你是百香果 IoT 分級系統 Dashboard 的唯讀助手，�
 5. 你只能查詢，不能開始運轉、切換模式、分類、刪除資料或控制馬達；使用者要求這些操作時，說明要在 Dashboard 上自行操作。
 6. 檢測比例只反映模型觀察，不代表病因判斷或防治效果。
 """
-SEARCH_RULES = '以繁體中文、根據搜尋結果簡潔回答百香果相關農業問題；不確定時直說。涉及用藥時提醒以植物保護資訊系統與在地農業改良場建議為準。'
+ALERT_TIMEOUT_SECONDS = 20
+ALERT_RULES = """你替百香果分級系統的趨勢提醒寫一段給農夫看的說明與建議，繁體中文，兩句以內、一百字以內。
+輸入是系統已判定要發送的提醒事實（JSON）。數據會由系統另外列出，所以你的文字中不得出現任何阿拉伯數字或百分比，也不要重述數據。
+依 direction 給方向性建議；若有 also_rising，可提醒一併留意。不得宣稱病因或保證防治效果；涉及用藥時提醒以植物保護資訊系統與在地農業改良場建議為準。只輸出說明文字本身。"""
+SEARCH_RULES ='以繁體中文、根據搜尋結果簡潔回答百香果相關農業問題；不確定時直說。涉及用藥時提醒以植物保護資訊系統與在地農業改良場建議為準。'
 
 _USAGE_LOCK = threading.Lock()
 
@@ -175,6 +179,29 @@ class Assistant:
         except _Failure as failure:
             return _failure(failure.reason, usage=self._usage(credentials))
 
+    def write_alert_advice(self, facts: dict) -> dict:
+        """Word a triggered trend alert; the caller decides sending and numbers.
+
+        Returns ``{'ok': True, 'text': ...}`` or a structured failure; the
+        trend module rejects any text containing digits and falls back to its
+        fixed template.
+        """
+        credentials = self._credentials()
+        if credentials is None:
+            return {'ok': False, 'reason': 'assistant_not_configured'}
+        try:
+            candidate = self._generate(credentials, {
+                'systemInstruction': {'parts': [{'text': ALERT_RULES}]},
+                'contents': [{'role': 'user', 'parts': [
+                    {'text': json.dumps(facts, ensure_ascii=False)}]}],
+            }, timeout=ALERT_TIMEOUT_SECONDS)
+        except _Failure as failure:
+            return {'ok': False, 'reason': failure.reason}
+        text = _text((candidate.get('content') or {}).get('parts') or [])
+        if not text:
+            return {'ok': False, 'reason': 'assistant_invalid_response'}
+        return {'ok': True, 'reason': None, 'text': text}
+
     # -- tools ---------------------------------------------------------------
 
     def _run_tool(self, call, credentials, charts, sources):
@@ -209,11 +236,11 @@ class Assistant:
 
     # -- Gemini ----------------------------------------------------------------
 
-    def _generate(self, credentials, payload):
+    def _generate(self, credentials, payload, *, timeout=HTTP_TIMEOUT_SECONDS):
         self._count_request(credentials['daily_request_limit'])
         status, body = self._http_post(
             API_URL.format(model=credentials['model']), payload,
-            {'x-goog-api-key': credentials['gemini_api_key']}, HTTP_TIMEOUT_SECONDS,
+            {'x-goog-api-key': credentials['gemini_api_key']}, timeout,
         )
         if status == 429:
             raise _Failure('assistant_quota_exceeded', 'HTTP 429')

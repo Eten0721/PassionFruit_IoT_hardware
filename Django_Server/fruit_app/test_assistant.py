@@ -146,6 +146,22 @@ class AssistantTests(SimpleTestCase):
         self.today = date(2026, 10, 17)
         self.assertTrue(self.ask(FakeGemini(_candidate({'text': 'ok'})))['ok'])
 
+    def test_alert_wording_sends_only_facts_without_tools(self):
+        bot = lambda http: assistant.Assistant(self.credentials, self.usage, self.data.root,  # noqa: E731
+                                               self.docs, http_post=http, today=lambda: self.today)
+        facts = {'category': '炭疽病', 'current': {'count': 8, 'graded': 20, 'ratio': 0.4}}
+        self.assertEqual(bot(FakeGemini()).write_alert_advice(facts)['reason'],
+                         'assistant_not_configured')
+        self.configure()
+        http = FakeGemini(_candidate({'text': '請加強清園。'}))
+        self.assertEqual(bot(http).write_alert_advice(facts),
+                         {'ok': True, 'reason': None, 'text': '請加強清園。'})
+        [call] = http.calls
+        self.assertNotIn('tools', call['payload'])
+        self.assertEqual(json.loads(call['payload']['contents'][0]['parts'][0]['text']), facts)
+        self.assertEqual(bot(FakeGemini((429, {}))).write_alert_advice(facts)['reason'],
+                         'assistant_quota_exceeded')
+
     def test_tool_rounds_are_bounded(self):
         self.configure()
         loop = _candidate({'functionCall': {'name': 'unknown_tool', 'args': {}}})

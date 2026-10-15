@@ -1380,6 +1380,33 @@ textarea {
     font-size: 0.9rem;
 }
 
+.trend-alert-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+}
+
+.trend-alert-table {
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.trend-alert-table caption {
+    text-align: left;
+    color: var(--text-soft);
+    padding-bottom: 4px;
+}
+
+.trend-alert-table th,
+.trend-alert-table td {
+    padding: 2px 4px;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.trend-alert-table input {
+    width: 72px;
+}
+
 .trend-alert-list {
     margin: 0;
     padding-left: 20px;

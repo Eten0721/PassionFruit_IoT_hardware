@@ -52,14 +52,15 @@ const remoteVideo = document.getElementById('remote-video');
     const trendAlertStatus = document.getElementById('trend-alert-status');
     const trendAlertList = document.getElementById('trend-alert-list');
     const trendAlertSave = document.getElementById('btn-trend-alert-save');
-    // Settings fields: id, setting key, and the scale between the input and the API value.
+    const trendAlertCategories = document.getElementById('trend-alert-categories');
     const trendAlertFields = [
-        ['trend-alert-window', 'window_days', 1],
-        ['trend-alert-min', 'min_samples', 1],
-        ['trend-alert-threshold', 'ratio_threshold', 100],
-        ['trend-alert-rise', 'rise_threshold', 100],
-        ['trend-alert-cooldown', 'cooldown_hours', 1],
-    ].map(([id, key, scale]) => ({ input: document.getElementById(id), key, scale }));
+        ['trend-alert-window', 'window_days'],
+        ['trend-alert-cooldown', 'cooldown_hours'],
+        ['trend-alert-spike-factor', 'spike_factor'],
+        ['trend-alert-spike-min', 'spike_min_samples'],
+    ].map(([id, key]) => ({ input: document.getElementById(id), key }));
+    // Per-category columns: setting key and the scale between the input and the API value.
+    const TREND_CATEGORY_FIELDS = [['threshold', 100], ['rise', 100], ['min_samples', 1]];
     const trendAlertEnabled = document.getElementById('trend-alert-enabled');
     const actionGuidance = document.getElementById('action-guidance');
     const operationDetails = document.getElementById('operation-details');
@@ -1317,25 +1318,67 @@ const remoteVideo = document.getElementById('remote-video');
         pending: 'LINE 待送', sent: 'LINE 已送出', failed: 'LINE 失敗', uncertain: 'LINE 送達不明',
     };
 
+    function trendCategoryRows(trend) {
+        const keys = Object.keys(trend.settings.categories);
+        if (trendAlertCategories.dataset.keys === keys.join(',')) return;
+        trendAlertCategories.dataset.keys = keys.join(',');
+        trendAlertCategories.replaceChildren(...keys.map((key) => {
+            const label = trend.labels[key] || key;
+            const row = document.createElement('tr');
+            const name = document.createElement('th');
+            name.scope = 'row';
+            name.textContent = label;
+            row.appendChild(name);
+            TREND_CATEGORY_FIELDS.forEach(([field]) => {
+                const cell = document.createElement('td');
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.step = field === 'min_samples' ? '1' : '0.1';
+                input.dataset.category = key;
+                input.dataset.field = field;
+                input.setAttribute('aria-label', `${label} ${field}`);
+                cell.appendChild(input);
+                row.appendChild(cell);
+            });
+            const cell = document.createElement('td');
+            const select = document.createElement('select');
+            select.dataset.category = key;
+            select.dataset.field = 'direction';
+            select.setAttribute('aria-label', `${label} 提醒方向`);
+            Object.entries(trend.directions).forEach(([value, text]) => select.add(new Option(text, value)));
+            cell.appendChild(select);
+            row.appendChild(cell);
+            return row;
+        }));
+    }
+
+    function trendScale(field) {
+        return (TREND_CATEGORY_FIELDS.find(([name]) => name === field) || [])[1];
+    }
+
     function renderTrendAlerts(trend) {
         if (!trend || trend.error) {
             setTextIfChanged(trendAlertStatus, trend?.error || '趨勢提醒狀態無法取得');
             trendAlertSave.disabled = true;
             return;
         }
-        const settings = trend.settings || {};
+        const settings = trend.settings;
+        trendCategoryRows(trend);
         // Polling must not overwrite values the operator is still editing.
         if (!trendAlertForm.dataset.dirty) {
             trendAlertEnabled.checked = Boolean(settings.enabled);
-            trendAlertFields.forEach(({ input, key, scale }) => {
-                input.value = String(Math.round(settings[key] * scale * 10) / 10);
+            trendAlertFields.forEach(({ input, key }) => { input.value = String(settings[key]); });
+            trendAlertCategories.querySelectorAll('[data-category]').forEach((input) => {
+                const value = settings.categories[input.dataset.category][input.dataset.field];
+                const scale = trendScale(input.dataset.field);
+                input.value = scale ? String(Math.round(value * scale * 10) / 10) : value;
             });
         }
         trendAlertSave.disabled = Boolean(controlActionInFlight);
         const line = trend.line || {};
         setTextIfChanged(trendAlertStatus, [
             settings.enabled
-                ? `最近 ${settings.window_days} 天至少 ${settings.min_samples} 顆已判級果實時，任一瑕疵比例達門檻或比前期上升即提醒；同類 ${settings.cooldown_hours} 小時內不重複。`
+                ? `各類比例達門檻、比前 ${settings.window_days} 天上升，或今日達前期 ${settings.spike_factor} 倍時提醒；同類 ${settings.cooldown_hours} 小時內不重複。有 Gemini 金鑰時由 AI 撰寫說明，數字一律由系統填入。`
                 : '已關閉：不檢查也不發送趨勢提醒。',
             line.configured ? null : `LINE 尚未完成設定：${line.config_reason}（提醒仍會顯示在此）`,
         ].filter(Boolean).join('\n'));
@@ -1353,16 +1396,28 @@ const remoteVideo = document.getElementById('remote-video');
         }));
     }
 
+    function trendNumber(input, scale = 1) {
+        const value = Number(input.value);
+        if (input.value === '' || !Number.isFinite(value)) return null;
+        return value / scale;
+    }
+
     async function saveTrendAlerts(event) {
         event.preventDefault();
-        const settings = { enabled: trendAlertEnabled.checked };
-        for (const { input, key, scale } of trendAlertFields) {
-            const value = Number(input.value);
-            if (input.value === '' || !Number.isFinite(value)) {
-                setMessage('趨勢提醒設定必須填入數字。');
-                return;
-            }
-            settings[key] = scale === 1 ? value : value / scale;
+        const settings = { enabled: trendAlertEnabled.checked, categories: {} };
+        for (const { input, key } of trendAlertFields) {
+            settings[key] = trendNumber(input);
+        }
+        trendAlertCategories.querySelectorAll('[data-category]').forEach((input) => {
+            const params = (settings.categories[input.dataset.category] ||= {});
+            const scale = trendScale(input.dataset.field);
+            params[input.dataset.field] = scale ? trendNumber(input, scale) : input.value;
+        });
+        const values = [...trendAlertFields.map(({ key }) => settings[key]),
+            ...Object.values(settings.categories).flatMap((params) => Object.values(params))];
+        if (values.includes(null)) {
+            setMessage('趨勢提醒設定必須填入數字。');
+            return;
         }
         if (!beginControlAction('trend_alerts', trendAlertSave)) {
             return;

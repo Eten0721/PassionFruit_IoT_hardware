@@ -122,10 +122,16 @@
                     <label class="trend-alert-switch"><input id="trend-alert-enabled" type="checkbox"> 啟用趨勢提醒（LINE 與此處顯示）</label>
                     <div class="trend-alert-grid">
                         <label>視窗天數<input id="trend-alert-window" type="number" min="1" max="60" step="1"></label>
-                        <label>最少已判級顆數<input id="trend-alert-min" type="number" min="1" max="10000" step="1"></label>
-                        <label>比例門檻（%）<input id="trend-alert-threshold" type="number" min="1" max="100" step="0.1"></label>
-                        <label>較前期上升（百分點）<input id="trend-alert-rise" type="number" min="1" max="100" step="0.1"></label>
                         <label>冷卻（小時）<input id="trend-alert-cooldown" type="number" min="0" max="720" step="1"></label>
+                        <label>當日突增倍數<input id="trend-alert-spike-factor" type="number" min="1.1" max="20" step="0.1"></label>
+                        <label>當日最少顆數<input id="trend-alert-spike-min" type="number" min="1" max="10000" step="1"></label>
+                    </div>
+                    <div class="trend-alert-table-wrap">
+                        <table class="trend-alert-table">
+                            <caption>各類參數（比例以已判級的硬體果實計）</caption>
+                            <thead><tr><th scope="col">類別</th><th scope="col">門檻 %</th><th scope="col">上升百分點</th><th scope="col">最少顆數</th><th scope="col">提醒方向</th></tr></thead>
+                            <tbody id="trend-alert-categories"></tbody>
+                        </table>
                     </div>
                     <button id="btn-trend-alert-save" type="submit" class="button secondary">保存提醒設定</button>
                     <p id="trend-alert-status" class="control-guidance" aria-live="polite"></p>

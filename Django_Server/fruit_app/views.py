@@ -1981,30 +1981,36 @@ def trend_alert_monitor():
     runtime_root = Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).parent
     return trend_alerts.TrendAlerts(
         runtime_root / 'trend_alerts.json', _dataset_root('detection'), notification_outbox(),
+        writer=lambda facts: dashboard_assistant().write_alert_advice(facts),
     )
 
 
 def _check_trend_alerts(result):
-    """Run the trend rules after a saved hardware grade; never raises.
+    """Start the trend rules after a saved hardware grade; never raises.
 
-    Like LINE notifications this runs outside ``STATE_LOCK`` and only returns a
-    message suffix, so a broken rule file never blocks detection or sorting.
+    The check may wait for Gemini wording, so it runs on its own daemon
+    thread: detection, manual takeover and sorting never wait for it. New
+    alerts show on the Dashboard and in the LINE outbox.
     """
     if (not result or result.get('hardware_mode') != 'hardware'
             or (result.get('storage') or {}).get('status') != 'saved'
             or (result.get('classification') or {}).get('status') != 'graded'):
         return ''
     try:
+        threading.Thread(target=_run_trend_check, name='trend-alert-check', daemon=True).start()
+    except RuntimeError as exc:
+        return f' 趨勢提醒檢查未啟動：{exc}'
+    return ''
+
+
+def _run_trend_check():
+    try:
         outcome = trend_alert_monitor().check()
-    except Exception as exc:
+    except Exception:
         logger.exception('Trend alert check failed')
-        return f' 趨勢提醒檢查失敗：{type(exc).__name__}'
-    if not outcome['alerts']:
-        return ''
-    labels = '、'.join(alert['label'] for alert in outcome['alerts'])
-    if outcome['errors']:
-        return f' 已產生趨勢提醒（{labels}），但 LINE 待送失敗：{"；".join(outcome["errors"])}'
-    return f' 已產生趨勢提醒：{labels}。'
+        return
+    for error in outcome['errors']:
+        logger.warning('Trend alert could not be queued for LINE: %s', error)
 
 
 def _trend_alert_payload():
@@ -2021,7 +2027,9 @@ def _trend_alert_payload():
 def trend_alerts_api(request):
     """Save the trend-alert switch, windows and thresholds from the Dashboard."""
     try:
-        trend_alert_monitor().update_settings(_request_data(request))
+        changes = _request_data(request)
+        changes.pop('dataset_mode', None)  # Added by every Dashboard POST; not a setting.
+        trend_alert_monitor().update_settings(changes)
     except ValueError as exc:
         return _json_error(str(exc), reason='invalid_trend_alert_settings')
     except OSError as exc:
