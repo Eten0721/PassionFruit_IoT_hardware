@@ -451,6 +451,27 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 - 開關依硬體選項分開保存，`hardware` 與 `photo_only` 預設皆關閉；`POST /api/notification/ {"enabled": true|false}` 切換目前硬體選項的開關，`/api/state/` 的 `notification` 提供目前硬體選項的開關、設定狀態、待送／已送出／送達不明／失敗／略過數、暫停數、最近錯誤與本輪狀態。純拍攝開啟後訊息開頭加「測試」。Dashboard 操作摺疊區提供切換與狀態，收合時摘要列仍顯示開關與待送數。
 - 主動關閉通知時保留並暫停該模式尚未送出的訊息，重新開啟後續送；關閉期間新產生的結果記為「略過」而不加入待送，之後開啟或重複保存也不回溯排送。已交付 LINE 的請求不因關閉開關而撤回。
 
+### 檢測統計與趨勢提醒
+
+決策見 [ADR-0022](adr/0022-dashboard-gemini-assistant.md)。
+
+- `detection_stats.py` 只讀檢測分區的 `detection_summary.csv` 與其 `result_json` 指向的 `result.json`，不寫檔、不讀蒐集分區或歷史目錄。`GET /api/detection/stats/` 參數：`start_date`／`end_date`（`YYYY-MM-DD`，含首尾，依本機時間）、`bucket`（`none／day／week／month`，週以週一日期加「週」標示）、`group_by`（`grade／defect`）、`include_photo_only`（`true／false`，預設 `false`）；參數錯誤回 `400 invalid_stats_query`。
+- 計數規則：時間取 `capture_time`，缺少時取 `completed_at`；只計 `result_json` 有值的保存列，無法解析的時間或結果分別計入 `skipped.time_invalid`／`skipped.result_unreadable`，未保存計入 `skipped.result_not_saved`。`graded` 果實構成四級分布（上等、中等、下等、加工）與瑕疵比例分母，並以 `sources` 區分 `model`／`manual`；`abandoned` 與 `needs_review` 只列在 `totals`。每顆瑕疵沿用 LINE 通知規則：已完成檢測視角的成功觀察聯集，六類鍵與名稱為 `bad_color` 色澤異常、`wrinkle` 皺褶、`abrasion` 擦傷、`anthracnose` 炭疽病、`insect_bite` 蟲咬、`insect_track` 畫圖蟲。
+- 回應含 `filters`、`totals`、`grades`（`count`、`ratio`）、`sources`、`defects`（`count`、`ratio` 佔已判級）、`series`（有級距時每期的各數）、`skipped` 與 `chart`；`chart` 為 `type`（`bar／line`）、`title`、`unit`（`顆／%`）、`stacked`、`labels`、`datasets[{label, data}]`，由 Django 直接產生。
+- 趨勢提醒由 `trend_alerts.py` 以固定規則判斷，不使用 LLM。使用硬體的果實最終判級保存後（含人工判級），計算最近 `window_days` 天與再前一個同長度視窗；只計使用硬體的已判級果實。目前視窗達 `min_samples` 顆時，任一瑕疵比例 ≥ `ratio_threshold`，或前一視窗也達 `min_samples` 且比例上升 ≥ `rise_threshold`（百分點），即產生提醒；同類在 `cooldown_hours` 內不重複。預設 `7` 天、`20` 顆、`30%`、`10` 個百分點、`24 h`，須以實際資料校正。
+- 設定、各類最後提醒時間與最近 `20` 筆提醒存於 `runtime_config/trend_alerts.json`；開關與加工果通知分開，預設關閉。`POST /api/trend_alerts/` 可傳 `enabled`、`window_days`（`1～60` 整數）、`min_samples`（`1～10000` 整數）、`ratio_threshold`／`rise_threshold`（`0.01～1`）、`cooldown_hours`（`0～720`），錯誤回 `400 invalid_trend_alert_settings`。`/api/state/` 的 `trend_alerts` 提供設定、LINE 憑證狀態與最近提醒（含 LINE 送達狀態）。
+- 提醒文字為固定模板：「|趨勢提醒|」「炭疽病數量近來有上升趨勢，須注意防疫。」、最近與前一視窗的已判級顆數、該類顆數與比例、觸發依據，以及「比例來自檢測模型觀察…不代表病因判斷」。提醒先寫入設定檔再以 `trend_<id>` 排入 `notification_outbox.json`，沿用同一憑證、retry key、重試與送達不明規則，以一則 LINE 文字訊息發送；不受加工果通知開關影響。規則檢查或排送失敗只附加於狀態訊息，不阻塞檢測、人工接手與分槽。
+
+### Dashboard 助手
+
+- `POST /api/assistant/ {"messages": [{"role": "user"|"model", "text": "..."}]}`：最後一則必須是 `user`，最多取最後 `12` 則、每則 ≤ `2000` 字；格式錯誤回 `400 invalid_assistant_request`。對話只存在瀏覽器頁面記憶體，Django 不保存。成功回 `{"ok": true, "reply", "charts", "sources", "usage": {"used", "limit"}}`；`charts` 為統計工具的 `chart` 原樣輸出，`sources` 為 Google Search grounding 的 HTTPS 來源（`title`、`uri`，去重、最多 `8` 筆）。
+- 預期失敗回 `200` 與 `{"ok": false, "reason", "message"}`：`assistant_not_configured`（缺檔、缺 `gemini_api_key`／`model` 或 `daily_request_limit` 非正整數）、`assistant_offline`（無網路或逾時 `60 s`）、`assistant_quota_exceeded`（每日上限或 Gemini `429`）、`assistant_rejected`（其他 `4xx`）、`assistant_service_error`（`5xx`）、`assistant_invalid_response`、`assistant_tool_rounds_exceeded`（超過 `4` 輪工具呼叫）。
+- `assistant.py` 以標準函式庫呼叫 Gemini REST `v1beta/models/<model>:generateContent`，金鑰放在 `x-goog-api-key` 標頭，不進回應、log 或結果檔。主請求只宣告兩個 function：`query_detection_stats`（參數同統計 API）與 `search_agriculture_knowledge`；後者由後端另發只含 `google_search` 工具的請求，兩種工具一律分流，不依賴模型是否支援併用。模型回合原樣保留（含 thought signature）再附上工具結果。
+- 系統指示含固定規則（數字只引用工具結果、預設不含純拍攝、用藥以植物保護資訊系統與在地農業改良場為準、只查詢不操作）、當天日期，以及本機 `docs/快速開始.md` 與 `docs/環境部署說明文件.md` 全文；缺檔時註明找不到。
+- 憑證存於 `runtime_config/assistant_credentials.json`（`gemini_api_key`、`model`、選用 `daily_request_limit`，預設 `200`），每次請求重新讀取；每呼叫一次 Gemini 前在 `runtime_config/assistant_usage.json` 預扣當日次數，達上限即不送出。設定步驟見 [部署說明 2.6](環境部署說明文件.md#26-dashboard-助手-gemini-金鑰選用)。
+- 助手不取 `STATE_LOCK`、不改狀態機、分類或 motor command；端點只受區網 origin 檢查，網路復原鎖不阻擋。Dashboard 右下角浮動聊天框以本地 `static/fruit_app/vendor/chart-4.4.1.umd.js`（Chart.js 4.4.1，MIT）繪圖，不依賴 CDN。
+- 聊天框按鈕可換成自訂圖片：`POST /api/assistant/icon/`（multipart `icon`）接受 Pillow 可讀的圖片（≤ `10 MB`、≤ `4000` 萬像素），依 EXIF 轉正、置中裁成正方形並縮為 `128×128` PNG，原子寫入 `runtime_config/assistant_icon.png`，不保留原檔；空檔、無法讀取或過大分別回 `400 icon_empty／icon_unreadable／icon_too_large` 並保留舊圖。`reset=true` 刪除圖片恢復文字按鈕；`GET /api/assistant/icon.png` 提供圖片，未設定回 `404`，頁面改顯示文字「問助手」。
+
 ### UI 展示與操作摘要
 
 2026-10-13 使用者已接受目前 UI 規劃，配置以下列條目為準；取代 [Issue #18](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/18#ui-display-contract) 的舊版配置，歷史 Issue 不作為另一份同步維護的規格。

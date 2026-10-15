@@ -381,7 +381,7 @@ class Policy:
                 return self.reason() if self.runtime._network_operation_active() else None
             return self.runtime._options_disabled_reason()
         if operation in ('device', 'observation', 'start', 'options_request', 'discard', 'notification',
-                         'counter', 'reset'):
+                         'assistant', 'counter', 'reset'):
             return None
         if operation == 'motor' and self.state.get('hardware_mode') == 'photo_only':
             return 'hardware_mode_required'

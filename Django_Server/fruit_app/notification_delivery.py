@@ -9,6 +9,10 @@ restart is answered by LINE with 409 instead of a second message. When the
 outcome stays unknown past the retry-key window, the entry becomes
 ``uncertain`` and is never resent automatically.
 
+Trend alerts (``kind`` = ``trend_alert``) share the outbox and retry rules but
+carry their final text and are sent as one plain text message; their own
+switch lives in ``trend_alerts.py`` and is applied before queueing.
+
 Credentials come only from a private JSON file next to the outbox; they never
 enter the outbox, status payloads or error text. The push and retry rules
 (retry key, 409 = already accepted, 4xx not retried as-is) follow the delivered
@@ -40,6 +44,7 @@ from .notification import generate_notification
 
 
 MODES = ('hardware', 'photo_only')
+ALERT_KIND = 'trend_alert'
 STATUSES = ('pending', 'sent', 'failed', 'uncertain', 'skipped')
 # Socket errors that prove the request never left this machine.
 UNSENT_ERRNOS = {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN,
@@ -184,6 +189,43 @@ class Outbox:
         wake()
         return {'ok': True, 'queued': True, 'reason': None}
 
+    def enqueue_alert(self, alert_id: str, text: str) -> dict:
+        """Queue one trend-alert text once; never send here."""
+        if not isinstance(alert_id, str) or not alert_id.startswith('trend_'):
+            raise ValueError('趨勢提醒識別必須以 trend_ 開頭。')
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError('趨勢提醒內容不得為空。')
+        with _STATE_LOCK:
+            state = self._read()
+            if alert_id in state['entries']:
+                return {'ok': True, 'queued': False, 'reason': 'duplicate'}
+            state['entries'][alert_id] = {
+                'result_id': alert_id, 'kind': ALERT_KIND, 'hardware_mode': None,
+                'queued_at': self._now(), 'status': 'pending',
+                'retry_key': str(uuid.uuid4()), 'text': text,
+                'attempts': 0, 'next_attempt_at': self._now(), 'last_error': None,
+                'key_first_used_at': None, 'unknown_since': None,
+                'sent_at': None, 'accepted_request_id': None,
+            }
+            self._write(state)
+        wake()
+        return {'ok': True, 'queued': True, 'reason': None}
+
+    def entry_statuses(self, entry_ids) -> dict:
+        """Delivery status per entry id, without message bodies or recipients."""
+        with _STATE_LOCK:
+            entries = self._read()['entries']
+        return {
+            entry_id: {'status': entries[entry_id]['status'],
+                       'reason': entries[entry_id]['last_error']}
+            for entry_id in entry_ids if entry_id in entries
+        }
+
+    def configuration(self) -> dict:
+        credentials = self._credentials()
+        return {'configured': credentials['ok'],
+                'config_reason': None if credentials['ok'] else credentials['reason']}
+
     def status(self, mode: str, result_id: str | None = None) -> dict:
         """Dashboard view without credentials, recipients or message bodies."""
         with _STATE_LOCK:
@@ -243,8 +285,10 @@ class Outbox:
                     'reason': f'本機讀寫失敗：{type(error).__name__}'}
 
     def _due(self, state, entry):
-        return (entry['status'] == 'pending' and state['enabled'][entry['hardware_mode']]
-                and entry['next_attempt_at'] <= self._now())
+        if entry['status'] != 'pending' or entry['next_attempt_at'] > self._now():
+            return False
+        # A trend alert passed its own switch when queued.
+        return entry.get('kind') == ALERT_KIND or state['enabled'][entry['hardware_mode']]
 
     def _deliver(self, result_id, credentials):
         with _STATE_LOCK:
@@ -259,7 +303,7 @@ class Outbox:
                 'LINE 未回覆是否收到，重送防重期限已過，無法確認是否已送達；'
                 '請到群組確認，系統不會自動重送。'))
         try:
-            if entry['image_url'] is None:
+            if entry.get('kind') != ALERT_KIND and entry['image_url'] is None:
                 entry = self._prepare(entry, credentials)
             return self._push(entry, credentials)
         except _Rejected as rejection:
@@ -330,7 +374,8 @@ class Outbox:
                              key_first_used_at=entry['key_first_used_at'] or now,
                              unknown_since=entry['unknown_since'] or now)
         body = json.dumps({'to': credentials['line_group_id'],
-                           'messages': [_flex_message(entry)]},
+                           'messages': [_text_message(entry) if entry.get('kind') == ALERT_KIND
+                                        else _flex_message(entry)]},
                           ensure_ascii=False).encode('utf-8')
         try:
             response = self._http_post(PUSH_URL, body, {
@@ -431,6 +476,10 @@ class Outbox:
         except OSError:
             staging.unlink(missing_ok=True)
             raise
+
+
+def _text_message(entry):
+    return {'type': 'text', 'text': entry['text'].strip()}
 
 
 def _flex_message(entry):
