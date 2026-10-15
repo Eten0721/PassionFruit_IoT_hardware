@@ -20,6 +20,7 @@ enter responses, logs or result files. Conversations are not stored.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import threading
@@ -52,6 +53,8 @@ MESSAGES = {
     'assistant_offline': '無法連線到 Gemini，請確認這台電腦可以上網；拍攝、檢測與分槽不受影響。',
     'assistant_quota_exceeded': '已達今日助手請求上限或 Gemini 額度限制，請明天再試或調整上限。',
     'assistant_rejected': 'Gemini 拒絕這次請求，請確認 API key、模型名稱與帳單設定。',
+    'assistant_billing_required': 'Gemini 帳單餘額不足：請到 Google AI Studio 的帳單頁儲值（新帳戶須先預付）後再試。',
+    'assistant_model_unavailable': '設定的 Gemini 模型無法使用：請在 assistant_credentials.json 改用 AI Studio 模型清單中的模型代碼。',
     'assistant_service_error': 'Gemini 服務暫時異常，請稍後再試。',
     'assistant_invalid_response': 'Gemini 回應格式無法解讀，請稍後再試。',
     'assistant_tool_rounds_exceeded': '這個問題需要太多步查詢，請把問題拆小一點再問。',
@@ -62,6 +65,7 @@ STATS_TOOL = {
         '查詢檢測分區的百香果統計：四級分布（上等、中等、下等、加工）、六種瑕疵'
         '（色澤異常、皺褶、擦傷、炭疽病、蟲咬、畫圖蟲）出現顆數與佔已判級果實比例，'
         '放棄本輪與待人工處理另列。數字與圖表由系統計算並直接顯示給使用者。'
+        '問到特定等級（例如加工果）的瑕疵時，必須傳 grades，瑕疵比例的分母才會是該等級果實數。'
     ),
     'parameters': {
         'type': 'object',
@@ -74,6 +78,9 @@ STATS_TOOL = {
                          'description': 'grade 看四級分布，defect 看瑕疵比例'},
             'include_photo_only': {'type': 'boolean',
                                    'description': '是否納入純拍攝測試；使用者沒有要求時為 false'},
+            'grades': {'type': 'array',
+                       'items': {'type': 'string', 'enum': list(detection_stats.GRADE_ORDER)},
+                       'description': '只統計這些等級的已判級果實（可複選）；不限等級則省略'},
         },
         'required': ['group_by'],
     },
@@ -97,13 +104,24 @@ SYSTEM_RULES = """你是百香果 IoT 分級系統 Dashboard 的唯讀助手，�
 5. 你只能查詢，不能開始運轉、切換模式、分類、刪除資料或控制馬達；使用者要求這些操作時，說明要在 Dashboard 上自行操作。
 6. 檢測比例只反映模型觀察，不代表病因判斷或防治效果。
 """
+HTTP_REASONS = {
+    402: 'assistant_billing_required',
+    404: 'assistant_model_unavailable',
+    429: 'assistant_quota_exceeded',
+}
 ALERT_TIMEOUT_SECONDS = 20
 ALERT_RULES = """你替百香果分級系統的趨勢提醒寫一段給農夫看的說明與建議，繁體中文，兩句以內、一百字以內。
 輸入是系統已判定要發送的提醒事實（JSON）。數據會由系統另外列出，所以你的文字中不得出現任何阿拉伯數字或百分比，也不要重述數據。
 依 direction 給方向性建議；若有 also_rising，可提醒一併留意。不得宣稱病因或保證防治效果；涉及用藥時提醒以植物保護資訊系統與在地農業改良場建議為準。只輸出說明文字本身。"""
-SEARCH_RULES ='以繁體中文、根據搜尋結果簡潔回答百香果相關農業問題；不確定時直說。涉及用藥時提醒以植物保護資訊系統與在地農業改良場建議為準。'
+SEARCH_UNAVAILABLE = {
+    'assistant_offline': '農業知識搜尋暫時無法連線，這次回答沒有使用網路搜尋。',
+    'assistant_service_error': '農業知識搜尋暫時異常，這次回答沒有使用網路搜尋。',
+    'default': '農業知識搜尋需要 Gemini 付費層級（免費層級不提供 Google 搜尋），這次回答沒有使用網路搜尋。',
+}
+SEARCH_RULES = '以繁體中文、根據搜尋結果簡潔回答百香果相關農業問題；不確定時直說。涉及用藥時提醒以植物保護資訊系統與在地農業改良場建議為準。'
 
 _USAGE_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 class _Failure(Exception):
@@ -150,7 +168,7 @@ class Assistant:
         credentials = self._credentials()
         if credentials is None:
             return _failure('assistant_not_configured')
-        charts, sources = [], []
+        charts, sources, notices = [], [], []
         try:
             for _ in range(MAX_TOOL_ROUNDS + 1):
                 candidate = self._generate(credentials, {
@@ -167,12 +185,13 @@ class Assistant:
                     if not reply:
                         raise _Failure('assistant_invalid_response', 'empty reply')
                     return {'ok': True, 'reason': None, 'reply': reply, 'charts': charts,
-                            'sources': _unique_sources(sources), 'usage': self._usage(credentials)}
+                            'sources': _unique_sources(sources), 'notices': list(dict.fromkeys(notices)),
+                            'usage': self._usage(credentials)}
                 # Keep the model turn verbatim; newer models need its thought signatures.
                 contents.append({'role': 'model', 'parts': parts})
                 contents.append({'role': 'user', 'parts': [
                     {'functionResponse': {'name': call.get('name'), 'response': self._run_tool(
-                        call, credentials, charts, sources)}}
+                        call, credentials, charts, sources, notices)}}
                     for call in calls
                 ]})
             raise _Failure('assistant_tool_rounds_exceeded')
@@ -204,14 +223,14 @@ class Assistant:
 
     # -- tools ---------------------------------------------------------------
 
-    def _run_tool(self, call, credentials, charts, sources):
+    def _run_tool(self, call, credentials, charts, sources, notices):
         name = call.get('name')
         args = call.get('args') if isinstance(call.get('args'), dict) else {}
         if name == STATS_TOOL['name']:
             try:
                 stats = detection_stats.query(self.detection_root, **{
                     key: args[key] for key in
-                    ('start_date', 'end_date', 'bucket', 'group_by', 'include_photo_only')
+                    ('start_date', 'end_date', 'bucket', 'group_by', 'include_photo_only', 'grades')
                     if key in args
                 })
             except (TypeError, ValueError) as error:
@@ -223,11 +242,19 @@ class Assistant:
             question = args.get('question')
             if not isinstance(question, str) or not question.strip():
                 return {'ok': False, 'error': 'question 不得為空'}
-            candidate = self._generate(credentials, {
-                'systemInstruction': {'parts': [{'text': SEARCH_RULES}]},
-                'contents': [{'role': 'user', 'parts': [{'text': question[:MAX_MESSAGE_CHARS]}]}],
-                'tools': [{'google_search': {}}],
-            })
+            try:
+                candidate = self._generate(credentials, {
+                    'systemInstruction': {'parts': [{'text': SEARCH_RULES}]},
+                    'contents': [{'role': 'user', 'parts': [{'text': question[:MAX_MESSAGE_CHARS]}]}],
+                    'tools': [{'google_search': {}}],
+                })
+            except _Failure as failure:
+                # The daily limit ends the whole turn; any other search failure
+                # (free tier has no grounding) only loses this tool's answer.
+                if failure.reason == 'assistant_quota_exceeded' and failure.detail == 'daily limit':
+                    raise
+                notices.append(SEARCH_UNAVAILABLE.get(failure.reason, SEARCH_UNAVAILABLE['default']))
+                return {'ok': False, 'error': 'search_unavailable', 'message': notices[-1]}
             found = _grounding_sources(candidate)
             sources.extend(found)
             return {'ok': True, 'answer': _text((candidate.get('content') or {}).get('parts') or []),
@@ -242,12 +269,14 @@ class Assistant:
             API_URL.format(model=credentials['model']), payload,
             {'x-goog-api-key': credentials['gemini_api_key']}, timeout,
         )
-        if status == 429:
-            raise _Failure('assistant_quota_exceeded', 'HTTP 429')
-        if 400 <= status < 500:
-            raise _Failure('assistant_rejected', f'HTTP {status}')
         if status != 200:
-            raise _Failure('assistant_service_error', f'HTTP {status}')
+            reason = HTTP_REASONS.get(status) or (
+                'assistant_rejected' if 400 <= status < 500 else 'assistant_service_error')
+            # Gemini's own explanation helps the operator; the key never appears in it.
+            message = str((body.get('error') or {}).get('message') or '')
+            logger.warning('Gemini HTTP %s (%s): %s', status, reason,
+                           message.replace(credentials['gemini_api_key'], '***')[:500])
+            raise _Failure(reason, f'HTTP {status}')
         candidates = body.get('candidates')
         if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
             raise _Failure('assistant_invalid_response', 'no candidates')

@@ -121,11 +121,69 @@ class AssistantTests(SimpleTestCase):
         result = final['contents'][2]['parts'][0]['functionResponse']['response']
         self.assertEqual(result['answer'], '保持通風。')
 
+    def test_grade_filter_reaches_the_stats_tool(self):
+        self.configure()
+        self.data.add(1, '2026-10-15 09:00:00', grade=0,
+                      views_=[_view(color='bad_color'), _view(), _view()])
+        self.data.add(2, '2026-10-15 10:00:00', grade=3,
+                      views_=[_view(color='bad_color'), _view(), _view()])
+        call = {'functionCall': {'name': 'query_detection_stats',
+                                 'args': {'group_by': 'defect', 'grades': ['加工']}}}
+        http = FakeGemini(_candidate(call), _candidate({'text': '加工果都有色澤異常。'}))
+
+        answer = self.ask(http, '加工果裡最常見的瑕疵？')
+
+        response = http.calls[1]['payload']['contents'][2]['parts'][0]['functionResponse']['response']
+        self.assertEqual(response['totals']['graded'], 1)
+        self.assertEqual(response['defects'][0], {'key': 'bad_color', 'label': '色澤異常',
+                                                  'count': 1, 'ratio': 1.0})
+        self.assertEqual(answer['charts'][0]['title'], '瑕疵出現比例（加工）')
+        grades = assistant.STATS_TOOL['parameters']['properties']['grades']
+        self.assertEqual(grades['items']['enum'], ['上等', '中等', '下等', '加工'])
+
+    def test_billing_and_model_errors_have_own_reasons_and_log_without_key(self):
+        self.configure()
+        for status, reason in ((402, 'assistant_billing_required'),
+                               (404, 'assistant_model_unavailable')):
+            with self.subTest(status=status), self.assertLogs('fruit_app.assistant', 'WARNING') as logs:
+                body = {'error': {'message': f'Problem for key secret-key (HTTP {status})'}}
+                answer = self.ask(FakeGemini((status, body)))
+                self.assertEqual(answer['reason'], reason)
+                self.assertEqual(answer['message'], assistant.MESSAGES[reason])
+                output = '\n'.join(logs.output)
+                self.assertIn(f'Problem for key *** (HTTP {status})', output)
+                self.assertNotIn('secret-key', output)
+
+    def test_search_failure_keeps_answer_and_explains_paid_tier(self):
+        self.configure()
+        search_call = _candidate({'functionCall': {'name': 'search_agriculture_knowledge',
+                                                   'args': {'question': '炭疽病防治'}}})
+        http = FakeGemini(search_call, (429, {'error': {'message': 'grounding not available'}}),
+                          _candidate({'text': '目前無法搜尋，請洽在地改良場。'}))
+
+        with self.assertLogs('fruit_app.assistant', 'WARNING'):
+            answer = self.ask(http, '炭疽病怎麼防治？')
+
+        self.assertTrue(answer['ok'])
+        self.assertEqual(answer['reply'], '目前無法搜尋，請洽在地改良場。')
+        self.assertEqual(answer['notices'], [assistant.SEARCH_UNAVAILABLE['default']])
+        self.assertIn('付費層級', answer['notices'][0])
+        result = http.calls[2]['payload']['contents'][2]['parts'][0]['functionResponse']['response']
+        self.assertEqual(result['error'], 'search_unavailable')
+
+    def test_daily_limit_during_search_ends_the_turn(self):
+        self.configure(daily_request_limit=1)
+        search_call = _candidate({'functionCall': {'name': 'search_agriculture_knowledge',
+                                                   'args': {'question': 'x'}}})
+        self.assertEqual(self.ask(FakeGemini(search_call))['reason'], 'assistant_quota_exceeded')
+
     def test_failures_return_structured_reasons(self):
         self.configure()
         cases = (
             (assistant._Failure('assistant_offline'), 'assistant_offline'),
             ((429, {}), 'assistant_quota_exceeded'),
+            ((402, {}), 'assistant_billing_required'),
+            ((404, {}), 'assistant_model_unavailable'),
             ((400, {}), 'assistant_rejected'),
             ((503, {}), 'assistant_service_error'),
             ((200, {'candidates': []}), 'assistant_invalid_response'),

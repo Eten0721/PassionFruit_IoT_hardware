@@ -1814,6 +1814,12 @@ textarea {
     background: #ffffff;
 }
 
+.assistant-entry .assistant-notice {
+    margin-top: 6px;
+    color: var(--danger);
+    font-size: 0.85rem;
+}
+
 .assistant-sources {
     margin: 4px 0 0;
     padding-left: 18px;

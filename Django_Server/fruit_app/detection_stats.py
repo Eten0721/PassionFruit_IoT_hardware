@@ -37,11 +37,13 @@ OTHER_STATUSES = ('abandoned', 'needs_review')
 
 def query(detection_root: Path, *, start_date: str | None = None,
           end_date: str | None = None, bucket: str = 'none', group_by: str = 'grade',
-          include_photo_only: bool = False) -> dict:
+          include_photo_only: bool = False, grades: list[str] | None = None) -> dict:
     """Return statistics and one chart spec for an inclusive local date range.
 
-    Invalid parameters raise ``ValueError``; an empty dataset is a valid,
-    all-zero answer.
+    ``grades`` keeps only graded fruits of those grades (e.g. ``['加工']``), so
+    defect ratios use that grade's fruit count as the denominator and the
+    ``abandoned``/``needs_review`` totals drop to zero. Invalid parameters
+    raise ``ValueError``; an empty dataset is a valid, all-zero answer.
     """
     if bucket not in BUCKETS:
         raise ValueError(f'不支援的統計級距：{bucket!r}')
@@ -49,6 +51,7 @@ def query(detection_root: Path, *, start_date: str | None = None,
         raise ValueError(f'不支援的分組方式：{group_by!r}')
     if type(include_photo_only) is not bool:
         raise ValueError('include_photo_only 必須是 true 或 false。')
+    grades = _parse_grades(grades)
     start = _parse_date(start_date, 'start_date')
     end = _parse_date(end_date, 'end_date')
     if start and end and start > end:
@@ -59,7 +62,14 @@ def query(detection_root: Path, *, start_date: str | None = None,
         end=datetime.combine(end + timedelta(days=1), datetime.min.time()) if end else None,
         include_photo_only=include_photo_only,
     )
-    summary = summarize(loaded['records'], bucket=bucket)
+    records = loaded['records']
+    if grades:
+        records = [record for record in records
+                   if record['status'] == 'graded' and record['label'] in grades]
+    summary = summarize(records, bucket=bucket)
+    chart = chart_spec(summary, group_by=group_by)
+    if grades:
+        chart['title'] += f"（{'、'.join(grades)}）"
     return {
         'ok': True,
         'filters': {
@@ -67,11 +77,24 @@ def query(detection_root: Path, *, start_date: str | None = None,
             'end_date': end.isoformat() if end else None,
             'bucket': bucket, 'group_by': group_by,
             'include_photo_only': include_photo_only,
+            'grades': grades,
         },
         **summary,
         'skipped': loaded['skipped'],
-        'chart': chart_spec(summary, group_by=group_by),
+        'chart': chart,
     }
+
+
+def _parse_grades(grades):
+    """None or [] means all grades; otherwise distinct labels in display order."""
+    if grades is None:
+        return None
+    if not isinstance(grades, list) or any(not isinstance(grade, str) for grade in grades):
+        raise ValueError('grades 必須是等級名稱陣列。')
+    unknown = set(grades) - set(GRADE_ORDER)
+    if unknown:
+        raise ValueError(f"不支援的等級：{'、'.join(sorted(unknown))}；可用 {'、'.join(GRADE_ORDER)}")
+    return [grade for grade in GRADE_ORDER if grade in grades] or None
 
 
 def load_records(detection_root: Path, *, start: datetime | None = None,

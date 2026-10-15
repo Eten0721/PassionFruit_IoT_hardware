@@ -122,6 +122,12 @@
             const item = appendEntry('model', payload.reply);
             (payload.charts || []).forEach((spec) => appendChart(item, spec));
             appendSources(item, payload.sources || []);
+            (payload.notices || []).forEach((notice) => {
+                const note = document.createElement('p');
+                note.className = 'assistant-notice';
+                note.textContent = `⚠ ${notice}`;
+                item.appendChild(note);
+            });
         } catch (error) {
             pending.remove();
             history.pop();

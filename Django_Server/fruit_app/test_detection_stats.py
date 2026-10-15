@@ -108,6 +108,32 @@ class DetectionStatsTests(SimpleTestCase):
         self.assertEqual(with_photo['totals']['graded'], 4)
         self.assertEqual({d['key']: d['count'] for d in with_photo['defects']}['anthracnose'], 2)
 
+    def test_grade_filter_makes_that_grade_the_defect_denominator(self):
+        self.data.add(1, '2026-10-01 09:00:00', grade=0, views_=[
+            _view(color='bad_color', defects=['anthracnose']), _view(), _view()])
+        self.data.add(2, '2026-10-01 10:00:00', grade=0)
+        self.data.add(3, '2026-10-01 11:00:00', grade=3, views_=[
+            _view(color='bad_color'), _view(), _view()])
+        self.data.add(4, '2026-10-01 12:00:00', grade=1)
+        self.data.add(5, '2026-10-01 13:00:00', status='abandoned')
+
+        processing = detection_stats.query(self.data.root, group_by='defect', grades=['加工'])
+
+        self.assertEqual(processing['totals'], {'fruits': 2, 'graded': 2, 'abandoned': 0,
+                                                'needs_review': 0})
+        defects = {d['key']: (d['count'], d['ratio']) for d in processing['defects']}
+        self.assertEqual(defects['bad_color'], (1, 0.5))
+        self.assertEqual(defects['anthracnose'], (1, 0.5))
+        self.assertEqual(processing['filters']['grades'], ['加工'])
+        self.assertEqual(processing['chart']['title'], '瑕疵出現比例（加工）')
+        both = detection_stats.query(self.data.root, grades=['加工', '上等', '加工'])
+        self.assertEqual(both['filters']['grades'], ['上等', '加工'])
+        self.assertEqual(both['totals']['graded'], 3)
+        self.assertEqual(detection_stats.query(self.data.root, grades=[])['totals']['fruits'], 5)
+        for grades in (['特級'], '加工', [3]):
+            with self.subTest(grades=grades), self.assertRaises(ValueError):
+                detection_stats.query(self.data.root, grades=grades)
+
     def test_date_range_is_inclusive_and_buckets_build_time_series(self):
         self.data.add(1, '2026-09-30T23:59:00', grade=3)
         self.data.add(2, '2026-10-01 00:00:00', grade=2, views_=[_view(defects=['abrasion']), _view(), _view()])
@@ -382,3 +408,7 @@ class TrendAlertViewTests(SimpleTestCase):
             ok = self.client.get('/api/detection/stats/', {'group_by': 'defect'})
             self.assertEqual(ok.status_code, 200)
             self.assertEqual(ok.json()['totals']['fruits'], 0)
+            graded = self.client.get('/api/detection/stats/', {'grade': ['加工', '下等']})
+            self.assertEqual(graded.json()['filters']['grades'], ['下等', '加工'])
+            bad = self.client.get('/api/detection/stats/', {'grade': '特級'})
+            self.assertEqual(bad.json()['reason'], 'invalid_stats_query')

@@ -2110,6 +2110,8 @@ def detection_stats_api(request):
             start_date=params.get('start_date'), end_date=params.get('end_date'),
             bucket=params.get('bucket', 'none'), group_by=params.get('group_by', 'grade'),
             include_photo_only=params.get('include_photo_only', 'false') == 'true',
+            # ``grade=加工&grade=下等``; absent means every grade.
+            grades=params.getlist('grade') or None,
         )
     except ValueError as exc:
         return _json_error(str(exc), reason='invalid_stats_query')
