@@ -18,6 +18,9 @@ DEFECT_NAMES = {
     'abrasion': '擦傷', 'anthracnose': '炭疽病',
     'insect_bite': '蟲咬', 'insect_track': '畫圖蟲',
 }
+# Per-fruit observation keys in display order; statistics and trend alerts
+# reuse the same keys and names so every surface counts a fruit the same way.
+OBSERVATION_NAMES = {'bad_color': '色澤異常', 'wrinkle': '皺褶', **DEFECT_NAMES}
 PHOTO_NAMES = ('img_01.jpg', 'img_02.jpg', 'img_03.jpg')
 PANEL_WIDTH = 640
 PHOTO_HEIGHT = 480
@@ -160,7 +163,12 @@ def _read_photo(path):
         return None
 
 
-def _view(index, image, root):
+def view_observations(index: int, image: dict) -> tuple[list[str], bool]:
+    """Return one view's successful observation keys and whether it finished.
+
+    A fruit's findings are the union over views with ``complete`` True; an
+    unfinished view never adds or clears a finding. Malformed views raise.
+    """
     for field in ('roi', 'models', 'artifacts'):
         if field in image and not isinstance(image[field], dict):
             raise ValueError(f'照片 {index} 的 {field} 必須是物件。')
@@ -168,14 +176,14 @@ def _view(index, image, root):
     for role in ('color', 'wrinkle', 'defect'):
         if role in models and not isinstance(models[role], dict):
             raise ValueError(f'照片 {index} 的 models.{role} 必須是物件。')
-    observations = []
+    keys = []
     color = models.get('color') or {}
     wrinkle = models.get('wrinkle') or {}
     defect = models.get('defect') or {}
     if color.get('status') == 'ok' and color.get('class_name') == 'bad_color':
-        observations.append('色澤異常')
+        keys.append('bad_color')
     if wrinkle.get('status') == 'ok' and wrinkle.get('display_label') == '有皺褶（壞）':
-        observations.append('皺褶')
+        keys.append('wrinkle')
     if defect.get('status') == 'ok':
         detections = defect.get('detections')
         if not isinstance(detections, list) or any(not isinstance(item, dict) for item in detections):
@@ -184,12 +192,19 @@ def _view(index, image, root):
             name = detection.get('class_name')
             if name not in DEFECT_NAMES:
                 raise ValueError(f'未知的局部瑕疵類別：{name!r}')
-            if DEFECT_NAMES[name] not in observations:
-                observations.append(DEFECT_NAMES[name])
+            if name not in keys:
+                keys.append(name)
     complete = (image.get('roi') or {}).get('status') == 'ok' and all(
         (models.get(role) or {}).get('status') == 'ok'
         for role in ('color', 'wrinkle', 'defect')
     )
+    return keys, complete
+
+
+def _view(index, image, root):
+    keys, complete = view_observations(index, image)
+    observations = [OBSERVATION_NAMES[key] for key in keys]
+    defect = (image.get('models') or {}).get('defect') or {}
     artifacts = image.get('artifacts') or {}
     marked_filename = artifacts.get('defect_marked')
     marked_available = (isinstance(marked_filename, str)

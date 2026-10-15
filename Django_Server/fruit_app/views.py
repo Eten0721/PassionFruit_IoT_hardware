@@ -1,5 +1,6 @@
 import csv
 import json
+import logging
 import os
 import re
 import secrets
@@ -21,14 +22,17 @@ from django.views.decorators.http import require_GET, require_POST
 
 from . import (
     api_payloads,
+    assistant,
     capture_session,
     capture_timing,
     dataset_store,
     detection,
+    detection_stats,
     grading,
     motor_commands,
     notification_delivery,
     network_recovery,
+    trend_alerts,
     webrtc_signaling,
 )
 from .runtime_state import RuntimeState
@@ -36,6 +40,7 @@ from . import local_network
 from .local_network import network_required
 
 
+logger = logging.getLogger(__name__)
 LABELS = ['上等', '中等', '下等', '加工']
 CLASSIFICATION_CODES = grading.CLASSIFICATION_CODES
 IMAGE_COUNT = 3
@@ -1695,7 +1700,7 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir, session):
     except Exception as exc:
         result = None
         error = f'{type(exc).__name__}: {exc}'
-    notice = _queue_notification(result)
+    notice = _queue_notification(result) + _check_trend_alerts(result)
 
     with STATE_LOCK:
         if not APP_STATE.operation_matches(operation_token):
@@ -1901,7 +1906,7 @@ def manual_grade_api(request):
             APP_STATE.finish_dataset_operation(operation_token)
         raise
 
-    notice = _queue_notification(outcome.get('result'))
+    notice = _queue_notification(outcome.get('result')) + _check_trend_alerts(outcome.get('result'))
     with STATE_LOCK:
         APP_STATE.finish_dataset_operation(operation_token)
         if not outcome['ok']:
@@ -1970,6 +1975,148 @@ def _queue_notification(result):
     except (OSError, ValueError) as exc:
         return f' LINE 通知未能排入待送：{exc}'
     return ' 已排入 LINE 加工果通知待送。' if queued['queued'] else ''
+
+
+def trend_alert_monitor():
+    runtime_root = Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).parent
+    return trend_alerts.TrendAlerts(
+        runtime_root / 'trend_alerts.json', _dataset_root('detection'), notification_outbox(),
+        writer=lambda facts: dashboard_assistant().write_alert_advice(facts),
+    )
+
+
+def _check_trend_alerts(result):
+    """Start the trend rules after a saved hardware grade; never raises.
+
+    The check may wait for Gemini wording, so it runs on its own daemon
+    thread: detection, manual takeover and sorting never wait for it. New
+    alerts show on the Dashboard and in the LINE outbox.
+    """
+    if (not result or result.get('hardware_mode') != 'hardware'
+            or (result.get('storage') or {}).get('status') != 'saved'
+            or (result.get('classification') or {}).get('status') != 'graded'):
+        return ''
+    try:
+        threading.Thread(target=_run_trend_check, name='trend-alert-check', daemon=True).start()
+    except RuntimeError as exc:
+        return f' 趨勢提醒檢查未啟動：{exc}'
+    return ''
+
+
+def _run_trend_check():
+    try:
+        outcome = trend_alert_monitor().check()
+    except Exception:
+        logger.exception('Trend alert check failed')
+        return
+    for error in outcome['errors']:
+        logger.warning('Trend alert could not be queued for LINE: %s', error)
+
+
+def _trend_alert_payload():
+    try:
+        return trend_alert_monitor().status()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return {'ok': False, 'reason': 'trend_alerts_unreadable',
+                'error': f'趨勢提醒設定無法讀取：{exc}'}
+
+
+@csrf_exempt
+@require_POST
+@network_required(cleanup=True, operation='notification')  # Alert settings never move hardware.
+def trend_alerts_api(request):
+    """Save the trend-alert switch, windows and thresholds from the Dashboard."""
+    try:
+        changes = _request_data(request)
+        changes.pop('dataset_mode', None)  # Added by every Dashboard POST; not a setting.
+        trend_alert_monitor().update_settings(changes)
+    except ValueError as exc:
+        return _json_error(str(exc), reason='invalid_trend_alert_settings')
+    except OSError as exc:
+        return _json_error(f'無法保存趨勢提醒設定：{exc}', status=503,
+                           reason='trend_alert_settings_persist_failed')
+    with STATE_LOCK:
+        return JsonResponse(_state_payload())
+
+
+def dashboard_assistant():
+    runtime_root = Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).parent
+    return assistant.Assistant(
+        runtime_root / 'assistant_credentials.json', runtime_root / 'assistant_usage.json',
+        _dataset_root('detection'), Path(settings.BASE_DIR).parent / 'docs',
+    )
+
+
+@csrf_exempt
+@require_POST
+@network_required(cleanup=True, operation='assistant')  # Read-only; never takes STATE_LOCK.
+def assistant_api(request):
+    """Answer one Dashboard chat turn; expected failures return a reason."""
+    try:
+        payload = dashboard_assistant().ask(_request_data(request).get('messages'))
+    except ValueError as exc:
+        return _json_error(str(exc), reason='invalid_assistant_request')
+    except OSError as exc:
+        return _json_error(f'助手用量紀錄無法保存：{type(exc).__name__}', status=503,
+                           reason='assistant_usage_persist_failed')
+    return _no_store_response(JsonResponse(payload))
+
+
+ASSISTANT_ICON_MESSAGES = {
+    'icon_empty': '請選擇一張圖片。',
+    'icon_too_large': '圖片太大，請使用 10 MB、4000 萬像素以內的圖片。',
+    'icon_unreadable': '無法讀取這張圖片，請改用 JPG 或 PNG。',
+}
+
+
+def _assistant_icon_path():
+    return Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).with_name('assistant_icon.png')
+
+
+@csrf_exempt
+@require_POST
+@network_required(cleanup=True, operation='assistant')  # Only changes the chat button picture.
+def assistant_icon_api(request):
+    """Upload a launcher picture (auto-cropped and resized) or reset to text."""
+    if request.POST.get('reset') == 'true':
+        _assistant_icon_path().unlink(missing_ok=True)
+        return JsonResponse({'ok': True, 'reason': None, 'has_icon': False})
+    upload = request.FILES.get('icon')
+    try:
+        saved = assistant.save_launcher_icon(upload.read() if upload else b'', _assistant_icon_path())
+    except OSError as exc:
+        return _json_error(f'無法保存按鈕圖片：{type(exc).__name__}', status=503,
+                           reason='icon_persist_failed')
+    if not saved['ok']:
+        return _json_error(ASSISTANT_ICON_MESSAGES[saved['reason']], reason=saved['reason'])
+    return JsonResponse({'ok': True, 'reason': None, 'has_icon': True})
+
+
+@require_GET
+def assistant_icon_image(request):
+    path = _assistant_icon_path()
+    if not path.is_file():
+        raise Http404('尚未設定助手按鈕圖片')
+    return _no_store_response(FileResponse(path.open('rb'), content_type='image/png'))
+
+
+@require_GET
+def detection_stats_api(request):
+    """Read-only grade and defect statistics over the detection dataset."""
+    params = request.GET
+    try:
+        payload = detection_stats.query(
+            _dataset_root('detection'),
+            start_date=params.get('start_date'), end_date=params.get('end_date'),
+            bucket=params.get('bucket', 'none'), group_by=params.get('group_by', 'grade'),
+            include_photo_only=params.get('include_photo_only', 'false') == 'true',
+            # ``grade=加工&grade=下等``; absent means every grade.
+            grades=params.getlist('grade') or None,
+            compare_grades=params.get('compare_grades', 'false') == 'true',
+        )
+    except ValueError as exc:
+        return _json_error(str(exc), reason='invalid_stats_query')
+    return _no_store_response(JsonResponse(payload))
 
 
 def _notification_payload():
@@ -4885,6 +5032,7 @@ def _state_payload(extra=None):
         'photo_detection_interval_ms': round(PHOTO_DETECTION_INTERVAL_SECONDS * 1000),
         'detection_error': APP_STATE.get('detection_error'),
         'notification': _notification_payload(),
+        'trend_alerts': _trend_alert_payload(),
         'can_manual_grade': manual_grade_disabled_reason is None,
         'can_manual_abandon': manual_grade_disabled_reason is None and _photo_only_session(),
         'manual_grade_disabled_reason': manual_grade_disabled_reason,

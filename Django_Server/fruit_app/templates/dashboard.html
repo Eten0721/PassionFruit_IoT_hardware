@@ -114,6 +114,30 @@
                     <p id="notification-status" class="control-guidance" aria-live="polite"></p>
                 </div>
 
+                <form id="trend-alert-form" class="notification-block trend-alert-block" novalidate>
+                    <div class="subheading-row">
+                        <h3>瑕疵趨勢提醒</h3>
+                        <span>固定規則・只計使用硬體</span>
+                    </div>
+                    <label class="trend-alert-switch"><input id="trend-alert-enabled" type="checkbox"> 啟用趨勢提醒（LINE 與此處顯示）</label>
+                    <div class="trend-alert-grid">
+                        <label>視窗天數<input id="trend-alert-window" type="number" min="1" max="60" step="1"></label>
+                        <label>冷卻（小時）<input id="trend-alert-cooldown" type="number" min="0" max="720" step="1"></label>
+                        <label>當日突增倍數<input id="trend-alert-spike-factor" type="number" min="1.1" max="20" step="0.1"></label>
+                        <label>當日最少顆數<input id="trend-alert-spike-min" type="number" min="1" max="10000" step="1"></label>
+                    </div>
+                    <div class="trend-alert-table-wrap">
+                        <table class="trend-alert-table">
+                            <caption>各類參數（比例以已判級的硬體果實計）</caption>
+                            <thead><tr><th scope="col">類別</th><th scope="col">門檻 %</th><th scope="col">上升百分點</th><th scope="col">最少顆數</th><th scope="col">提醒方向</th></tr></thead>
+                            <tbody id="trend-alert-categories"></tbody>
+                        </table>
+                    </div>
+                    <button id="btn-trend-alert-save" type="submit" class="button secondary">保存提醒設定</button>
+                    <p id="trend-alert-status" class="control-guidance" aria-live="polite"></p>
+                    <ol id="trend-alert-list" class="trend-alert-list"></ol>
+                </form>
+
                 <fieldset id="classification-panel" class="classify-panel">
                     <legend id="classification-title">人工分類</legend>
                     <p id="classification-guidance">確認三張照片後，將目前資料提交到對應等級。</p>
@@ -380,6 +404,40 @@
     </div>
 </dialog>
 
+<button id="assistant-launcher" class="button assistant-launcher" type="button" aria-expanded="false" aria-controls="assistant-panel" aria-label="問助手">
+    <img id="assistant-launcher-icon" class="assistant-launcher-icon" alt="" hidden>
+    <span id="assistant-launcher-text">問助手</span>
+</button>
+<section id="assistant-panel" class="assistant-panel" aria-labelledby="assistant-title" hidden>
+    <div class="assistant-header">
+        <strong id="assistant-title">Dashboard 助手</strong>
+        <span>只查詢・需網際網路</span>
+        <button id="assistant-close" class="button secondary" type="button">關閉</button>
+    </div>
+    <ol id="assistant-log" class="assistant-log" aria-live="polite">
+        <li class="assistant-entry model"><p>可以問檢測統計（例如「這週炭疽病比例」）、啟動與部署步驟，或百香果病蟲害知識。數字與圖表由系統計算。</p></li>
+    </ol>
+    <form id="assistant-form" class="assistant-form">
+        <label for="assistant-input" class="visually-hidden">輸入問題</label>
+        <textarea id="assistant-input" rows="2" maxlength="2000" placeholder="輸入問題，Enter 送出、Shift+Enter 換行"></textarea>
+        <button id="assistant-send" class="button" type="submit">送出</button>
+    </form>
+    <p class="assistant-note">對話只保存在此頁面，重新整理即清除；助手無法操作機器。</p>
+    <details class="assistant-settings">
+        <summary>更換按鈕圖片</summary>
+        <p class="assistant-note">上傳後自動裁成正方形並縮小，JPG／PNG、10 MB 以內。</p>
+        <div class="assistant-icon-actions">
+            <label class="button secondary" for="assistant-icon-input">選擇圖片</label>
+            <input id="assistant-icon-input" class="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
+            <button id="assistant-icon-reset" class="button secondary" type="button">恢復文字按鈕</button>
+        </div>
+        <p id="assistant-icon-status" class="assistant-note" aria-live="polite"></p>
+    </details>
+</section>
+
 <script src="{% static 'fruit_app/js/dashboard.js' %}"></script>
+<script src="{% static 'fruit_app/vendor/chart-4.4.1.umd.js' %}"></script>
+<script src="{% static 'fruit_app/js/assistant_render.js' %}"></script>
+<script src="{% static 'fruit_app/js/assistant.js' %}"></script>
 </body>
 </html>

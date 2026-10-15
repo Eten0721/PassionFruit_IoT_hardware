@@ -1345,8 +1345,74 @@ textarea {
     gap: 8px;
 }
 
-#notification-status {
+#notification-status,
+#trend-alert-status {
     white-space: pre-line;
+}
+
+.trend-alert-block {
+    margin-top: 12px;
+}
+
+.trend-alert-switch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.trend-alert-switch input {
+    width: auto;
+    min-height: 0;
+    margin: 0;
+}
+
+.trend-alert-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 8px;
+    width: 100%;
+}
+
+.trend-alert-grid label {
+    display: grid;
+    gap: 4px;
+    color: var(--text-soft);
+    font-size: 0.9rem;
+}
+
+.trend-alert-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+}
+
+.trend-alert-table {
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.trend-alert-table caption {
+    text-align: left;
+    color: var(--text-soft);
+    padding-bottom: 4px;
+}
+
+.trend-alert-table th,
+.trend-alert-table td {
+    padding: 2px 4px;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.trend-alert-table input {
+    width: 72px;
+}
+
+.trend-alert-list {
+    margin: 0;
+    padding-left: 20px;
+    white-space: pre-line;
+    color: var(--text-soft);
+    font-size: 0.9rem;
 }
 
 .operation-details > summary .summary-badge {
@@ -1614,5 +1680,217 @@ textarea {
 
     .detection-media {
         min-height: 110px;
+    }
+}
+
+/* Dashboard assistant: floating, read-only chat in the bottom-right corner. */
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+.assistant-launcher {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 40;
+    border-radius: 999px;
+    box-shadow: var(--shadow);
+}
+
+.assistant-launcher.has-icon {
+    width: 64px;
+    height: 64px;
+    padding: 0;
+    overflow: hidden;
+    background: var(--surface);
+    border-color: var(--border-strong);
+}
+
+.assistant-launcher-icon {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.assistant-launcher-icon[hidden] {
+    display: none;
+}
+
+.assistant-settings summary {
+    cursor: pointer;
+    color: var(--text-soft);
+    font-size: 0.85rem;
+}
+
+.assistant-icon-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 6px 0;
+}
+
+.assistant-panel {
+    position: fixed;
+    right: 20px;
+    bottom: 96px;
+    z-index: 41;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto auto auto;
+    gap: 8px;
+    width: min(420px, calc(100vw - 32px));
+    height: min(640px, calc(100vh - 110px));
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    padding: 12px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+}
+
+.assistant-panel[hidden] {
+    display: none;
+}
+
+.assistant-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.assistant-header span {
+    margin-right: auto;
+    color: var(--text-soft);
+    font-size: 0.85rem;
+}
+
+.assistant-log {
+    display: grid;
+    align-content: start;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+}
+
+.assistant-entry {
+    max-width: 92%;
+    border-radius: var(--radius-small);
+    padding: 8px 10px;
+    background: var(--surface-muted);
+    overflow-wrap: anywhere;
+}
+
+.assistant-entry p {
+    margin: 0;
+    white-space: pre-wrap;
+}
+
+.assistant-markdown > * {
+    margin: 0 0 6px;
+}
+
+.assistant-markdown > :last-child {
+    margin-bottom: 0;
+}
+
+.assistant-markdown h4 {
+    font-size: 0.95rem;
+}
+
+.assistant-markdown ul,
+.assistant-markdown ol {
+    padding-left: 20px;
+}
+
+/* The chat log is itself a list, so set marker styles explicitly. */
+.assistant-markdown ul {
+    list-style: disc;
+}
+
+.assistant-markdown ol {
+    list-style: decimal;
+}
+
+.assistant-markdown blockquote {
+    border-left: 3px solid var(--border-strong);
+    padding-left: 8px;
+    color: var(--text-soft);
+}
+
+.assistant-markdown code {
+    border-radius: 4px;
+    padding: 0 3px;
+    background: var(--surface-strong);
+    font-size: 0.9em;
+}
+
+.assistant-entry.user {
+    justify-self: end;
+    background: var(--primary-soft);
+}
+
+.assistant-entry.pending {
+    color: var(--text-soft);
+}
+
+.assistant-entry.error {
+    background: var(--danger-soft);
+    color: var(--danger);
+}
+
+.assistant-chart {
+    position: relative;
+    height: 280px;
+    margin: 8px 0 0;
+    border-radius: var(--radius-small);
+    padding: 6px;
+    background: #ffffff;
+}
+
+.assistant-entry .assistant-notice {
+    margin-top: 6px;
+    color: var(--danger);
+    font-size: 0.85rem;
+}
+
+.assistant-sources {
+    margin: 4px 0 0;
+    padding-left: 18px;
+    font-size: 0.85rem;
+}
+
+.assistant-form {
+    display: flex;
+    gap: 8px;
+}
+
+.assistant-form textarea {
+    flex: 1;
+    min-height: 0;
+    resize: none;
+}
+
+.assistant-note {
+    margin: 0;
+    color: var(--text-soft);
+    font-size: 0.8rem;
+}
+
+@media (max-width: 640px) {
+    .assistant-launcher {
+        right: 16px;
+        bottom: 16px;
+    }
+
+    .assistant-panel {
+        right: 16px;
+        bottom: 88px;
+        width: calc(100vw - 32px);
     }
 }

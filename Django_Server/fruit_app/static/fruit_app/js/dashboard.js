@@ -48,6 +48,20 @@ const remoteVideo = document.getElementById('remote-video');
     const notificationToggle = document.getElementById('btn-notification-toggle');
     const notificationModeLabel = document.getElementById('notification-mode-label');
     const notificationStatus = document.getElementById('notification-status');
+    const trendAlertForm = document.getElementById('trend-alert-form');
+    const trendAlertStatus = document.getElementById('trend-alert-status');
+    const trendAlertList = document.getElementById('trend-alert-list');
+    const trendAlertSave = document.getElementById('btn-trend-alert-save');
+    const trendAlertCategories = document.getElementById('trend-alert-categories');
+    const trendAlertFields = [
+        ['trend-alert-window', 'window_days'],
+        ['trend-alert-cooldown', 'cooldown_hours'],
+        ['trend-alert-spike-factor', 'spike_factor'],
+        ['trend-alert-spike-min', 'spike_min_samples'],
+    ].map(([id, key]) => ({ input: document.getElementById(id), key }));
+    // Per-category columns: setting key and the scale between the input and the API value.
+    const TREND_CATEGORY_FIELDS = [['threshold', 100], ['rise', 100], ['min_samples', 1]];
+    const trendAlertEnabled = document.getElementById('trend-alert-enabled');
     const actionGuidance = document.getElementById('action-guidance');
     const operationDetails = document.getElementById('operation-details');
     const operationToggle = document.getElementById('btn-operation-toggle');
@@ -567,6 +581,8 @@ const remoteVideo = document.getElementById('remote-video');
         renderGradeCard(data);
         renderNotification(data.notification);
         notificationToggle.disabled ||= !data.network?.selected;
+        renderTrendAlerts(data.trend_alerts);
+        trendAlertSave.disabled ||= !data.network?.selected;
         setTextIfChanged(document.getElementById('dataset-scope'),
             `目前模式：${data.work_mode === 'detection' ? '自動檢測' : '蒐集'}`);
         renderTiming(data.timing || {});
@@ -1295,6 +1311,127 @@ const remoteVideo = document.getElementById('remote-video');
             setMessage(`通知開關切換失敗：${error.message}`);
         } finally {
             endControlAction(notificationToggle);
+        }
+    }
+
+    const TREND_DELIVERY_TEXT = {
+        pending: 'LINE 待送', sent: 'LINE 已送出', failed: 'LINE 失敗', uncertain: 'LINE 送達不明',
+    };
+
+    function trendCategoryRows(trend) {
+        const keys = Object.keys(trend.settings.categories);
+        if (trendAlertCategories.dataset.keys === keys.join(',')) return;
+        trendAlertCategories.dataset.keys = keys.join(',');
+        trendAlertCategories.replaceChildren(...keys.map((key) => {
+            const label = trend.labels[key] || key;
+            const row = document.createElement('tr');
+            const name = document.createElement('th');
+            name.scope = 'row';
+            name.textContent = label;
+            row.appendChild(name);
+            TREND_CATEGORY_FIELDS.forEach(([field]) => {
+                const cell = document.createElement('td');
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.step = field === 'min_samples' ? '1' : '0.1';
+                input.dataset.category = key;
+                input.dataset.field = field;
+                input.setAttribute('aria-label', `${label} ${field}`);
+                cell.appendChild(input);
+                row.appendChild(cell);
+            });
+            const cell = document.createElement('td');
+            const select = document.createElement('select');
+            select.dataset.category = key;
+            select.dataset.field = 'direction';
+            select.setAttribute('aria-label', `${label} 提醒方向`);
+            Object.entries(trend.directions).forEach(([value, text]) => select.add(new Option(text, value)));
+            cell.appendChild(select);
+            row.appendChild(cell);
+            return row;
+        }));
+    }
+
+    function trendScale(field) {
+        return (TREND_CATEGORY_FIELDS.find(([name]) => name === field) || [])[1];
+    }
+
+    function renderTrendAlerts(trend) {
+        if (!trend || trend.error) {
+            setTextIfChanged(trendAlertStatus, trend?.error || '趨勢提醒狀態無法取得');
+            trendAlertSave.disabled = true;
+            return;
+        }
+        const settings = trend.settings;
+        trendCategoryRows(trend);
+        // Polling must not overwrite values the operator is still editing.
+        if (!trendAlertForm.dataset.dirty) {
+            trendAlertEnabled.checked = Boolean(settings.enabled);
+            trendAlertFields.forEach(({ input, key }) => { input.value = String(settings[key]); });
+            trendAlertCategories.querySelectorAll('[data-category]').forEach((input) => {
+                const value = settings.categories[input.dataset.category][input.dataset.field];
+                const scale = trendScale(input.dataset.field);
+                input.value = scale ? String(Math.round(value * scale * 10) / 10) : value;
+            });
+        }
+        trendAlertSave.disabled = Boolean(controlActionInFlight);
+        const line = trend.line || {};
+        setTextIfChanged(trendAlertStatus, [
+            settings.enabled
+                ? `各類比例達門檻、比前 ${settings.window_days} 天上升，或今日達前期 ${settings.spike_factor} 倍時提醒；同類 ${settings.cooldown_hours} 小時內不重複。有 Gemini 金鑰時由 AI 撰寫說明，數字一律由系統填入。`
+                : '已關閉：不檢查也不發送趨勢提醒。',
+            line.configured ? null : `LINE 尚未完成設定：${line.config_reason}（提醒仍會顯示在此）`,
+        ].filter(Boolean).join('\n'));
+        const recent = trend.recent || [];
+        const signature = recent.map((alert) => `${alert.id}:${alert.delivery?.status || ''}`).join('|');
+        if (trendAlertList.dataset.signature === signature) return;
+        trendAlertList.dataset.signature = signature;
+        trendAlertList.replaceChildren(...recent.slice(0, 5).map((alert) => {
+            const item = document.createElement('li');
+            const delivery = alert.delivery;
+            item.textContent = `${alert.created_at.replace('T', ' ')}・`
+                + `${delivery ? (TREND_DELIVERY_TEXT[delivery.status] || delivery.status) : 'LINE 未排送'}\n`
+                + alert.text.trim();
+            return item;
+        }));
+    }
+
+    function trendNumber(input, scale = 1) {
+        const value = Number(input.value);
+        if (input.value === '' || !Number.isFinite(value)) return null;
+        return value / scale;
+    }
+
+    async function saveTrendAlerts(event) {
+        event.preventDefault();
+        const settings = { enabled: trendAlertEnabled.checked, categories: {} };
+        for (const { input, key } of trendAlertFields) {
+            settings[key] = trendNumber(input);
+        }
+        trendAlertCategories.querySelectorAll('[data-category]').forEach((input) => {
+            const params = (settings.categories[input.dataset.category] ||= {});
+            const scale = trendScale(input.dataset.field);
+            params[input.dataset.field] = scale ? trendNumber(input, scale) : input.value;
+        });
+        const values = [...trendAlertFields.map(({ key }) => settings[key]),
+            ...Object.values(settings.categories).flatMap((params) => Object.values(params))];
+        if (values.includes(null)) {
+            setMessage('趨勢提醒設定必須填入數字。');
+            return;
+        }
+        if (!beginControlAction('trend_alerts', trendAlertSave)) {
+            return;
+        }
+        try {
+            const payload = await postJson('/api/trend_alerts/', settings);
+            delete trendAlertForm.dataset.dirty;
+            lastState = payload;
+            renderState(payload);
+            setMessage('趨勢提醒設定已保存。');
+        } catch (error) {
+            setMessage(`趨勢提醒設定保存失敗：${error.message}`);
+        } finally {
+            endControlAction(trendAlertSave);
         }
     }
 
@@ -2165,6 +2302,8 @@ const remoteVideo = document.getElementById('remote-video');
         }
     });
     notificationToggle.addEventListener('click', toggleNotification);
+    trendAlertForm.addEventListener('submit', saveTrendAlerts);
+    trendAlertForm.addEventListener('input', () => { trendAlertForm.dataset.dirty = 'true'; });
     recaptureButton.addEventListener('click', recaptureCurrent);
     document.getElementById('btn-open-folder').addEventListener('click', openDatasetFolder);
     discardButton.addEventListener('click', discardCurrent);
