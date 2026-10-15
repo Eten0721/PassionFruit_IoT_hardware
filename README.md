@@ -1,5 +1,9 @@
 # 百香果 IoT 三站影像採集與分類系統
 
+## 快速開始（Windows）
+
+從 [Releases](https://github.com/Eten0721/PassionFruit_IoT_hardware/releases) 下載最新版的 **Source code (zip)** 並解壓縮，雙擊 `啟動系統.bat`；第一次會自動安裝所需環境，完成後開啟 Dashboard。只用電腦與手機相機時，依 [快速開始（不含 ESP32）](docs/快速開始.md) 操作；ESP32 配網、硬體模式與更新方式見 [完整部署與操作說明](docs/環境部署說明文件.md)。
+
 本專案整合 ESP32、Django、手機相機與伺服機構，建立百香果單顆送料、三站定點拍攝、Dataset 管理與四級實體分流。現行軟體已接入送料、三站拍攝、Gate 3 等待人工分類與複合分流，也提供純拍攝、YOLO 外觀檢測及區域網路配網；新平台、送料機構、分類器與供電的完整實機驗收仍未完成。
 
 ![早期機構參考圖，現行配置以規格與驗收文件為準](record_image/實際硬體圖/實際硬體圖.png)
@@ -102,13 +106,10 @@ PassionFruit_IoT_hardware/
 
 模型訓練、研究推論 pipeline 與候選權重由獨立的 [ps-quality-detection-system](https://github.com/fcu-passionfruit-project/ps-quality-detection-system) Repository 維護，只有模型開發需要依 [模型開發環境](docs/模型開發環境.md) 在硬體 Repository 外建立 checkout。正式部署與權重替換只使用本 Repository 的 [Django_Server/models/](Django_Server/models/README.md)。Dataset、原始照片、檢測產物與訓練輸出不納入本 Repository。
 
-## 快速開始（Windows）
-
-從 [Releases](https://github.com/Eten0721/PassionFruit_IoT_hardware/releases) 下載最新版的 **Source code (zip)** 並解壓縮，雙擊 `啟動系統.bat`；第一次會自動安裝所需環境，完成後開啟 Dashboard。防火牆、LINE 憑證、ESP32 配網與更新方式見 [部署與操作說明](docs/環境部署說明文件.md)。
-
 ## 文件導覽
 
-- [部署與操作說明](docs/環境部署說明文件.md)
+- [快速開始（不含 ESP32）](docs/快速開始.md)
+- [完整部署與操作說明](docs/環境部署說明文件.md)
 - [專案脈絡與架構](docs/PROJECT_CONTEXT.md)
 - [目前狀態](docs/CURRENT_STATUS.md)
 - [拍攝、檢測與分類規格](docs/CAPTURE_SPEC.md)
