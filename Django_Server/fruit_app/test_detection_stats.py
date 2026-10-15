@@ -134,6 +134,34 @@ class DetectionStatsTests(SimpleTestCase):
             with self.subTest(grades=grades), self.assertRaises(ValueError):
                 detection_stats.query(self.data.root, grades=grades)
 
+    def test_compare_grades_draws_one_grouped_chart_on_shared_axis(self):
+        self.data.add(1, '2026-10-01 09:00:00', grade=3)
+        self.data.add(2, '2026-10-01 10:00:00', grade=3, views_=[
+            _view(defects=['abrasion']), _view(), _view()])
+        self.data.add(3, '2026-10-01 11:00:00', grade=0, views_=[
+            _view(color='bad_color'), _view(), _view()])
+
+        stats = detection_stats.query(self.data.root, group_by='defect',
+                                      grades=['加工', '上等'], compare_grades=True)
+
+        chart = stats['chart']
+        self.assertEqual((chart['type'], chart['y_max'], chart['compare']), ('bar', 100, True))
+        self.assertEqual(chart['title'], '瑕疵出現比例比較（上等、加工）')
+        self.assertEqual(chart['labels'][:3], ['色澤異常', '皺褶', '擦傷'])
+        self.assertEqual([d['label'] for d in chart['datasets']], ['上等（2 顆）', '加工（1 顆）'])
+        self.assertEqual([d['data'][:3] for d in chart['datasets']], [[0.0, 0.0, 50.0], [100.0, 0.0, 0.0]])
+        self.assertEqual(stats['by_grade']['加工']['totals']['graded'], 1)
+        self.assertEqual(stats['totals']['graded'], 3)
+        single = detection_stats.query(self.data.root, group_by='defect', grades=['上等'])
+        self.assertEqual(single['chart']['y_max'], 100)
+        self.assertNotIn('by_grade', single)
+        for kwargs in ({'grades': ['上等']}, {'grades': ['上等', '加工'], 'group_by': 'grade'},
+                       {'grades': ['上等', '加工'], 'bucket': 'day'},
+                       {'grades': ['上等', '加工'], 'compare_grades': 'yes'}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                detection_stats.query(self.data.root, **{'group_by': 'defect', 'compare_grades': True,
+                                                         **kwargs})
+
     def test_date_range_is_inclusive_and_buckets_build_time_series(self):
         self.data.add(1, '2026-09-30T23:59:00', grade=3)
         self.data.add(2, '2026-10-01 00:00:00', grade=2, views_=[_view(defects=['abrasion']), _view(), _view()])
@@ -410,5 +438,8 @@ class TrendAlertViewTests(SimpleTestCase):
             self.assertEqual(ok.json()['totals']['fruits'], 0)
             graded = self.client.get('/api/detection/stats/', {'grade': ['加工', '下等']})
             self.assertEqual(graded.json()['filters']['grades'], ['下等', '加工'])
+            compared = self.client.get('/api/detection/stats/', {
+                'grade': ['上等', '加工'], 'group_by': 'defect', 'compare_grades': 'true'})
+            self.assertTrue(compared.json()['chart']['compare'])
             bad = self.client.get('/api/detection/stats/', {'grade': '特級'})
             self.assertEqual(bad.json()['reason'], 'invalid_stats_query')

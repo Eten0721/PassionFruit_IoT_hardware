@@ -141,6 +141,25 @@ class AssistantTests(SimpleTestCase):
         grades = assistant.STATS_TOOL['parameters']['properties']['grades']
         self.assertEqual(grades['items']['enum'], ['上等', '中等', '下等', '加工'])
 
+    def test_comparison_replaces_separate_per_grade_charts(self):
+        self.configure()
+        self.data.add(1, '2026-10-15 09:00:00', grade=3)
+        self.data.add(2, '2026-10-15 10:00:00', grade=0)
+        separate = [_candidate({'functionCall': {'name': 'query_detection_stats', 'args': {
+            'group_by': 'defect', 'grades': [grade]}}}) for grade in ('上等', '加工')]
+        compare = _candidate({'functionCall': {'name': 'query_detection_stats', 'args': {
+            'group_by': 'defect', 'grades': ['上等', '加工'], 'compare_grades': True}}})
+        http = FakeGemini(*separate, compare, _candidate({'text': '比較如圖。'}))
+
+        answer = self.ask(http, '上等和加工果的瑕疵比較，畫圖')
+
+        self.assertEqual([chart['title'] for chart in answer['charts']],
+                         ['瑕疵出現比例比較（上等、加工）'])
+        response = http.calls[3]['payload']['contents'][-1]['parts'][0]['functionResponse']['response']
+        self.assertEqual(set(response['by_grade']), {'上等', '加工'})
+        props = assistant.STATS_TOOL['parameters']['properties']
+        self.assertEqual(props['compare_grades']['type'], 'boolean')
+
     def test_billing_and_model_errors_have_own_reasons_and_log_without_key(self):
         self.configure()
         for status, reason in ((402, 'assistant_billing_required'),

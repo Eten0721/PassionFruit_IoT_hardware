@@ -1791,6 +1791,45 @@ textarea {
     white-space: pre-wrap;
 }
 
+.assistant-markdown > * {
+    margin: 0 0 6px;
+}
+
+.assistant-markdown > :last-child {
+    margin-bottom: 0;
+}
+
+.assistant-markdown h4 {
+    font-size: 0.95rem;
+}
+
+.assistant-markdown ul,
+.assistant-markdown ol {
+    padding-left: 20px;
+}
+
+/* The chat log is itself a list, so set marker styles explicitly. */
+.assistant-markdown ul {
+    list-style: disc;
+}
+
+.assistant-markdown ol {
+    list-style: decimal;
+}
+
+.assistant-markdown blockquote {
+    border-left: 3px solid var(--border-strong);
+    padding-left: 8px;
+    color: var(--text-soft);
+}
+
+.assistant-markdown code {
+    border-radius: 4px;
+    padding: 0 3px;
+    background: var(--surface-strong);
+    font-size: 0.9em;
+}
+
 .assistant-entry.user {
     justify-self: end;
     background: var(--primary-soft);

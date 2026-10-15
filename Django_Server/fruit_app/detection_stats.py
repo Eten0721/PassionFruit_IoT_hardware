@@ -37,13 +37,17 @@ OTHER_STATUSES = ('abandoned', 'needs_review')
 
 def query(detection_root: Path, *, start_date: str | None = None,
           end_date: str | None = None, bucket: str = 'none', group_by: str = 'grade',
-          include_photo_only: bool = False, grades: list[str] | None = None) -> dict:
+          include_photo_only: bool = False, grades: list[str] | None = None,
+          compare_grades: bool = False) -> dict:
     """Return statistics and one chart spec for an inclusive local date range.
 
     ``grades`` keeps only graded fruits of those grades (e.g. ``['加工']``), so
     defect ratios use that grade's fruit count as the denominator and the
-    ``abandoned``/``needs_review`` totals drop to zero. Invalid parameters
-    raise ``ValueError``; an empty dataset is a valid, all-zero answer.
+    ``abandoned``/``needs_review`` totals drop to zero. ``compare_grades``
+    (defect view, no time bucket, two or more grades) adds ``by_grade`` and
+    draws one grouped bar chart with a dataset per grade on a shared 0-100 %
+    axis. Invalid parameters raise ``ValueError``; an empty dataset is a
+    valid, all-zero answer.
     """
     if bucket not in BUCKETS:
         raise ValueError(f'不支援的統計級距：{bucket!r}')
@@ -52,6 +56,10 @@ def query(detection_root: Path, *, start_date: str | None = None,
     if type(include_photo_only) is not bool:
         raise ValueError('include_photo_only 必須是 true 或 false。')
     grades = _parse_grades(grades)
+    if type(compare_grades) is not bool:
+        raise ValueError('compare_grades 必須是 true 或 false。')
+    if compare_grades and (group_by != 'defect' or bucket != 'none' or len(grades or []) < 2):
+        raise ValueError('比較等級需要 group_by=defect、bucket=none 且至少兩個等級。')
     start = _parse_date(start_date, 'start_date')
     end = _parse_date(end_date, 'end_date')
     if start and end and start > end:
@@ -67,9 +75,15 @@ def query(detection_root: Path, *, start_date: str | None = None,
         records = [record for record in records
                    if record['status'] == 'graded' and record['label'] in grades]
     summary = summarize(records, bucket=bucket)
-    chart = chart_spec(summary, group_by=group_by)
-    if grades:
-        chart['title'] += f"（{'、'.join(grades)}）"
+    by_grade = None
+    if compare_grades:
+        by_grade = {grade: summarize([r for r in records if r['label'] == grade])
+                    for grade in grades}
+        chart = compare_chart_spec(by_grade)
+    else:
+        chart = chart_spec(summary, group_by=group_by)
+        if grades:
+            chart['title'] += f"（{'、'.join(grades)}）"
     return {
         'ok': True,
         'filters': {
@@ -77,9 +91,13 @@ def query(detection_root: Path, *, start_date: str | None = None,
             'end_date': end.isoformat() if end else None,
             'bucket': bucket, 'group_by': group_by,
             'include_photo_only': include_photo_only,
-            'grades': grades,
+            'grades': grades, 'compare_grades': compare_grades,
         },
         **summary,
+        **({'by_grade': {
+            grade: {'totals': part['totals'], 'defects': part['defects']}
+            for grade, part in by_grade.items()
+        }} if by_grade else {}),
         'skipped': loaded['skipped'],
         'chart': chart,
     }
@@ -184,20 +202,34 @@ def chart_spec(summary: dict, *, group_by: str) -> dict:
         }
     if not series:
         return {
-            'type': 'bar', 'title': '瑕疵出現比例', 'unit': '%', 'stacked': False,
+            'type': 'bar', 'title': '瑕疵出現比例', 'unit': '%', 'stacked': False, 'y_max': 100,
             'labels': [d['label'] for d in summary['defects']],
             'datasets': [{'label': '佔已判級果實', 'data': [
                 _percent(d['ratio']) for d in summary['defects']
             ]}],
         }
     return {
-        'type': 'line', 'title': '瑕疵出現比例（依時間）', 'unit': '%', 'stacked': False,
+        'type': 'line', 'title': '瑕疵出現比例（依時間）', 'unit': '%', 'stacked': False, 'y_max': 100,
         'labels': [point['period'] for point in series],
         'datasets': [
             {'label': OBSERVATION_NAMES[key], 'data': [
                 _percent(_ratio(point['defects'][key], point['graded'])) for point in series
             ]}
             for key in DEFECT_KEYS
+        ],
+    }
+
+
+def compare_chart_spec(by_grade: dict) -> dict:
+    """One grouped bar chart: defects on x, one dataset per grade, 0-100 %."""
+    return {
+        'type': 'bar', 'title': f"瑕疵出現比例比較（{'、'.join(by_grade)}）",
+        'unit': '%', 'stacked': False, 'y_max': 100, 'compare': True,
+        'labels': [OBSERVATION_NAMES[key] for key in DEFECT_KEYS],
+        'datasets': [
+            {'label': f"{grade}（{part['totals']['graded']} 顆）",
+             'data': [_percent(item['ratio']) for item in part['defects']]}
+            for grade, part in by_grade.items()
         ],
     }
 

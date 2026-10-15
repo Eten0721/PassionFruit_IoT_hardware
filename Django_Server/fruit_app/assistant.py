@@ -66,6 +66,8 @@ STATS_TOOL = {
         '（色澤異常、皺褶、擦傷、炭疽病、蟲咬、畫圖蟲）出現顆數與佔已判級果實比例，'
         '放棄本輪與待人工處理另列。數字與圖表由系統計算並直接顯示給使用者。'
         '問到特定等級（例如加工果）的瑕疵時，必須傳 grades，瑕疵比例的分母才會是該等級果實數。'
+        '比較兩個以上等級的瑕疵時，只呼叫一次並傳 grades、group_by=defect 與 compare_grades=true，'
+        '系統會畫成同一張共用 0–100% 刻度的分組長條圖；不要分開查詢各等級。'
     ),
     'parameters': {
         'type': 'object',
@@ -81,6 +83,8 @@ STATS_TOOL = {
             'grades': {'type': 'array',
                        'items': {'type': 'string', 'enum': list(detection_stats.GRADE_ORDER)},
                        'description': '只統計這些等級的已判級果實（可複選）；不限等級則省略'},
+            'compare_grades': {'type': 'boolean',
+                               'description': '比較 grades 中各等級的瑕疵比例時為 true（需 group_by=defect、bucket=none）'},
         },
         'required': ['group_by'],
     },
@@ -98,7 +102,7 @@ SYSTEM_RULES = """你是百香果 IoT 分級系統 Dashboard 的唯讀助手，�
 
 規則：
 1. 檢測統計一律呼叫 query_detection_stats，不得自行計算、推估或編造數字；回答中引用的數字必須來自工具結果。圖表會由系統依工具結果自動顯示，不需要在文字中重畫表格。
-2. 統計預設只計使用硬體的輪次；使用者明確要求時才納入純拍攝測試。放棄本輪與待人工處理不屬於四級分布，需要時另外說明。
+2. 比較不同等級時只呼叫一次 query_detection_stats（compare_grades=true），讓系統畫成一張圖。統計預設只計使用硬體的輪次；使用者明確要求時才納入純拍攝測試。放棄本輪與待人工處理不屬於四級分布，需要時另外說明。
 3. 病蟲害、防治、栽培等農業知識呼叫 search_agriculture_knowledge，並根據結果回答；系統會自動附上來源網址。涉及用藥時，提醒以植物保護資訊系統與在地農業改良場的建議為準。
 4. 部署、啟動與操作問題依下方文件回答，文件沒有寫的不要猜測，請使用者詢問專案擁有者。
 5. 你只能查詢，不能開始運轉、切換模式、分類、刪除資料或控制馬達；使用者要求這些操作時，說明要在 Dashboard 上自行操作。
@@ -184,6 +188,9 @@ class Assistant:
                     reply = _text(parts)
                     if not reply:
                         raise _Failure('assistant_invalid_response', 'empty reply')
+                    if any(chart.get('compare') for chart in charts):
+                        # A comparison replaces per-grade charts drawn on different scales.
+                        charts = [chart for chart in charts if chart.get('compare')]
                     return {'ok': True, 'reason': None, 'reply': reply, 'charts': charts,
                             'sources': _unique_sources(sources), 'notices': list(dict.fromkeys(notices)),
                             'usage': self._usage(credentials)}
@@ -230,14 +237,16 @@ class Assistant:
             try:
                 stats = detection_stats.query(self.detection_root, **{
                     key: args[key] for key in
-                    ('start_date', 'end_date', 'bucket', 'group_by', 'include_photo_only', 'grades')
+                    ('start_date', 'end_date', 'bucket', 'group_by', 'include_photo_only', 'grades',
+             'compare_grades')
                     if key in args
                 })
             except (TypeError, ValueError) as error:
                 return {'ok': False, 'error': str(error)}
             charts.append(stats['chart'])
             return {key: stats[key] for key in
-                    ('ok', 'filters', 'totals', 'grades', 'sources', 'defects', 'series', 'skipped')}
+                    ('ok', 'filters', 'totals', 'grades', 'sources', 'defects', 'series', 'skipped',
+                     'by_grade') if key in stats}
         if name == SEARCH_TOOL['name']:
             question = args.get('question')
             if not isinstance(question, str) or not question.strip():

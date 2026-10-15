@@ -4,7 +4,6 @@
     'use strict';
 
     const MAX_HISTORY = 12;
-    const CHART_COLORS = ['#176b4a', '#c98a12', '#2f6fb3', '#b42318', '#7a3fa0', '#4a7a2c'];
     const launcher = document.getElementById('assistant-launcher');
     const panel = document.getElementById('assistant-panel');
     const closeButton = document.getElementById('assistant-close');
@@ -21,12 +20,19 @@
         if (open) input.focus();
     }
 
-    function appendEntry(role, text) {
+    function appendEntry(role, text, { markdown = false } = {}) {
         const item = document.createElement('li');
         item.className = `assistant-entry ${role}`;
-        const body = document.createElement('p');
-        body.textContent = text;
-        item.appendChild(body);
+        if (markdown) {
+            const body = document.createElement('div');
+            body.className = 'assistant-markdown';
+            window.AssistantRender.renderMarkdown(document, body, text);
+            item.appendChild(body);
+        } else {
+            const body = document.createElement('p');
+            body.textContent = text;
+            item.appendChild(body);
+        }
         log.appendChild(item);
         log.scrollTop = log.scrollHeight;
         return item;
@@ -44,36 +50,7 @@
             canvas.replaceWith(document.createTextNode('圖表元件未載入，無法顯示圖表。'));
             return;
         }
-        new window.Chart(canvas, {
-            type: spec.type,
-            data: {
-                labels: spec.labels,
-                datasets: spec.datasets.map((dataset, index) => ({
-                    label: dataset.label,
-                    data: dataset.data,
-                    backgroundColor: spec.datasets.length === 1
-                        ? spec.labels.map((_, labelIndex) => CHART_COLORS[labelIndex % CHART_COLORS.length])
-                        : CHART_COLORS[index % CHART_COLORS.length],
-                    borderColor: CHART_COLORS[index % CHART_COLORS.length],
-                    tension: 0.2,
-                })),
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: false,
-                plugins: {
-                    title: { display: true, text: spec.title },
-                    legend: { display: spec.datasets.length > 1, labels: { boxWidth: 12 } },
-                    tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}：${ctx.formattedValue} ${spec.unit}` } },
-                },
-                scales: {
-                    x: { stacked: Boolean(spec.stacked) },
-                    y: { stacked: Boolean(spec.stacked), beginAtZero: true,
-                         title: { display: true, text: spec.unit } },
-                },
-            },
-        });
+        new window.Chart(canvas, window.AssistantRender.chartConfig(spec));
     }
 
     function appendSources(item, sources) {
@@ -119,7 +96,7 @@
                 return;
             }
             history.push({ role: 'model', text: payload.reply });
-            const item = appendEntry('model', payload.reply);
+            const item = appendEntry('model', payload.reply, { markdown: true });
             (payload.charts || []).forEach((spec) => appendChart(item, spec));
             appendSources(item, payload.sources || []);
             (payload.notices || []).forEach((notice) => {

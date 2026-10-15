@@ -2112,6 +2112,7 @@ def detection_stats_api(request):
             include_photo_only=params.get('include_photo_only', 'false') == 'true',
             # ``grade=加工&grade=下等``; absent means every grade.
             grades=params.getlist('grade') or None,
+            compare_grades=params.get('compare_grades', 'false') == 'true',
         )
     except ValueError as exc:
         return _json_error(str(exc), reason='invalid_stats_query')
