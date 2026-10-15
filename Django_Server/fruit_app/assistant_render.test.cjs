@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { parseMarkdown, renderMarkdown, chartConfig } = require('./static/fruit_app/js/assistant_render.js');
+const { parseInline, parseMarkdown, renderMarkdown, chartConfig } = require('./static/fruit_app/js/assistant_render.js');
 
 // Minimal DOM: elements record children; any innerHTML write fails the test.
 function fakeDocument() {
@@ -58,6 +58,25 @@ assert.deepEqual(shape(hostile), { div: [
     { ul: [{ li: '<script>x</script>' }] },
 ] });
 assert.deepEqual(parseMarkdown(null), []);
+
+// Single-marker italics become <em> without clashing with bold, lists or code.
+assert.deepEqual(parseInline('*註：僅供參考*'), [{ type: 'em', text: '註：僅供參考' }]);
+assert.deepEqual(parseInline('看 _斜體_ 與 **粗體** 及 *強調*'), [
+    { type: 'text', text: '看 ' }, { type: 'em', text: '斜體' }, { type: 'text', text: ' 與 ' },
+    { type: 'strong', text: '粗體' }, { type: 'text', text: ' 及 ' }, { type: 'em', text: '強調' },
+]);
+assert.deepEqual(parseInline('檔名 notification_outbox_json 與 `a*b*c`'), [
+    { type: 'text', text: '檔名 notification_outbox_json 與 ' }, { type: 'code', text: 'a*b*c' },
+]);
+for (const literal of ['* 不是斜體 *', '單個 * 星號', '3 * 4 = 12', '**']) {
+    assert.deepEqual(parseInline(literal), [{ type: 'text', text: literal }], literal);
+}
+assert.deepEqual(parseMarkdown('* *斜體項目*\n*註：結尾說明*'), [
+    { type: 'list', ordered: false, items: [[{ type: 'em', text: '斜體項目' }]] },
+    { type: 'paragraph', lines: [[{ type: 'em', text: '註：結尾說明' }]] },
+]);
+const italic = renderMarkdown(doc, doc.createElement('div'), '*註：模型觀察*');
+assert.deepEqual(shape(italic), { div: [{ p: [{ em: '註：模型觀察' }] }] });
 
 // Percentage charts share a fixed 0-100 axis; count charts start at zero only.
 const compare = chartConfig({

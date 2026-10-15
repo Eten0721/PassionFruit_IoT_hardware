@@ -1,5 +1,5 @@
 // Pure rendering helpers for the assistant chat, kept DOM-light for node tests.
-// Markdown: a small, safe subset for replies (headings, bold, inline code,
+// Markdown: a small, safe subset for replies (headings, bold, italic, inline code,
 // unordered/ordered lists, block quotes, paragraphs and line breaks). Model
 // text only ever becomes text nodes (createTextNode), so any HTML in a reply
 // is shown literally and never parsed; innerHTML is never used.
@@ -8,7 +8,11 @@
 (function (root) {
     'use strict';
 
-    const INLINE = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__)/g;
+    // Alternation order matters: code, then bold, then italic. Italic needs a
+    // non-space character just inside each marker, and `_` must not touch a
+    // letter or digit, so snake_case names and a line-leading "* " list marker
+    // (handled by the block parser) stay literal.
+    const INLINE = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\s](?:[^*\n]*[^*\s])?\*|(?<![\p{L}\p{N}_])_[^_\s](?:[^_\n]*[^_\s])?_(?![\p{L}\p{N}_]))/gu;
 
     function parseInline(text) {
         const parts = [];
@@ -16,9 +20,13 @@
         for (const match of text.matchAll(INLINE)) {
             if (match.index > last) parts.push({ type: 'text', text: text.slice(last, match.index) });
             const token = match[0];
-            parts.push(token.startsWith('`')
-                ? { type: 'code', text: token.slice(1, -1) }
-                : { type: 'strong', text: token.slice(2, -2) });
+            if (token.startsWith('`')) {
+                parts.push({ type: 'code', text: token.slice(1, -1) });
+            } else if (token.startsWith('**') || token.startsWith('__')) {
+                parts.push({ type: 'strong', text: token.slice(2, -2) });
+            } else {
+                parts.push({ type: 'em', text: token.slice(1, -1) });
+            }
             last = match.index + token.length;
         }
         if (last < text.length) parts.push({ type: 'text', text: text.slice(last) });
@@ -67,7 +75,7 @@
                 parent.appendChild(doc.createTextNode(part.text));
                 return;
             }
-            const element = doc.createElement(part.type === 'code' ? 'code' : 'strong');
+            const element = doc.createElement(part.type);
             element.appendChild(doc.createTextNode(part.text));
             parent.appendChild(element);
         });
