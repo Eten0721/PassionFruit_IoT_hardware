@@ -4,6 +4,7 @@ import codecs
 from http.client import BadStatusLine
 import json
 from pathlib import Path
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -210,23 +211,33 @@ class FirewallTests(TemporaryDirectoryTest):
 
 
 class PortTests(TemporaryDirectoryTest):
-    def test_free_port_needs_no_probe_or_browser(self):
-        probe, opener = Mock(), Mock()
-        result = launch.check_port(lambda: False, probe, opener)
+    def test_bindable_port_starts_without_browser(self):
+        opener = Mock()
+        result = launch.check_port(lambda: None, lambda: False, opener)
         self.assertEqual(result, {'ok': True, 'already_running': False})
-        probe.assert_not_called()
         opener.assert_not_called()
 
-    def test_already_running_opens_browser(self):
-        opener = Mock()
-        result = launch.check_port(lambda: True, lambda: True, opener)
+    def test_already_running_opens_browser_without_bind(self):
+        bind_check, opener = Mock(), Mock()
+        result = launch.check_port(bind_check, lambda: True, opener)
         self.assertEqual(result, {'ok': True, 'already_running': True})
         opener.assert_called_once_with(launch.DASHBOARD_URL)
+        bind_check.assert_not_called()
 
-    def test_occupied_non_http_port_is_failure(self):
+    def test_unbindable_port_reports_reason_and_os_error(self):
         opener = Mock()
-        self.assertEqual(launch.check_port(lambda: True, lambda: False, opener)['reason'], 'port_in_use')
+        result = launch.check_port(lambda: '[WinError 10013] denied', lambda: False, opener)
+        self.assertEqual(result, {'ok': False, 'reason': 'port_in_use',
+                                  'detail': '[WinError 10013] denied'})
         opener.assert_not_called()
+
+    def test_port_bind_error_detects_listening_socket(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
+            holder.bind(('0.0.0.0', 0))
+            holder.listen()
+            port = holder.getsockname()[1]
+            self.assertIsNotNone(launch.port_bind_error(port))
+        self.assertIsNone(launch.port_bind_error(port))
 
     def test_probe_accepts_any_http_status_without_following_redirects(self):
         for status in (200, 302, 404, 500):
