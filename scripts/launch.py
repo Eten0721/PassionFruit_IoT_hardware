@@ -39,7 +39,9 @@ REASON_MESSAGES = {
     'requirements_install_failed': '專案套件安裝失敗，請確認網路連線並查看紀錄後重試。',
     'model_missing': '缺少模型，請從 GitHub Release／含真實模型的 Download ZIP 重新下載並解壓縮專案。',
     'model_is_lfs_pointer': '模型只有 Git LFS 指標，請從 GitHub Release／含真實模型的 Download ZIP 重新下載並解壓縮專案。',
-    'port_in_use': '連接埠 8000 已被其他程式占用，請關閉占用程式後重新啟動。',
+    'port_in_use': ('連接埠 8000 目前無法使用：可能有其他程式（例如另一個 Django）正在使用，'
+                    '或 Windows 暫時把它分配給其他程式的網路連線。請關閉其他 Django 視窗，'
+                    '等候約 1 分鐘後重新雙擊；持續發生時重新開機。'),
     'django_check_failed': 'Django 啟動前檢查失敗，請將紀錄交給團隊確認設定。',
     'server_exited': '伺服器在就緒前結束，請查看紀錄及視窗中的錯誤後重試。',
     'server_timeout': '等待伺服器就緒超過 90 秒，請查看紀錄及視窗中的錯誤後重試。',
@@ -223,12 +225,19 @@ def check_firewall(runner=subprocess.run, platform=os.name):
     return {'ok': True}
 
 
-def port_is_open(port=PORT):
-    try:
-        with socket.create_connection(('127.0.0.1', port), timeout=1):
-            return True
-    except OSError:
-        return False
+def port_bind_error(port=PORT):
+    # 先照 runsslserver 的方式（SO_REUSEADDR）bind 0.0.0.0，重現 Windows 拒絕存取
+    # （WinError 10013，例如其他程式的連線恰好使用本機 8000）；再以預設選項 bind，
+    # 偵測一般占用中的監聽程式。只連線 127.0.0.1 兩者都偵測不完整。
+    for reuse_address in (True, False):
+        try:
+            with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as probe_socket:
+                if reuse_address:
+                    probe_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe_socket.bind(('0.0.0.0', port))
+        except OSError as error:
+            return str(error)
+    return None
 
 
 def probe_dashboard(url=DASHBOARD_URL, timeout=3):
@@ -243,15 +252,16 @@ def probe_dashboard(url=DASHBOARD_URL, timeout=3):
         return False
 
 
-def check_port(socket_check=port_is_open, probe=probe_dashboard, opener=webbrowser.open):
+def check_port(bind_check=port_bind_error, probe=probe_dashboard, opener=webbrowser.open):
     report('檢查連接埠 8000……')
-    if not socket_check():
-        return {'ok': True, 'already_running': False}
-    if not probe():
-        return {'ok': False, 'reason': 'port_in_use'}
-    report(f'伺服器已在執行，開啟 Dashboard：{DASHBOARD_URL}')
-    opener(DASHBOARD_URL)
-    return {'ok': True, 'already_running': True}
+    if probe():
+        report(f'伺服器已在執行，開啟 Dashboard：{DASHBOARD_URL}')
+        opener(DASHBOARD_URL)
+        return {'ok': True, 'already_running': True}
+    error = bind_check()
+    if error:
+        return {'ok': False, 'reason': 'port_in_use', 'detail': error}
+    return {'ok': True, 'already_running': False}
 
 
 def check_inference_device(variant, runner=subprocess.run):
