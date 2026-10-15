@@ -39,6 +39,7 @@
 
 - Django 與模型開發統一使用 `PF` Conda 環境，基準為 Python `3.14.4` 與 Django `5.2.16` LTS。
 - 四個 YOLO 權重與兩個 XGBoost 模型固定存於 `Django_Server/models/`，由 Git LFS 管理；部署不需外部 Repository。
+- Windows 雙擊啟動器已在既有 `PF` 的開發機驗證可開啟 Dashboard；乾淨電腦自動安裝 Miniforge 與建立 `PF` 尚待實測。決策見 [ADR-0021](adr/0021-double-click-launcher-and-release-zip.md)。
 - 目前 Dataset 快照包含 `327` 顆果實與 `981` 張照片，尚待建立正式 train／valid／test 切分與第二份備份。
 
 各項協定與數值見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md)；完成歷史以 Git 與已關閉 Issues 為準。
