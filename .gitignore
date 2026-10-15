@@ -90,3 +90,6 @@ build/
 # Local backups and archives
 Django_Server_backup_*/
 Necessary_library/*.zip
+
+# Launcher
+/logs/
