@@ -102,6 +102,10 @@ PassionFruit_IoT_hardware/
 
 模型訓練、研究推論 pipeline 與候選權重由獨立的 [ps-quality-detection-system](https://github.com/fcu-passionfruit-project/ps-quality-detection-system) Repository 維護，只有模型開發需要依 [模型開發環境](docs/模型開發環境.md) 在硬體 Repository 外建立 checkout。正式部署與權重替換只使用本 Repository 的 [Django_Server/models/](Django_Server/models/README.md)。Dataset、原始照片、檢測產物與訓練輸出不納入本 Repository。
 
+## 快速開始（Windows）
+
+從 [Releases](https://github.com/Eten0721/PassionFruit_IoT_hardware/releases) 下載最新版的 **Source code (zip)** 並解壓縮，雙擊 `啟動系統.bat`；第一次會自動安裝所需環境，完成後開啟 Dashboard。防火牆、LINE 憑證、ESP32 配網與更新方式見 [部署與操作說明](docs/環境部署說明文件.md)。
+
 ## 文件導覽
 
 - [部署與操作說明](docs/環境部署說明文件.md)
