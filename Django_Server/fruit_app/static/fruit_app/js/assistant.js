@@ -95,7 +95,8 @@
                 appendEntry('error', payload.message || `助手無法回覆（HTTP ${response.status}）`);
                 return;
             }
-            history.push({ role: 'model', text: payload.reply });
+            // The server only trusts model turns that come back with its signature.
+            history.push({ role: 'model', text: payload.reply, signature: payload.signature });
             const item = appendEntry('model', payload.reply, { markdown: true });
             (payload.charts || []).forEach((spec) => appendChart(item, spec));
             appendSources(item, payload.sources || []);
