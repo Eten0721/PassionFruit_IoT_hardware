@@ -1986,13 +1986,13 @@ def trend_alert_monitor():
 
 
 def _check_trend_alerts(result):
-    """Start the trend rules after a saved hardware grade; never raises.
+    """Start the trend rules after any saved grade; never raises.
 
     The check may wait for Gemini wording, so it runs on its own daemon
     thread: detection, manual takeover and sorting never wait for it. New
     alerts show on the Dashboard and in the LINE outbox.
     """
-    if (not result or result.get('hardware_mode') != 'hardware'
+    if (not result
             or (result.get('storage') or {}).get('status') != 'saved'
             or (result.get('classification') or {}).get('status') != 'graded'):
         return ''
@@ -2109,7 +2109,6 @@ def detection_stats_api(request):
             _dataset_root('detection'),
             start_date=params.get('start_date'), end_date=params.get('end_date'),
             bucket=params.get('bucket', 'none'), group_by=params.get('group_by', 'grade'),
-            include_photo_only=params.get('include_photo_only', 'false') == 'true',
             # ``grade=加工&grade=下等``; absent means every grade.
             grades=params.getlist('grade') or None,
             compare_grades=params.get('compare_grades', 'false') == 'true',

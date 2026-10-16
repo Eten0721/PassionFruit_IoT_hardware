@@ -2,9 +2,10 @@
 
 Three layers, only the last one may use an LLM:
 
-1. Detection: after a hardware result is saved, the six observation
+1. Detection: after any graded result is saved, the six observation
    categories and the processing-fruit share run through the same generic
-   rules on graded hardware fruits: share over a threshold in the latest
+   rules on every graded fruit in the detection partition: share over a
+   threshold in the latest
    window, a rise against the previous window of the same length, and a
    same-day spike against the window before today.
 2. Severity: every category has its own threshold, rise, minimum sample and
@@ -181,7 +182,7 @@ def render_text(trigger: dict, settings: dict, advice: str, *, written_by_ai: bo
     if trigger['also_rising']:
         lines.append(f"同時上升：{'、'.join(trigger['also_rising'])}")
     lines.append(f"說明{'（AI 依上列數據撰寫）' if written_by_ai else ''}：{advice}")
-    lines.append('比例來自檢測模型觀察（只計使用硬體的果實），僅供參考，不代表病因判斷或防治效果。')
+    lines.append('比例來自檢測模型觀察，僅供參考，不代表病因判斷或防治效果。')
     return '\n'.join(lines) + '\n'
 
 
