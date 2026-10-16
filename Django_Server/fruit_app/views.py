@@ -2002,15 +2002,14 @@ def trend_alert_monitor():
     runtime_root = Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).parent
     return trend_alerts.TrendAlerts(
         runtime_root / 'trend_alerts.json', _dataset_root('detection'), notification_outbox(),
-        writer=lambda facts: dashboard_assistant().write_alert_advice(facts),
     )
 
 
 def _check_trend_alerts(result):
     """Start the trend rules after any saved grade; never raises.
 
-    The check may wait for Gemini wording, so it runs on its own daemon
-    thread: detection, manual takeover and sorting never wait for it. New
+    Statistics run on their own daemon thread, so detection, manual
+    takeover and sorting never wait for the check. New
     alerts show on the Dashboard and in the LINE outbox.
     """
     if (not result
@@ -2065,7 +2064,7 @@ def dashboard_assistant():
     return assistant.Assistant(
         runtime_root / 'assistant_credentials.json', runtime_root / 'assistant_usage.json',
         _dataset_root('detection'), Path(settings.BASE_DIR).parent / 'docs',
-        trend_status=lambda: trend_alert_monitor().status(),
+        trend_status=lambda: trend_alert_monitor().status(include_details=True),
     )
 
 

@@ -1378,7 +1378,7 @@ const remoteVideo = document.getElementById('remote-video');
         const line = trend.line || {};
         setTextIfChanged(trendAlertStatus, [
             settings.enabled
-                ? `各類比例達門檻、比前 ${settings.window_days} 天上升，或今日達前期 ${settings.spike_factor} 倍時提醒；同類 ${settings.cooldown_hours} 小時內不重複。有 Gemini 金鑰時由 AI 撰寫說明，數字一律由系統填入。`
+                ? `各類比例達門檻、比前 ${settings.window_days} 天上升，或今日達前期 ${settings.spike_factor} 倍時提醒；同類 ${settings.cooldown_hours} 小時內不重複。LINE 訊息只列偏高類別與注意事項，數據詳情可問奶蛋博士。`
                 : '已關閉：不檢查也不發送趨勢提醒。',
             line.configured ? null : `LINE 尚未完成設定：${line.config_reason}（提醒仍會顯示在此）`,
         ].filter(Boolean).join('\n'));
