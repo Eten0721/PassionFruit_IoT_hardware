@@ -26,6 +26,6 @@ ADR 記錄長期有效、跨模組或涉及安全與資料一致性的決策。�
 | [0020](0020-single-network-recovery-policy.md) | Accepted | 網路安全鎖集中為單一復原政策 |
 | [0021](0021-double-click-launcher-and-release-zip.md) | Accepted | Windows 雙擊啟動器與 Release ZIP 散布，不採用 Docker |
 | [0022](0022-dashboard-gemini-assistant.md) | Accepted（目標） | Dashboard 唯讀 Gemini 助手：Django 計算統計、文件問答、搜尋接地與規則式瑕疵趨勢提醒（Gemini 只負責措辭）；尚未實作 |
-| [0023](0023-demo-prepared-dataset.md) | Accepted（目標） | Demo 預備檢測資料產生指令與統計／提醒的純拍攝納入開關；尚未實作 |
+| [0023](0023-demo-prepared-dataset.md) | Accepted | Demo 預備資料直接放入檢測分區，統計與提醒預設計入純拍攝；不設示範模式、指令或開關 |
 
 完成項目的實作過程、版本進度與 commit 歷史不另建 ADR，由 Git、tag 與 release 保存。
