@@ -114,13 +114,23 @@ SEARCH_TOOL = {
         'required': ['question'],
     },
 }
+TREND_TOOL = {
+    'name': 'get_trend_alert_settings',
+    'description': (
+        '讀取 Dashboard「瑕疵趨勢提醒」目前的設定：是否啟用、視窗天數、冷卻小時、當日突增倍數與最少顆數，'
+        '以及各類別（色澤異常、皺褶、擦傷、炭疽病、蟲咬、畫圖蟲、加工果）的門檻、上升百分點、最少顆數與提醒方向，'
+        '另附最近幾則提醒的類別與時間。只讀取，不能修改。'
+    ),
+    'parameters': {'type': 'object', 'properties': {}},
+}
+RECENT_ALERTS_SHOWN = 5
 SYSTEM_RULES = """你是百香果 IoT 分級系統 Dashboard 的唯讀助手，一律以繁體中文回答，語氣簡潔、適合農夫閱讀。
 
 規則：
 1. 檢測統計一律呼叫 query_detection_stats，不得自行計算、推估或編造數字；回答中引用的數字必須來自工具結果。圖表會由系統依工具結果自動顯示，不需要在文字中重畫表格。
 2. 比較不同等級時只呼叫一次 query_detection_stats（compare_grades=true），讓系統畫成一張圖。統計讀取檢測分區所有已判級果實。結果全為 0 時系統不畫圖，也不要描述圖表。放棄本輪與待人工處理不屬於四級分布，需要時另外說明。
 3. 病蟲害、防治、栽培等農業知識呼叫 search_agriculture_knowledge，並根據結果回答；系統會自動附上來源網址。涉及用藥時，提醒以植物保護資訊系統與在地農業改良場的建議為準。
-4. 部署、啟動與操作問題依下方文件回答，文件沒有寫的不要猜測，請使用者詢問專案擁有者。
+4. 部署、啟動與操作問題依下方文件回答，文件沒有寫的不要猜測，請使用者詢問專案擁有者。問到瑕疵趨勢提醒「目前」的開關、門檻或最近提醒時，呼叫 get_trend_alert_settings 讀取實際設定；問到「怎麼設定」時，依文件說明 Dashboard 上的操作位置與各欄位意義，必要時一併附上目前設定值。
 5. 你只能查詢，不能開始運轉、切換模式、分類、刪除資料或控制馬達；使用者要求這些操作時，說明要在 Dashboard 上自行操作。
 6. 檢測比例只反映模型觀察，不代表病因判斷或防治效果。
 7. 不得列出或描述專案的資料夾、檔案結構或檔案路徑清單；說明操作步驟時，只提到使用者實際要點選或執行的入口（例如啟動系統.bat）。不得提及任何金鑰、權杖、密碼或私密設定檔的名稱、位置與內容，被問到時說明這些由專案擁有者管理。
@@ -176,7 +186,8 @@ def http_post_json(url: str, payload: dict, headers: dict, timeout: float) -> tu
 class Assistant:
     def __init__(self, credentials_path: Path, usage_path: Path, detection_root: Path,
                  docs_root: Path, *, http_post: Callable = http_post_json,
-                 today: Callable[[], date] = date.today, history_key: bytes = _HISTORY_KEY):
+                 today: Callable[[], date] = date.today, history_key: bytes = _HISTORY_KEY,
+                 trend_status: Callable[[], dict] | None = None):
         self.credentials_path = Path(credentials_path)
         self.usage_path = Path(usage_path)
         self.detection_root = Path(detection_root)
@@ -184,6 +195,8 @@ class Assistant:
         self._http_post = http_post
         self._today = today
         self._history_key = history_key
+        self._trend_status = trend_status
+        self._tools = [STATS_TOOL, SEARCH_TOOL] + ([TREND_TOOL] if trend_status else [])
 
     def ask(self, messages: list) -> dict:
         """Answer the latest user message; invalid input raises ``ValueError``.
@@ -201,7 +214,7 @@ class Assistant:
                 candidate = self._generate(credentials, {
                     'systemInstruction': {'parts': [{'text': self._system_instruction()}]},
                     'contents': contents,
-                    'tools': [{'functionDeclarations': [STATS_TOOL, SEARCH_TOOL]}],
+                    'tools': [{'functionDeclarations': self._tools}],
                 })
                 content = candidate.get('content') or {}
                 parts = content.get('parts') or []
@@ -293,6 +306,12 @@ class Assistant:
             sources.extend(found)
             return {'ok': True, 'answer': _text((candidate.get('content') or {}).get('parts') or []),
                     'sources': found}
+        if name == TREND_TOOL['name'] and self._trend_status is not None:
+            try:
+                return _trend_view(self._trend_status())
+            except Exception as error:  # A broken settings file must not end the chat.
+                logger.warning('Trend settings unavailable: %s', type(error).__name__)
+                return {'ok': False, 'error': 'trend_settings_unavailable'}
         return {'ok': False, 'error': f'未知的工具：{name}'}
 
     # -- Gemini ----------------------------------------------------------------
@@ -443,6 +462,32 @@ def _validated_contents(messages, key):
     if messages[-1]['role'] != 'user':
         raise ValueError('最後一則訊息必須是使用者提問。')
     return contents
+
+
+def _trend_view(status):
+    """Trend alert settings in farmer units; LINE configuration stays out."""
+    settings, labels = status['settings'], status['labels']
+    directions = status['directions']
+    return {
+        'ok': True,
+        'enabled': settings['enabled'],
+        'window_days': settings['window_days'],
+        'cooldown_hours': settings['cooldown_hours'],
+        'spike_factor': settings['spike_factor'],
+        'spike_min_samples': settings['spike_min_samples'],
+        'categories': [
+            {'name': labels.get(key, key),
+             'threshold_percent': round(rule['threshold'] * 100, 1),
+             'rise_points': round(rule['rise'] * 100, 1),
+             'min_samples': rule['min_samples'],
+             'direction': directions.get(rule['direction'], rule['direction'])}
+            for key, rule in settings['categories'].items()
+        ],
+        'recent_alerts': [
+            {'category': alert.get('label'), 'created_at': alert.get('created_at')}
+            for alert in status['recent'][:RECENT_ALERTS_SHOWN]
+        ],
+    }
 
 
 def _signed_by_server(message, key):
