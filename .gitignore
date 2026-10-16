@@ -37,7 +37,7 @@ Django_Server/staticfiles/
 Django_Server/dataset/
 Django_Server/detection_results/
 Django_Server/0716_dataset/
-Django_Server/runtime_config/
+Django_Server/runtime_config/*
 
 # Project folders not tracked for now
 /output/
@@ -59,6 +59,7 @@ Necessary_library/*
 !record_image/**/*.png
 !record_image/**/*.jpg
 !record_image/**/*.JPG
+!Django_Server/runtime_config/assistant_icon.png
 
 # YOLO / ML training outputs and model weights
 **/runs/
