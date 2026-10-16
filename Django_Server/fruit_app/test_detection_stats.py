@@ -249,11 +249,12 @@ class TrendAlertTests(SimpleTestCase):
         outcome = self.monitor().check()
 
         [alert] = outcome['alerts']
-        self.assertEqual((alert['key'], alert['wording']), ('anthracnose', 'template'))
-        self.assertTrue(alert['text'].startswith('|趨勢提醒|\n'))
+        self.assertEqual((alert['keys'], alert['label'], alert['wording']),
+                         (['anthracnose'], '炭疽病', 'template'))
+        self.assertTrue(alert['text'].startswith('|趨勢提醒|\n炭疽病近來有上升趨勢\n'))
         self.assertIn('比例來自檢測模型觀察，僅供參考', alert['text'])
-        for line in ('炭疽病近來有上升趨勢', '最近 7 天：已判級 20 顆，炭疽病 8 顆（40.0%）',
-                     '前 7 天：已判級 0 顆，樣本不足不比較', '依據：比例達 20.0% 門檻',
+        for line in ('最近 7 天：已判級 20 顆', '前 7 天：已判級 0 顆，樣本不足不比較',
+                     '・炭疽病 8 顆（40.0%）：達 20.0% 門檻',
                      '說明：炭疽病比例近來偏高，須注意病害防疫。'):
             self.assertIn(line, alert['text'])
         self.assertEqual(self.outbox.queued, [(alert['id'], alert['text'])])
@@ -265,6 +266,9 @@ class TrendAlertTests(SimpleTestCase):
         status = self.monitor().status()
         self.assertEqual(len(status['recent']), 2)
         self.assertEqual(status['recent'][0]['delivery'], {'status': 'pending', 'reason': None})
+        # The Dashboard lists time and categories; the message itself is LINE-only.
+        self.assertEqual(status['recent'][0]['label'], '炭疽病')
+        self.assertNotIn('text', status['recent'][0])
 
     def test_every_graded_fruit_counts_without_extra_labels(self):
         self.add_fruits(10, days_ago=1, defects={'anthracnose': 4})
@@ -274,7 +278,8 @@ class TrendAlertTests(SimpleTestCase):
         [alert] = self.monitor().check()['alerts']
 
         self.assertTrue(alert['text'].startswith('|趨勢提醒|\n炭疽病近來有上升趨勢'))
-        self.assertIn('最近 7 天：已判級 20 顆，炭疽病 8 顆（40.0%）', alert['text'])
+        self.assertIn('最近 7 天：已判級 20 顆\n', alert['text'])
+        self.assertIn('・炭疽病 8 顆（40.0%）', alert['text'])
         for word in ('測試', '純拍攝', '使用硬體'):
             self.assertNotIn(word, alert['text'])
 
@@ -286,7 +291,7 @@ class TrendAlertTests(SimpleTestCase):
         self.enable(categories={'abrasion': {'threshold': 0.2}})
         [alert] = self.monitor().check()['alerts']
 
-        self.assertEqual(alert['key'], 'abrasion')
+        self.assertEqual(alert['keys'], ['abrasion'])
         self.assertIn('說明：擦傷比例近來偏高，請檢查採收與搬運作業。', alert['text'])
 
     def test_rise_against_previous_window_lists_other_rising_categories(self):
@@ -294,22 +299,26 @@ class TrendAlertTests(SimpleTestCase):
         self.add_fruits(20, days_ago=1, defects={'anthracnose': 3, 'wrinkle': 4})
         self.enable()
 
-        alerts = {alert['key']: alert for alert in self.monitor().check()['alerts']}
+        [alert] = self.monitor().check()['alerts']
 
-        self.assertEqual(set(alerts), {'anthracnose', 'wrinkle'})
-        text = alerts['anthracnose']['text']
-        self.assertIn('前 7 天：已判級 20 顆，炭疽病 0 顆（0.0%）', text)
-        self.assertIn('依據：比前 7 天上升 10.0 個百分點以上', text)
-        self.assertIn('同時上升：皺褶', text)
-        self.assertIn('同時上升：炭疽病', alerts['wrinkle']['text'])
+        self.assertEqual(alert['keys'], ['wrinkle', 'anthracnose'])
+        text = alert['text']
+        self.assertTrue(text.startswith('|趨勢提醒|\n多項瑕疵近來偏高：皺褶、炭疽病\n'))
+        self.assertIn('前 7 天：已判級 20 顆\n', text)
+        self.assertIn('・炭疽病 3 顆（15.0%）：前 7 天 0.0%，上升 10.0 個百分點以上', text)
+        self.assertIn('・皺褶 4 顆（20.0%）：前 7 天 0.0%，上升 15.0 個百分點以上', text)
+        # Categories that triggered are not repeated as "also rising".
+        self.assertNotIn('同時上升', text)
+        self.assertEqual(len(self.outbox.queued), 1)
 
     def test_processing_share_uses_the_same_rules(self):
         self.add_fruits(20, days_ago=1, grade=0)
         self.add_fruits(20, days_ago=2, grade=2)
         self.enable()
         [alert] = self.monitor().check()['alerts']
-        self.assertEqual((alert['key'], alert['label']), ('processing', '加工果'))
-        self.assertIn('最近 7 天：已判級 40 顆，加工果 20 顆（50.0%）', alert['text'])
+        self.assertEqual((alert['keys'], alert['label']), (['processing'], '加工果'))
+        self.assertIn('最近 7 天：已判級 40 顆\n', alert['text'])
+        self.assertIn('・加工果 20 顆（50.0%）：達 40.0% 門檻', alert['text'])
 
     def test_same_day_spike_against_window_before_today(self):
         self.add_fruits(20, days_ago=3, defects={'anthracnose': 1})
@@ -318,9 +327,9 @@ class TrendAlertTests(SimpleTestCase):
 
         [alert] = self.monitor().check()['alerts']
 
-        self.assertIn('炭疽病今日明顯偏高', alert['text'])
-        self.assertIn('今日：已判級 10 顆，炭疽病 3 顆（30.0%）；今日前 7 天為 5.0%', alert['text'])
-        self.assertIn('依據：今日比例達前 7 天的 2 倍以上', alert['text'])
+        self.assertIn('|趨勢提醒|\n炭疽病今日明顯偏高\n', alert['text'])
+        self.assertIn('・炭疽病 4 顆（13.3%）：今日 3／10 顆（30.0%），達今日前 7 天（5.0%）的 2 倍以上',
+                      alert['text'])
 
     def test_no_alert_without_any_rule(self):
         self.add_fruits(20, days_ago=9, defects={'anthracnose': 2})
@@ -352,10 +361,36 @@ class TrendAlertTests(SimpleTestCase):
                 else:
                     self.assertIn('說明：炭疽病比例近來偏高，須注意病害防疫。', alert['text'])
                     self.assertNotIn('約有', alert['text'])
-        self.assertEqual(seen[0]['category'], '炭疽病')
-        self.assertEqual(seen[0]['reasons'], ['比例達門檻'])
-        self.assertEqual(seen[0]['current'], {'count': 8, 'graded': 20, 'ratio': 0.4})
+        [facts] = seen[0]['alerts']
+        self.assertEqual(facts['category'], '炭疽病')
+        self.assertEqual(facts['reasons'], ['比例達門檻'])
+        self.assertEqual(facts['current'], {'count': 8, 'graded': 20, 'ratio': 0.4})
+        self.assertEqual(seen[0]['window_days'], 7)
         self.assertEqual(len(self.outbox.queued), 4)
+
+    def test_several_categories_from_one_check_become_one_message(self):
+        self.add_fruits(20, days_ago=9)
+        self.add_fruits(20, days_ago=1, defects={'bad_color': 10, 'abrasion': 8, 'insect_track': 7})
+        self.enable()
+        writer = mock.Mock(return_value={'ok': False, 'reason': 'assistant_offline'})
+
+        [alert] = self.monitor(writer=writer).check()['alerts']
+
+        self.assertEqual(alert['labels'], ['色澤異常', '擦傷', '畫圖蟲'])
+        self.assertEqual(alert['label'], '色澤異常、擦傷、畫圖蟲')
+        writer.assert_called_once()
+        self.assertEqual([item['category'] for item in writer.call_args.args[0]['alerts']],
+                         ['色澤異常', '擦傷', '畫圖蟲'])
+        text = alert['text']
+        self.assertEqual(text.count('|趨勢提醒|'), 1)
+        self.assertEqual(text.count('最近 7 天：已判級 20 顆'), 1)
+        for line in ('多項瑕疵近來偏高：色澤異常、擦傷、畫圖蟲',
+                     '・色澤異常 10 顆（50.0%）：達 40.0% 門檻；前 7 天 0.0%，上升 15.0 個百分點以上',
+                     '・擦傷 8 顆（40.0%）：達 30.0% 門檻；前 7 天 0.0%，上升 10.0 個百分點以上',
+                     '說明：色澤異常比例近來偏高，請留意栽培管理與採收時機；擦傷比例近來偏高，'
+                     '請檢查採收與搬運作業；畫圖蟲比例近來偏高，須注意蟲害防治。'):
+            self.assertIn(line, text)
+        self.assertEqual(self.outbox.queued, [(alert['id'], text)])
 
     def test_settings_are_validated(self):
         for changes in ({}, {'enabled': 'yes'}, {'window_days': 0}, {'window_days': 1.5},

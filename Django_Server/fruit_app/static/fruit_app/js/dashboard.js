@@ -1389,9 +1389,9 @@ const remoteVideo = document.getElementById('remote-video');
         trendAlertList.replaceChildren(...recent.slice(0, 5).map((alert) => {
             const item = document.createElement('li');
             const delivery = alert.delivery;
-            item.textContent = `${alert.created_at.replace('T', ' ')}・`
-                + `${delivery ? (TREND_DELIVERY_TEXT[delivery.status] || delivery.status) : 'LINE 未排送'}\n`
-                + alert.text.trim();
+            // The full message is on LINE; the Dashboard keeps one short line.
+            item.textContent = `${alert.created_at.replace('T', ' ')}・${alert.label}・`
+                + `${delivery ? (TREND_DELIVERY_TEXT[delivery.status] || delivery.status) : 'LINE 未排送'}`;
             return item;
         }));
     }

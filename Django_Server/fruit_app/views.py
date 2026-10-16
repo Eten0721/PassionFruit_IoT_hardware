@@ -530,27 +530,36 @@ def _recovery_can_confirm():
 # calibration stay required by the next production start, not by the confirmation.
 
 
+STATIC_ROOT_DIR = Path(__file__).resolve().parent / 'static' / 'fruit_app'
 CAMERA_ASSETS = (
-    Path(__file__).resolve().parent / 'static' / 'fruit_app' / 'js' / 'camera.js',
-    Path(__file__).resolve().parent / 'static' / 'fruit_app' / 'css' / 'camera.css',
+    STATIC_ROOT_DIR / 'js' / 'camera.js',
+    STATIC_ROOT_DIR / 'css' / 'camera.css',
+)
+DASHBOARD_ASSETS = (
+    STATIC_ROOT_DIR / 'css' / 'dashboard.css',
+    STATIC_ROOT_DIR / 'js' / 'dashboard.js',
+    STATIC_ROOT_DIR / 'js' / 'assistant_render.js',
+    STATIC_ROOT_DIR / 'js' / 'assistant.js',
 )
 
 
-def _camera_asset_version():
-    # 頁面不快取但靜態檔會被手機瀏覽器沿用；以修改時間當版本，更新後強制重新下載。
-    return str(max(int(path.stat().st_mtime) for path in CAMERA_ASSETS))
+def _asset_version(assets):
+    # 頁面不快取但靜態檔會被瀏覽器沿用；以修改時間當版本，更新後強制重新下載。
+    return str(max(int(path.stat().st_mtime) for path in assets))
 
 
 @network_required(cleanup=True, operation='observation')
 def camera_view(request):
     _ensure_dataset_structure()
-    context = {'asset_version': _camera_asset_version()}
+    context = {'asset_version': _asset_version(CAMERA_ASSETS)}
     return _no_store_response(render(request, 'camera.html', context))
 
 
 def dashboard_view(request):
     _ensure_dataset_structure()
-    return _no_store_response(render(request, 'dashboard.html'))
+    # Cached old scripts against a newer /api/state/ break the whole page.
+    context = {'asset_version': _asset_version(DASHBOARD_ASSETS)}
+    return _no_store_response(render(request, 'dashboard.html', context))
 
 
 @require_GET

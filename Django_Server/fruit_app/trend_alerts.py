@@ -132,20 +132,28 @@ def evaluate(windows: dict, settings: dict) -> list[dict]:
     return triggers
 
 
-def alert_facts(trigger: dict, settings: dict) -> dict:
+def alert_facts(triggers: list[dict], settings: dict) -> dict:
     """Structured facts handed to the writer; it words them, Django sends them."""
+    triggered = {trigger['label'] for trigger in triggers}
     return {
-        'category': trigger['label'], 'direction': DIRECTIONS[trigger['direction']],
-        'reasons': [REASON_TEXT[reason] for reason in trigger['reasons']],
         'window_days': settings['window_days'],
-        'current': trigger['current'], 'previous': trigger['previous'],
-        'today': trigger['today'], 'history': trigger['history'],
-        'also_rising': trigger['also_rising'],
+        'alerts': [{
+            'category': trigger['label'], 'direction': DIRECTIONS[trigger['direction']],
+            'reasons': [REASON_TEXT[reason] for reason in trigger['reasons']],
+            'current': trigger['current'], 'previous': trigger['previous'],
+            'today': trigger['today'], 'history': trigger['history'],
+        } for trigger in triggers],
+        'also_rising': _also_rising(triggers, triggered),
     }
 
 
-def template_advice(trigger: dict) -> str:
-    return f"{trigger['label']}比例近來偏高，{DIRECTIONS[trigger['direction']]}。"
+def template_advice(triggers: list[dict]) -> str:
+    """One sentence per direction, naming the categories that share it."""
+    by_direction: dict[str, list[str]] = {}
+    for trigger in triggers:
+        by_direction.setdefault(trigger['direction'], []).append(trigger['label'])
+    return '；'.join(f"{'、'.join(labels)}比例近來偏高，{DIRECTIONS[direction]}"
+                    for direction, labels in by_direction.items()) + '。'
 
 
 def accepted_advice(text) -> str | None:
@@ -158,32 +166,56 @@ def accepted_advice(text) -> str | None:
     return text
 
 
-def render_text(trigger: dict, settings: dict, advice: str, *, written_by_ai: bool) -> str:
-    """Final message; every number below comes from Django."""
+def render_text(triggers: list[dict], settings: dict, advice: str, *, written_by_ai: bool) -> str:
+    """One message for every category triggered by the same check.
+
+    Every number below comes from Django; the shared window totals appear
+    once and each category gets one line with the rule that triggered it.
+    """
     days = settings['window_days']
-    label = trigger['label']
-    lines = ['|趨勢提醒|',
-             f"{label}{'今日明顯偏高' if trigger['reasons'] == ['spike'] else '近來有上升趨勢'}",
-             f"最近 {days} 天：{_share(label, trigger['current'])}"]
-    if trigger['baseline_sufficient']:
-        lines.append(f"前 {days} 天：{_share(label, trigger['previous'])}")
+    first = triggers[0]
+    if len(triggers) == 1:
+        title = f"{first['label']}{'今日明顯偏高' if first['reasons'] == ['spike'] else '近來有上升趨勢'}"
     else:
-        lines.append(f"前 {days} 天：已判級 {trigger['previous']['graded']} 顆，樣本不足不比較")
-    if 'spike' in trigger['reasons']:
-        lines.append(f"今日：{_share(label, trigger['today'])}；"
-                     f"今日前 {days} 天為 {_percent(trigger['history']['ratio'])}")
-    params = settings['categories'][trigger['key']]
-    basis = {
-        'threshold': f"比例達 {_percent(params['threshold'])} 門檻",
-        'rise': f"比前 {days} 天上升 {params['rise'] * 100:.1f} 個百分點以上",
-        'spike': f"今日比例達前 {days} 天的 {settings['spike_factor']:g} 倍以上",
-    }
-    lines.append(f"依據：{'、'.join(basis[reason] for reason in trigger['reasons'])}")
-    if trigger['also_rising']:
-        lines.append(f"同時上升：{'、'.join(trigger['also_rising'])}")
+        title = f"多項瑕疵近來偏高：{'、'.join(trigger['label'] for trigger in triggers)}"
+    previous = f"前 {days} 天：已判級 {first['previous']['graded']} 顆"
+    if not any(trigger['baseline_sufficient'] for trigger in triggers):
+        previous += '，樣本不足不比較'
+    lines = ['|趨勢提醒|', title, f"最近 {days} 天：已判級 {first['current']['graded']} 顆", previous]
+    lines += [_category_line(trigger, settings) for trigger in triggers]
+    also = _also_rising(triggers, {trigger['label'] for trigger in triggers})
+    if also:
+        lines.append(f"同時上升：{'、'.join(also)}")
     lines.append(f"說明{'（AI 依上列數據撰寫）' if written_by_ai else ''}：{advice}")
     lines.append('比例來自檢測模型觀察，僅供參考，不代表病因判斷或防治效果。')
     return '\n'.join(lines) + '\n'
+
+
+def _category_line(trigger, settings):
+    days = settings['window_days']
+    params = settings['categories'][trigger['key']]
+    current = trigger['current']
+    basis = {
+        'threshold': f"達 {_percent(params['threshold'])} 門檻",
+        'rise': f"前 {days} 天 {_percent(trigger['previous']['ratio'])}，"
+                f"上升 {params['rise'] * 100:.1f} 個百分點以上",
+        'spike': f"今日 {trigger['today']['count']}／{trigger['today']['graded']} 顆"
+                 f"（{_percent(trigger['today']['ratio'])}），"
+                 f"達今日前 {days} 天（{_percent(trigger['history']['ratio'])}）的 "
+                 f"{settings['spike_factor']:g} 倍以上",
+    }
+    return (f"・{trigger['label']} {current['count']} 顆（{_percent(current['ratio'])}）："
+            + '；'.join(basis[reason] for reason in trigger['reasons']))
+
+
+def _also_rising(triggers, triggered_labels):
+    """Rising categories that did not trigger themselves, in rule order."""
+    seen = []
+    for trigger in triggers:
+        for label in trigger['also_rising']:
+            if label not in triggered_labels and label not in seen:
+                seen.append(label)
+    return seen
 
 
 class TrendAlerts:
@@ -232,20 +264,20 @@ class TrendAlerts:
                 state['last_alerted'][trigger['key']] = now.isoformat(timespec='seconds')
             if triggers:
                 self._write(state)
-        alerts = [self._compose(trigger, settings, now) for trigger in triggers]
-        if not alerts:
+        if not triggers:
             return {'ok': True, 'alerts': [], 'reason': None, 'errors': []}
+        # Everything triggered by one check goes out as one message.
+        alert = self._compose(triggers, settings, now)
         with _LOCK:
             state = self._read()
-            state['recent'] = (alerts[::-1] + state['recent'])[:RECENT_LIMIT]
+            state['recent'] = ([alert] + state['recent'])[:RECENT_LIMIT]
             self._write(state)
         errors = []
-        for alert in alerts:
-            try:
-                self.outbox.enqueue_alert(alert['id'], alert['text'])
-            except (OSError, ValueError) as error:
-                errors.append(f"{alert['label']}：{error}")
-        return {'ok': not errors, 'alerts': alerts,
+        try:
+            self.outbox.enqueue_alert(alert['id'], alert['text'])
+        except (OSError, ValueError) as error:
+            errors.append(f"{alert['label']}：{error}")
+        return {'ok': not errors, 'alerts': [alert],
                 'reason': 'line_queue_failed' if errors else None, 'errors': errors}
 
     def status(self) -> dict:
@@ -259,17 +291,18 @@ class TrendAlerts:
             'directions': dict(DIRECTIONS),
             'line': self.outbox.configuration(),
             'recent': [
-                {key: alert.get(key) for key in ('id', 'key', 'label', 'created_at', 'text', 'wording')}
+                # The message itself goes to LINE; the Dashboard lists categories only.
+                {key: alert.get(key) for key in ('id', 'label', 'created_at', 'wording')}
                 | {'delivery': delivery.get(alert['id'])}
                 for alert in state['recent']
             ],
         }
 
-    def _compose(self, trigger, settings, now):
+    def _compose(self, triggers, settings, now):
         advice, wording = None, 'template'
         if self._writer is not None:
             try:
-                written = self._writer(alert_facts(trigger, settings))
+                written = self._writer(alert_facts(triggers, settings))
             except Exception:  # A wording failure must never stop the alert.
                 written = None
             if isinstance(written, dict) and written.get('ok'):
@@ -277,11 +310,13 @@ class TrendAlerts:
                 wording = 'ai' if advice else 'template_rejected'
             else:
                 wording = f"template_{(written or {}).get('reason') or 'writer_failed'}"
-        advice = advice or template_advice(trigger)
+        advice = advice or template_advice(triggers)
+        labels = [trigger['label'] for trigger in triggers]
         return {
-            'id': f'trend_{uuid.uuid4().hex}', 'key': trigger['key'], 'label': trigger['label'],
+            'id': f'trend_{uuid.uuid4().hex}', 'keys': [trigger['key'] for trigger in triggers],
+            'labels': labels, 'label': '、'.join(labels),
             'created_at': now.isoformat(timespec='seconds'), 'wording': wording,
-            'text': render_text(trigger, settings, advice, written_by_ai=wording == 'ai'),
+            'text': render_text(triggers, settings, advice, written_by_ai=wording == 'ai'),
         }
 
     def _windows(self, now, settings):

@@ -2730,6 +2730,9 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertRegex(camera, r'camera\.css\?v=\d+')
         self.assertIn('/static/fruit_app/js/dashboard.js', dashboard)
         self.assertIn('/static/fruit_app/css/dashboard.css', dashboard)
+        # 舊版 dashboard.js 搭配新版 /api/state/ 會讓整頁狀態同步失敗，同樣需要版本參數。
+        for asset in (r'dashboard\.js', r'dashboard\.css', r'assistant_render\.js', r'assistant\.js'):
+            self.assertRegex(dashboard, asset + r'\?v=\d+')
         self.assertNotIn('<style>', camera)
         self.assertNotIn('<style>', dashboard)
 
