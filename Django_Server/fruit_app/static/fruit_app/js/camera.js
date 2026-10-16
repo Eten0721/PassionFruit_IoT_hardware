@@ -5,6 +5,8 @@ const localVideo = document.getElementById('local-video');
     const statusEl = document.getElementById('status');
     const diagnosticEl = document.getElementById('diagnostic');
     const rtcStatusEl = document.getElementById('rtc-status');
+    const lensBar = document.getElementById('lens-bar');
+    const lensSelect = document.getElementById('camera-lens');
 
     let localStream = null;
     let peerConnection = null;
@@ -18,6 +20,7 @@ const localVideo = document.getElementById('local-video');
     let lastLiveFrameAtMs = null;
     let capturePollTimer = null;
     let webrtcPollTimer = null;
+    let watchingLiveFrames = false;
     const captureRetryDelayMs = 2000;
     const captureIdlePollMs = 250;
     const captureActivePollMs = 50;
@@ -25,6 +28,10 @@ const localVideo = document.getElementById('local-video');
     const captureStateRequestTimeoutMs = 1000;
     const captureStartedTelemetryTimeoutMs = 750;
     const webrtcPollMs = 1000;
+    const CAPTURE_SIZE = { width: { ideal: 1920 }, height: { ideal: 1080 } };
+    const ULTRA_WIDE_LABEL = /ultra\s*wide|超廣角|超广角|超広角/i;
+    const FRONT_LABEL = /front|前置|前鏡頭|前镜头/i;
+    const LENS_STORAGE_KEY = 'pf-camera-device-id';
     const RTC_CONFIG = {
         iceServers: [],
     };
@@ -134,28 +141,15 @@ const localVideo = document.getElementById('local-video');
         setStatus('正在向瀏覽器請求相機權限。');
         try {
             if (localStream) {
-                localStream.getTracks().forEach((track) => track.stop());
+                stopStream(localStream);
             }
-            try {
-                localStream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        facingMode: { ideal: 'environment' },
-                        width: { ideal: 1920 },
-                        height: { ideal: 1080 },
-                    },
-                    audio: false,
-                });
-            } catch (environmentError) {
-                localStream = await navigator.mediaDevices.getUserMedia({
-                    video: true,
-                    audio: false,
-                });
-            }
-
-            localVideo.srcObject = localStream;
-            watchLiveFrames();
+            const rearStream = await openRearCamera();
+            const cameras = await listCameras();
+            const preferred = pickDefaultCamera(cameras, readSavedDeviceId());
+            attachStream(await switchStream(rearStream, preferred?.deviceId));
+            renderLensOptions(cameras);
             startPanel.classList.add('hidden');
-            setStatus('相機已開啟，等待正式拍攝請求；RTC 預覽另行連線。');
+            setStatus(`相機已開啟（${activeLensLabel()}），等待正式拍攝請求；RTC 預覽另行連線。`);
             currentOfferId = 0;
             knownAnswerId = 0;
             restartWebrtcPolling(0);
@@ -163,6 +157,126 @@ const localVideo = document.getElementById('local-video');
             setStatus(`相機開啟失敗：${error.name || 'Error'}，${error.message || '請檢查瀏覽器權限設定。'}`);
             startButton.disabled = false;
         }
+    }
+
+    async function openRearCamera() {
+        try {
+            return await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: { ideal: 'environment' }, ...CAPTURE_SIZE },
+                audio: false,
+            });
+        } catch (environmentError) {
+            return navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        }
+    }
+
+    async function listCameras() {
+        const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+        return devices.filter((device) => device.kind === 'videoinput' && device.deviceId);
+    }
+
+    // 操作員選過的鏡頭優先；否則選後置超廣角（三站間距 19 cm 時主鏡頭視角不足），前鏡頭不自動選。
+    function pickDefaultCamera(cameras, savedDeviceId) {
+        const saved = cameras.find((camera) => camera.deviceId === savedDeviceId);
+        if (saved) {
+            return saved;
+        }
+        return cameras.find((camera) => (
+            ULTRA_WIDE_LABEL.test(camera.label || '') && !FRONT_LABEL.test(camera.label || '')
+        )) || null;
+    }
+
+    async function switchStream(stream, deviceId) {
+        if (!deviceId || deviceIdOf(stream) === deviceId) {
+            return stream;
+        }
+        // iOS 同時只能開一顆鏡頭，須先停止舊串流。
+        stopStream(stream);
+        try {
+            return await navigator.mediaDevices.getUserMedia({
+                video: { deviceId: { exact: deviceId }, ...CAPTURE_SIZE },
+                audio: false,
+            });
+        } catch (switchError) {
+            console.warn('指定鏡頭開啟失敗，改用預設後鏡頭', switchError);
+            return openRearCamera();
+        }
+    }
+
+    function attachStream(stream) {
+        localStream = stream;
+        localVideo.srcObject = stream;
+        lastLiveFrameAtMs = null;
+        watchLiveFrames();
+        const track = stream.getVideoTracks()[0];
+        const sender = peerConnection?.getSenders().find((item) => item.track?.kind === 'video');
+        if (sender && track) {
+            sender.replaceTrack(track).catch((error) => console.warn('RTC 預覽切換鏡頭失敗', error));
+        }
+    }
+
+    function renderLensOptions(cameras) {
+        const options = cameras.map((camera, index) => {
+            const option = document.createElement('option');
+            option.value = camera.deviceId;
+            option.textContent = camera.label || `鏡頭 ${index + 1}`;
+            return option;
+        });
+        lensSelect.replaceChildren(...options);
+        lensSelect.value = deviceIdOf(localStream);
+        lensBar.classList.toggle('hidden', cameras.length < 2);
+    }
+
+    async function selectLens() {
+        const deviceId = lensSelect.value;
+        if (!localStream || isCapturing) {
+            lensSelect.value = deviceIdOf(localStream);
+            setStatus('拍攝中無法切換鏡頭，請稍後再試。');
+            return;
+        }
+        lensSelect.disabled = true;
+        try {
+            attachStream(await switchStream(localStream, deviceId));
+            saveDeviceId(deviceIdOf(localStream));
+            lensSelect.value = deviceIdOf(localStream);
+            setStatus(`已切換鏡頭（${activeLensLabel()}），等待正式拍攝請求。`);
+        } catch (error) {
+            localStream = null;
+            lensBar.classList.add('hidden');
+            startPanel.classList.remove('hidden');
+            startButton.disabled = false;
+            setStatus(`切換鏡頭失敗：${error.name || 'Error'}，請重新開啟相機。`);
+        } finally {
+            lensSelect.disabled = false;
+        }
+    }
+
+    function deviceIdOf(stream) {
+        return stream?.getVideoTracks()[0]?.getSettings?.().deviceId || '';
+    }
+
+    function stopStream(stream) {
+        stream.getTracks().forEach((track) => track.stop());
+    }
+
+    function readSavedDeviceId() {
+        try {
+            return window.localStorage.getItem(LENS_STORAGE_KEY) || '';
+        } catch (storageError) {
+            return '';
+        }
+    }
+
+    function saveDeviceId(deviceId) {
+        try {
+            window.localStorage.setItem(LENS_STORAGE_KEY, deviceId);
+        } catch (storageError) {
+            console.warn('無法記住鏡頭選擇', storageError);
+        }
+    }
+
+    function activeLensLabel() {
+        return localStream?.getVideoTracks()[0]?.label || '未知鏡頭';
     }
 
     function createPeerConnection() {
@@ -490,6 +604,10 @@ const localVideo = document.getElementById('local-video');
 
     function watchLiveFrames() {
         lastLiveFrameAtMs = null;
+        if (watchingLiveFrames) {
+            return;
+        }
+        watchingLiveFrames = true;
         if (typeof localVideo.requestVideoFrameCallback !== 'function') {
             localVideo.addEventListener('timeupdate', markLiveFrame);
             return;
@@ -516,7 +634,7 @@ const localVideo = document.getElementById('local-video');
             browserOnline: navigator.onLine,
             videoSize: [localVideo.videoWidth, localVideo.videoHeight],
             videoTracks: (localStream?.getVideoTracks() || []).map((track) => ({
-                readyState: track.readyState, enabled: track.enabled, muted: track.muted,
+                label: track.label, readyState: track.readyState, enabled: track.enabled, muted: track.muted,
             })),
             lastLiveFrameAgeMs: lastLiveFrameAtMs === null
                 ? null : Math.round(performance.now() - lastLiveFrameAtMs),
@@ -531,5 +649,6 @@ const localVideo = document.getElementById('local-video');
     document.getElementById('btn-camera-diagnostics').addEventListener('click', updateAcceptanceDiagnostics);
     updateDiagnostic();
     startButton.addEventListener('click', startCamera);
+    lensSelect.addEventListener('change', selectLens);
     restartWebrtcPolling(0);
     restartCapturePolling(0);

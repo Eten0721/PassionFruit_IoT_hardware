@@ -2725,6 +2725,9 @@ class DataCollectionFlowTests(SimpleTestCase):
         dashboard = self.client.get('/dashboard/').content.decode('utf-8')
         self.assertIn('/static/fruit_app/js/camera.js', camera)
         self.assertIn('/static/fruit_app/css/camera.css', camera)
+        # 手機會沿用舊靜態檔；相機頁資產必須帶版本參數才能在更新後重新下載。
+        self.assertRegex(camera, r'camera\.js\?v=\d+')
+        self.assertRegex(camera, r'camera\.css\?v=\d+')
         self.assertIn('/static/fruit_app/js/dashboard.js', dashboard)
         self.assertIn('/static/fruit_app/css/dashboard.css', dashboard)
         self.assertNotIn('<style>', camera)
