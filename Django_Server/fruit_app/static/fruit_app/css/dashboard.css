@@ -1410,9 +1410,32 @@ textarea {
 .trend-alert-list {
     margin: 0;
     padding-left: 20px;
-    white-space: pre-line;
     color: var(--text-soft);
     font-size: 0.9rem;
+}
+
+.trend-alert-help {
+    display: grid;
+    gap: 6px;
+    margin: 10px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.trend-alert-help dt {
+    display: inline;
+    font-weight: 700;
+    color: var(--text-soft);
+}
+
+.trend-alert-help dt::after {
+    content: "：";
+}
+
+.trend-alert-help dd {
+    display: inline;
+    margin: 0;
 }
 
 .operation-details > summary .summary-badge {

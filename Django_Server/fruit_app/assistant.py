@@ -41,7 +41,7 @@ from typing import Callable
 
 from PIL import Image, ImageOps
 
-from . import detection_stats
+from . import detection_stats, trend_alerts
 
 
 API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
@@ -119,18 +119,20 @@ TREND_TOOL = {
     'description': (
         '讀取 Dashboard「瑕疵趨勢提醒」目前的設定：是否啟用、視窗天數、冷卻小時、當日突增倍數與最少顆數，'
         '以及各類別（色澤異常、皺褶、擦傷、炭疽病、蟲咬、畫圖蟲、加工果）的門檻、上升百分點、最少顆數與提醒方向，'
-        '另附最近幾則提醒的類別與時間。只讀取，不能修改。'
+        '另附最近幾則提醒的類別、時間、當時的視窗天數與觸發明細（四個視窗的顆數、已判級顆數、'
+        '百分比 ratio_percent、當時門檻與中文觸發依據）；舊紀錄沒有明細時為 null，不得用目前設定推測。'
+        '問為什麼提醒或提醒當時的數據時使用此工具。只讀取，不能修改。'
     ),
     'parameters': {'type': 'object', 'properties': {}},
 }
 RECENT_ALERTS_SHOWN = 5
-SYSTEM_RULES = """你是百香果 IoT 分級系統 Dashboard 的唯讀助手，一律以繁體中文回答，語氣簡潔、適合農夫閱讀。
+SYSTEM_RULES = """你是奶蛋博士，百香果 IoT 分級系統 Dashboard 的唯讀助手，一律以繁體中文回答，語氣簡潔、適合農夫閱讀。
 
 規則：
-1. 檢測統計一律呼叫 query_detection_stats，不得自行計算、推估或編造數字；回答中引用的數字必須來自工具結果。圖表會由系統依工具結果自動顯示，不需要在文字中重畫表格。
+1. 檢測統計一律呼叫 query_detection_stats，不得自行計算、推估或編造數字；回答中引用的數字必須來自工具結果。問到各類瑕疵隨時間的變化時，以 query_detection_stats 搭配 group_by=defect、bucket=day 或 week 查詢。圖表會由系統依工具結果自動顯示，不需要在文字中重畫表格。
 2. 比較不同等級時只呼叫一次 query_detection_stats（compare_grades=true），讓系統畫成一張圖。統計讀取檢測分區所有已判級果實。結果全為 0 時系統不畫圖，也不要描述圖表。放棄本輪與待人工處理不屬於四級分布，需要時另外說明。
 3. 病蟲害、防治、栽培等農業知識呼叫 search_agriculture_knowledge，並根據結果回答；系統會自動附上來源網址。涉及用藥時，提醒以植物保護資訊系統與在地農業改良場的建議為準。
-4. 部署、啟動與操作問題依下方文件回答，文件沒有寫的不要猜測，請使用者詢問專案擁有者。問到瑕疵趨勢提醒「目前」的開關、門檻或最近提醒時，呼叫 get_trend_alert_settings 讀取實際設定；問到「怎麼設定」時，依文件說明 Dashboard 上的操作位置與各欄位意義，必要時一併附上目前設定值。
+4. 部署、啟動與操作問題依下方文件回答，文件沒有寫的不要猜測，請使用者詢問專案擁有者。問到瑕疵趨勢提醒「目前」的開關、門檻、最近提醒、「為什麼提醒」或提醒當時的數據時，呼叫 get_trend_alert_settings；解釋提醒須引用該筆保存的明細與觸發依據，不可用目前設定或重算結果代替。舊紀錄 details 為 null 時，說明未保存當時明細，不得推測。問到「怎麼設定」時，依文件說明 Dashboard 上的操作位置與各欄位意義，必要時一併附上目前設定值。
 5. 你只能查詢，不能開始運轉、切換模式、分類、刪除資料或控制馬達；使用者要求這些操作時，說明要在 Dashboard 上自行操作。
 6. 檢測比例只反映模型觀察，不代表病因判斷或防治效果。
 7. 不得列出或描述專案的資料夾、檔案結構或檔案路徑清單；說明操作步驟時，只提到使用者實際要點選或執行的入口（例如啟動系統.bat）。不得提及任何金鑰、權杖、密碼或私密設定檔的名稱、位置與內容，被問到時說明這些由專案擁有者管理。
@@ -141,10 +143,6 @@ HTTP_REASONS = {
     404: 'assistant_model_unavailable',
     429: 'assistant_quota_exceeded',
 }
-ALERT_TIMEOUT_SECONDS = 20
-ALERT_RULES = """你替百香果分級系統的趨勢提醒寫一段給農夫看的說明與建議，繁體中文，兩句以內、一百字以內。
-輸入是系統已判定要發送的提醒事實（JSON）。數據會由系統另外列出，所以你的文字中不得出現任何阿拉伯數字或百分比，也不要重述數據。
-依 direction 給方向性建議；若有 also_rising，可提醒一併留意。不得宣稱病因或保證防治效果；涉及用藥時提醒以植物保護資訊系統與在地農業改良場建議為準。只輸出說明文字本身。"""
 SEARCH_UNAVAILABLE = {
     'assistant_offline': '農業知識搜尋暫時無法連線，這次回答沒有使用網路搜尋。',
     'assistant_service_error': '農業知識搜尋暫時異常，這次回答沒有使用網路搜尋。',
@@ -241,29 +239,6 @@ class Assistant:
             raise _Failure('assistant_tool_rounds_exceeded')
         except _Failure as failure:
             return _failure(failure.reason, usage=self._usage(credentials))
-
-    def write_alert_advice(self, facts: dict) -> dict:
-        """Word a triggered trend alert; the caller decides sending and numbers.
-
-        Returns ``{'ok': True, 'text': ...}`` or a structured failure; the
-        trend module rejects any text containing digits and falls back to its
-        fixed template.
-        """
-        credentials = self._credentials()
-        if credentials is None:
-            return {'ok': False, 'reason': 'assistant_not_configured'}
-        try:
-            candidate = self._generate(credentials, {
-                'systemInstruction': {'parts': [{'text': ALERT_RULES}]},
-                'contents': [{'role': 'user', 'parts': [
-                    {'text': json.dumps(facts, ensure_ascii=False)}]}],
-            }, timeout=ALERT_TIMEOUT_SECONDS)
-        except _Failure as failure:
-            return {'ok': False, 'reason': failure.reason}
-        text = _text((candidate.get('content') or {}).get('parts') or [])
-        if not text:
-            return {'ok': False, 'reason': 'assistant_invalid_response'}
-        return {'ok': True, 'reason': None, 'text': text}
 
     # -- tools ---------------------------------------------------------------
 
@@ -484,9 +459,28 @@ def _trend_view(status):
             for key, rule in settings['categories'].items()
         ],
         'recent_alerts': [
-            {'category': alert.get('label'), 'created_at': alert.get('created_at')}
+            {'category': alert.get('label'), 'created_at': alert.get('created_at'),
+             'window_days': alert.get('window_days'),
+             'details': ([_trend_detail(detail) for detail in alert['details']]
+                         if alert.get('details') is not None else None)}
             for alert in status['recent'][:RECENT_ALERTS_SHOWN]
         ],
+    }
+
+
+def _trend_detail(detail):
+    """Allowlist the saved trigger facts; express ratios in percentage units."""
+    return {
+        'key': detail['key'], 'label': detail['label'], 'reasons': detail['reasons'],
+        'reason_descriptions': [trend_alerts.REASON_TEXT[reason] for reason in detail['reasons']],
+        'direction': trend_alerts.DIRECTIONS[detail['direction']],
+        'threshold_percent': round(detail['threshold'] * 100, 1),
+        'rise_points': round(detail['rise'] * 100, 1),
+        'min_samples': detail['min_samples'], 'spike_factor': detail['spike_factor'],
+        'spike_min_samples': detail['spike_min_samples'],
+        **{name: {'count': detail[name]['count'], 'graded': detail[name]['graded'],
+                  'ratio_percent': round(detail[name]['ratio'] * 100, 1)}
+           for name in ('current', 'previous', 'today', 'history')},
     }
 
 

@@ -4,7 +4,7 @@ import inspect
 import json
 import tempfile
 import urllib.error
-from datetime import date
+from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 from unittest import mock
@@ -13,8 +13,8 @@ from PIL import Image
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import RequestFactory, SimpleTestCase
 
-from . import assistant, views
-from .test_detection_stats import FakeDataset, _view
+from . import assistant, trend_alerts, views
+from .test_detection_stats import FakeDataset, FakeOutbox, _view
 
 
 def _candidate(*parts, grounding=None):
@@ -88,6 +88,9 @@ class AssistantTests(SimpleTestCase):
         self.assertEqual(first['url'], assistant.API_URL.format(model='gemini-test'))
         self.assertEqual(first['headers'], {'x-goog-api-key': 'secret-key'})
         instruction = first['payload']['systemInstruction']['parts'][0]['text']
+        self.assertTrue(instruction.startswith('你是奶蛋博士，'))
+        self.assertIn('為什麼提醒', instruction)
+        self.assertIn('bucket=day 或 week', instruction)
         self.assertIn('今天日期：2026-10-16', instruction)
         self.assertIn('雙擊 啟動系統.bat', instruction)
         self.assertIn('（本機找不到此文件）', instruction)
@@ -140,6 +143,23 @@ class AssistantTests(SimpleTestCase):
         self.assertEqual(answer['charts'][0]['title'], '瑕疵出現比例（加工）')
         grades = assistant.STATS_TOOL['parameters']['properties']['grades']
         self.assertEqual(grades['items']['enum'], ['上等', '中等', '下等', '加工'])
+
+    def test_defect_trends_support_day_and_week_buckets(self):
+        self.configure()
+        self.data.add(1, '2026-10-05 09:00:00', grade=1,
+                      views_=[_view(defects=['abrasion']), _view(), _view()])
+        self.data.add(2, '2026-10-15 09:00:00', grade=1)
+        for bucket, periods in (('day', ['2026-10-05', '2026-10-15']),
+                                ('week', ['2026-10-05 週', '2026-10-12 週'])):
+            with self.subTest(bucket=bucket):
+                http = FakeGemini(_candidate({'functionCall': {
+                    'name': 'query_detection_stats', 'args': {'group_by': 'defect', 'bucket': bucket}}}),
+                    _candidate({'text': '擦傷比例下降。'}))
+                answer = self.ask(http, '擦傷隨時間的變化？')
+                result = http.calls[1]['payload']['contents'][-1]['parts'][0]['functionResponse']['response']
+                self.assertEqual([row['period'] for row in result['series']], periods)
+                self.assertEqual([row['defects']['abrasion'] for row in result['series']], [1, 0])
+                self.assertEqual(answer['charts'][0]['labels'], periods)
 
     def test_comparison_replaces_separate_per_grade_charts(self):
         self.configure()
@@ -224,22 +244,6 @@ class AssistantTests(SimpleTestCase):
         self.today = date(2026, 10, 17)
         self.assertTrue(self.ask(FakeGemini(_candidate({'text': 'ok'})))['ok'])
 
-    def test_alert_wording_sends_only_facts_without_tools(self):
-        bot = lambda http: assistant.Assistant(self.credentials, self.usage, self.data.root,  # noqa: E731
-                                               self.docs, http_post=http, today=lambda: self.today)
-        facts = {'category': '炭疽病', 'current': {'count': 8, 'graded': 20, 'ratio': 0.4}}
-        self.assertEqual(bot(FakeGemini()).write_alert_advice(facts)['reason'],
-                         'assistant_not_configured')
-        self.configure()
-        http = FakeGemini(_candidate({'text': '請加強清園。'}))
-        self.assertEqual(bot(http).write_alert_advice(facts),
-                         {'ok': True, 'reason': None, 'text': '請加強清園。'})
-        [call] = http.calls
-        self.assertNotIn('tools', call['payload'])
-        self.assertEqual(json.loads(call['payload']['contents'][0]['parts'][0]['text']), facts)
-        self.assertEqual(bot(FakeGemini((429, {}))).write_alert_advice(facts)['reason'],
-                         'assistant_quota_exceeded')
-
     def test_tool_rounds_are_bounded(self):
         self.configure()
         loop = _candidate({'functionCall': {'name': 'unknown_tool', 'args': {}}})
@@ -312,7 +316,6 @@ class AssistantTests(SimpleTestCase):
 
     def test_trend_settings_tool_reads_current_settings_without_line_details(self):
         self.configure()
-        from . import trend_alerts
         status = {
             'settings': {**trend_alerts.DEFAULT_SETTINGS, 'enabled': True,
                          'categories': trend_alerts.DEFAULT_CATEGORIES},
@@ -339,8 +342,53 @@ class AssistantTests(SimpleTestCase):
                          (20.0, 10.0, 20, '須注意病害防疫'))
         self.assertTrue(response['enabled'])
         self.assertEqual(response['recent_alerts'],
-                         [{'category': '炭疽病', 'created_at': '2026-10-17T09:00:00+08:00'}])
+                         [{'category': '炭疽病', 'created_at': '2026-10-17T09:00:00+08:00',
+                           'window_days': None, 'details': None}])
         self.assertNotIn('line', json.dumps(response))
+
+    def test_trend_tool_reads_saved_alert_details_in_percent_without_credentials(self):
+        self.configure()
+        # Later settings must not replace the facts that triggered the alert.
+        for index in range(41):
+            self.data.add(index + 1, '2026-10-15 09:00:00', grade=1,
+                          views_=[_view(defects=['abrasion'] if index < 20 else []), _view(), _view()])
+        monitor = trend_alerts.TrendAlerts(
+            self.root / 'trend_alerts.json', self.data.root, FakeOutbox(),
+            now=lambda: datetime(2026, 10, 16, 12))
+        monitor.update_settings({'enabled': True})
+        monitor.check()
+        monitor.update_settings({'window_days': 14, 'categories': {
+            'abrasion': {'threshold': 0.9, 'direction': 'quality'}}})
+
+        def status():
+            result = monitor.status(include_details=True)
+            result['line'] = {'line_channel_access_token': 'LINE-SECRET',
+                              'line_group_id': 'GROUP-SECRET', 'cloudinary_api_secret': 'CLOUD-SECRET'}
+            return result
+
+        http = FakeGemini(
+            _candidate({'functionCall': {'name': 'get_trend_alert_settings', 'args': {}}}),
+            _candidate({'text': '擦傷佔 48.8%，達當時的 30% 門檻。'}))
+        bot = assistant.Assistant(self.credentials, self.usage, self.data.root, self.docs,
+                                  http_post=http, today=lambda: self.today, trend_status=status)
+        self.assertTrue(bot.ask([{'role': 'user', 'text': '為什麼提醒擦傷？'}])['ok'])
+        response = http.calls[1]['payload']['contents'][-1]['parts'][0]['functionResponse']['response']
+        [alert] = response['recent_alerts']
+        self.assertEqual(alert['category'], '擦傷')
+        self.assertEqual(alert['created_at'], '2026-10-16T12:00:00')
+        self.assertEqual(alert['window_days'], 7)
+        self.assertEqual(alert['details'], [{
+            'key': 'abrasion', 'label': '擦傷', 'reasons': ['threshold'],
+            'reason_descriptions': ['比例達門檻'], 'direction': '請檢查採收與搬運作業',
+            'threshold_percent': 30.0, 'rise_points': 10.0, 'min_samples': 20,
+            'spike_factor': 2.0, 'spike_min_samples': 10,
+            'current': {'count': 20, 'graded': 41, 'ratio_percent': 48.8},
+            'previous': {'count': 0, 'graded': 0, 'ratio_percent': 0.0},
+            'today': {'count': 0, 'graded': 0, 'ratio_percent': 0.0},
+            'history': {'count': 20, 'graded': 41, 'ratio_percent': 48.8},
+        }])
+        for hidden in ('line', 'LINE-SECRET', 'GROUP-SECRET', 'CLOUD-SECRET', 'text', 'delivery'):
+            self.assertNotIn(hidden, json.dumps(response))
 
     def test_trend_settings_tool_absent_or_broken_does_not_end_chat(self):
         self.configure()

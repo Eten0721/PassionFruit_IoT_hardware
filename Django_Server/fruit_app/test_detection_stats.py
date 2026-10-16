@@ -217,9 +217,9 @@ class TrendAlertTests(SimpleTestCase):
         self.state_path = Path(temp.name) / 'trend_alerts.json'
         self.fruit = 0
 
-    def monitor(self, writer=None):
+    def monitor(self):
         return trend_alerts.TrendAlerts(self.state_path, self.data.root, self.outbox,
-                                        writer=writer, now=lambda: self.now)
+                                        now=lambda: self.now)
 
     def add_fruits(self, count, *, days_ago, defects=None, grade=1, mode='hardware'):
         """``defects`` maps a defect to how many of these fruits show it."""
@@ -242,20 +242,18 @@ class TrendAlertTests(SimpleTestCase):
         self.assertEqual(self.monitor().check()['alerts'], [])
         self.assertEqual(self.outbox.queued, [])
 
-    def test_threshold_alert_falls_back_to_template_and_respects_cooldown(self):
+    def test_threshold_alert_has_fixed_text_and_respects_cooldown(self):
         self.add_fruits(20, days_ago=1, defects={'anthracnose': 8})
         self.enable()
 
         outcome = self.monitor().check()
 
         [alert] = outcome['alerts']
-        self.assertEqual((alert['key'], alert['wording']), ('anthracnose', 'template'))
-        self.assertTrue(alert['text'].startswith('|趨勢提醒|\n'))
-        self.assertIn('比例來自檢測模型觀察，僅供參考', alert['text'])
-        for line in ('炭疽病近來有上升趨勢', '最近 7 天：已判級 20 顆，炭疽病 8 顆（40.0%）',
-                     '前 7 天：已判級 0 顆，樣本不足不比較', '依據：比例達 20.0% 門檻',
-                     '說明：炭疽病比例近來偏高，須注意病害防疫。'):
-            self.assertIn(line, alert['text'])
+        self.assertEqual((alert['keys'], alert['label']), (['anthracnose'], '炭疽病'))
+        self.assertEqual(alert['text'], '|趨勢提醒|\n近來偏高：炭疽病\n須注意：\n'
+                         '・炭疽病：須注意病害防疫\n（模型觀察結果，僅供參考）\n'
+                         '數據詳情可詢問奶蛋博士獲得更多資訊')
+        self.assertNotRegex(alert['text'], trend_alerts.DIGITS)
         self.assertEqual(self.outbox.queued, [(alert['id'], alert['text'])])
 
         self.now += timedelta(hours=23)
@@ -265,6 +263,9 @@ class TrendAlertTests(SimpleTestCase):
         status = self.monitor().status()
         self.assertEqual(len(status['recent']), 2)
         self.assertEqual(status['recent'][0]['delivery'], {'status': 'pending', 'reason': None})
+        # The Dashboard lists time and categories; the message itself is LINE-only.
+        self.assertEqual(status['recent'][0]['label'], '炭疽病')
+        self.assertEqual(set(status['recent'][0]), {'id', 'label', 'created_at', 'delivery'})
 
     def test_every_graded_fruit_counts_without_extra_labels(self):
         self.add_fruits(10, days_ago=1, defects={'anthracnose': 4})
@@ -273,8 +274,9 @@ class TrendAlertTests(SimpleTestCase):
 
         [alert] = self.monitor().check()['alerts']
 
-        self.assertTrue(alert['text'].startswith('|趨勢提醒|\n炭疽病近來有上升趨勢'))
-        self.assertIn('最近 7 天：已判級 20 顆，炭疽病 8 顆（40.0%）', alert['text'])
+        self.assertTrue(alert['text'].startswith('|趨勢提醒|\n近來偏高：炭疽病\n'))
+        self.assertEqual(alert['details'][0]['current'], {'count': 8, 'graded': 20, 'ratio': 0.4})
+        self.assertNotRegex(alert['text'], trend_alerts.DIGITS)
         for word in ('測試', '純拍攝', '使用硬體'):
             self.assertNotIn(word, alert['text'])
 
@@ -286,30 +288,34 @@ class TrendAlertTests(SimpleTestCase):
         self.enable(categories={'abrasion': {'threshold': 0.2}})
         [alert] = self.monitor().check()['alerts']
 
-        self.assertEqual(alert['key'], 'abrasion')
-        self.assertIn('說明：擦傷比例近來偏高，請檢查採收與搬運作業。', alert['text'])
+        self.assertEqual(alert['keys'], ['abrasion'])
+        self.assertIn('・擦傷：請檢查採收與搬運作業', alert['text'])
+        self.assertNotRegex(alert['text'], trend_alerts.DIGITS)
 
-    def test_rise_against_previous_window_lists_other_rising_categories(self):
+    def test_rise_against_previous_window_lists_triggered_categories(self):
         self.add_fruits(20, days_ago=9)
         self.add_fruits(20, days_ago=1, defects={'anthracnose': 3, 'wrinkle': 4})
         self.enable()
 
-        alerts = {alert['key']: alert for alert in self.monitor().check()['alerts']}
+        [alert] = self.monitor().check()['alerts']
 
-        self.assertEqual(set(alerts), {'anthracnose', 'wrinkle'})
-        text = alerts['anthracnose']['text']
-        self.assertIn('前 7 天：已判級 20 顆，炭疽病 0 顆（0.0%）', text)
-        self.assertIn('依據：比前 7 天上升 10.0 個百分點以上', text)
-        self.assertIn('同時上升：皺褶', text)
-        self.assertIn('同時上升：炭疽病', alerts['wrinkle']['text'])
+        self.assertEqual(alert['keys'], ['wrinkle', 'anthracnose'])
+        text = alert['text']
+        self.assertTrue(text.startswith('|趨勢提醒|\n近來偏高：皺褶、炭疽病\n'))
+        self.assertEqual([detail['reasons'] for detail in alert['details']], [['rise'], ['rise']])
+        self.assertNotRegex(text, trend_alerts.DIGITS)
+        self.assertEqual(len(self.outbox.queued), 1)
 
     def test_processing_share_uses_the_same_rules(self):
         self.add_fruits(20, days_ago=1, grade=0)
         self.add_fruits(20, days_ago=2, grade=2)
         self.enable()
         [alert] = self.monitor().check()['alerts']
-        self.assertEqual((alert['key'], alert['label']), ('processing', '加工果'))
-        self.assertIn('最近 7 天：已判級 40 顆，加工果 20 顆（50.0%）', alert['text'])
+        self.assertEqual((alert['keys'], alert['label']), (['processing'], '加工果'))
+        self.assertIn('近來偏高：加工果\n', alert['text'])
+        self.assertIn('・加工果：請檢視近期整體品質與田間狀況', alert['text'])
+        self.assertEqual(alert['details'][0]['current'], {'count': 20, 'graded': 40, 'ratio': 0.5})
+        self.assertNotRegex(alert['text'], trend_alerts.DIGITS)
 
     def test_same_day_spike_against_window_before_today(self):
         self.add_fruits(20, days_ago=3, defects={'anthracnose': 1})
@@ -318,9 +324,10 @@ class TrendAlertTests(SimpleTestCase):
 
         [alert] = self.monitor().check()['alerts']
 
-        self.assertIn('炭疽病今日明顯偏高', alert['text'])
-        self.assertIn('今日：已判級 10 顆，炭疽病 3 顆（30.0%）；今日前 7 天為 5.0%', alert['text'])
-        self.assertIn('依據：今日比例達前 7 天的 2 倍以上', alert['text'])
+        self.assertTrue(alert['text'].startswith('|趨勢提醒|\n今日明顯偏高：炭疽病\n須注意：'))
+        self.assertNotIn('近來偏高', alert['text'])
+        self.assertEqual(alert['details'][0]['reasons'], ['spike'])
+        self.assertNotRegex(alert['text'], trend_alerts.DIGITS)
 
     def test_no_alert_without_any_rule(self):
         self.add_fruits(20, days_ago=9, defects={'anthracnose': 2})
@@ -328,34 +335,86 @@ class TrendAlertTests(SimpleTestCase):
         self.enable()
         self.assertEqual(self.monitor().check()['alerts'], [])
 
-    def test_writer_only_words_and_falls_back_to_template(self):
-        self.add_fruits(20, days_ago=1, defects={'anthracnose': 8})
+    def test_saved_details_keep_trigger_time_statistics_and_rules(self):
+        self.add_fruits(20, days_ago=9, defects={'abrasion': 2})
+        self.add_fruits(20, days_ago=3, defects={'abrasion': 4})
+        self.add_fruits(10, days_ago=0, defects={'abrasion': 8})
+        self.enable(categories={'abrasion': {'threshold': 0.35, 'rise': 0.12}},
+                    spike_factor=2.5, spike_min_samples=8)
+        [alert] = self.monitor().check()['alerts']
+        saved = json.loads(self.state_path.read_text(encoding='utf-8'))['recent'][0]
+        self.assertEqual(saved, alert)
+        self.assertNotIn('wording', saved)
+        self.assertEqual(saved['window_days'], 7)
+        self.assertEqual(saved['details'], [{
+            'key': 'abrasion', 'label': '擦傷', 'reasons': ['threshold', 'rise', 'spike'],
+            'direction': 'handling', 'threshold': 0.35, 'rise': 0.12, 'min_samples': 20,
+            'spike_factor': 2.5, 'spike_min_samples': 8,
+            'current': {'count': 12, 'graded': 30, 'ratio': 0.4},
+            'previous': {'count': 2, 'graded': 20, 'ratio': 0.1},
+            'today': {'count': 8, 'graded': 10, 'ratio': 0.8},
+            'history': {'count': 4, 'graded': 20, 'ratio': 0.2},
+        }])
+        self.enable(window_days=14, spike_factor=3,
+                    categories={'abrasion': {'threshold': 0.9, 'direction': 'quality'}})
+        snapshot = self.monitor().status(include_details=True)['recent'][0]
+        self.assertEqual(snapshot['details'], saved['details'])
+        self.assertEqual(snapshot['window_days'], 7)
+        self.assertEqual(set(self.monitor().status()['recent'][0]),
+                         {'id', 'label', 'created_at', 'delivery'})
+
+    def test_several_categories_from_one_check_become_one_message(self):
+        self.add_fruits(20, days_ago=9)
+        self.add_fruits(20, days_ago=1, defects={'bad_color': 10, 'wrinkle': 8, 'abrasion': 8})
         self.enable()
-        cases = (
-            (lambda facts: {'ok': True, 'text': '近期病斑變多，建議加強清園與通風。'}, 'ai'),
-            (lambda facts: {'ok': True, 'text': '約有 40% 果實受影響'}, 'template_rejected'),
-            (lambda facts: {'ok': False, 'reason': 'assistant_offline'}, 'template_assistant_offline'),
-            (mock.Mock(side_effect=TimeoutError('slow')), 'template_writer_failed'),
-        )
-        seen = []
-        for writer, wording in cases:
-            with self.subTest(wording=wording):
-                self.now += timedelta(days=1, hours=1)
-                recorder = mock.Mock(side_effect=writer)
-                [alert] = self.monitor(writer=recorder).check()['alerts']
-                facts = recorder.call_args.args[0]
-                seen.append(facts)
-                self.assertEqual(alert['wording'], wording)
-                self.assertIn('最近 7 天：已判級', alert['text'])
-                if wording == 'ai':
-                    self.assertIn('說明（AI 依上列數據撰寫）：近期病斑變多，建議加強清園與通風。', alert['text'])
-                else:
-                    self.assertIn('說明：炭疽病比例近來偏高，須注意病害防疫。', alert['text'])
-                    self.assertNotIn('約有', alert['text'])
-        self.assertEqual(seen[0]['category'], '炭疽病')
-        self.assertEqual(seen[0]['reasons'], ['比例達門檻'])
-        self.assertEqual(seen[0]['current'], {'count': 8, 'graded': 20, 'ratio': 0.4})
-        self.assertEqual(len(self.outbox.queued), 4)
+
+        [alert] = self.monitor().check()['alerts']
+
+        self.assertEqual(alert['labels'], ['色澤異常', '皺褶', '擦傷'])
+        self.assertEqual(alert['text'], '|趨勢提醒|\n近來偏高：色澤異常、皺褶、擦傷\n須注意：\n'
+                         '・色澤異常、皺褶：請留意栽培管理與採收時機\n'
+                         '・擦傷：請檢查採收與搬運作業\n（模型觀察結果，僅供參考）\n'
+                         '數據詳情可詢問奶蛋博士獲得更多資訊')
+        self.assertNotRegex(alert['text'], trend_alerts.DIGITS)
+        self.assertEqual(self.outbox.queued, [(alert['id'], alert['text'])])
+
+    def test_threshold_and_spike_categories_have_separate_lines(self):
+        self.add_fruits(20, days_ago=3, defects={'bad_color': 15, 'abrasion': 10, 'anthracnose': 1})
+        self.add_fruits(10, days_ago=0, defects={'abrasion': 10, 'anthracnose': 3})
+        self.enable()
+        [alert] = self.monitor().check()['alerts']
+        self.assertEqual([detail['reasons'] for detail in alert['details']],
+                         [['threshold'], ['threshold', 'spike'], ['spike']])
+        self.assertEqual(alert['text'], '|趨勢提醒|\n近來偏高：色澤異常、擦傷\n'
+                         '今日明顯偏高：炭疽病\n須注意：\n'
+                         '・色澤異常：請留意栽培管理與採收時機\n'
+                         '・擦傷：請檢查採收與搬運作業\n・炭疽病：須注意病害防疫\n'
+                         '（模型觀察結果，僅供參考）\n數據詳情可詢問奶蛋博士獲得更多資訊')
+        self.assertNotRegex(alert['text'], trend_alerts.DIGITS)
+        self.assertEqual(len(self.outbox.queued), 1)
+
+    def test_cooldown_is_independent_for_each_category(self):
+        self.add_fruits(20, days_ago=1, defects={'abrasion': 8})
+        self.enable()
+        self.monitor().check()
+        self.add_fruits(20, days_ago=0, defects={'abrasion': 8, 'anthracnose': 10})
+        [alert] = self.monitor().check()['alerts']
+        self.assertEqual(alert['keys'], ['anthracnose'])
+        self.assertNotIn('擦傷', alert['text'])
+        self.assertEqual(len(self.outbox.queued), 2)
+
+    def test_monitor_does_not_create_a_gemini_assistant_and_state_keeps_summary(self):
+        self.NOW = datetime.now()
+        self.add_fruits(20, days_ago=1, defects={'abrasion': 10})
+        self.enable()
+        with override_settings(DATASET_ROOT=self.data.root.parent,
+                               MOTOR_COMMAND_SEQUENCE_PATH=self.state_path.parent / 'sequence.json'), \
+                mock.patch.object(views, 'dashboard_assistant', side_effect=AssertionError('Gemini')):
+            [alert] = views.trend_alert_monitor().check()['alerts']
+            recent = self.client.get('/api/state/').json()['trend_alerts']['recent']
+        self.assertEqual(recent, [{'id': alert['id'], 'label': '擦傷',
+                                   'created_at': alert['created_at'],
+                                   'delivery': {'status': 'pending', 'reason': None}}])
 
     def test_settings_are_validated(self):
         for changes in ({}, {'enabled': 'yes'}, {'window_days': 0}, {'window_days': 1.5},

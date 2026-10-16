@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>檢測與分類控制台｜百香果</title>
-    <link rel="stylesheet" href="{% static 'fruit_app/css/dashboard.css' %}">
+    <link rel="stylesheet" href="{% static 'fruit_app/css/dashboard.css' %}?v={{ asset_version }}">
 </head>
 <body>
 <header class="app-header">
@@ -117,7 +117,7 @@
                 <form id="trend-alert-form" class="notification-block trend-alert-block" novalidate>
                     <div class="subheading-row">
                         <h3>瑕疵趨勢提醒</h3>
-                        <span>固定規則・只計使用硬體</span>
+                        <span>固定規則・計入所有已判級果實</span>
                     </div>
                     <label class="trend-alert-switch"><input id="trend-alert-enabled" type="checkbox"> 啟用趨勢提醒（LINE 與此處顯示）</label>
                     <div class="trend-alert-grid">
@@ -128,11 +128,18 @@
                     </div>
                     <div class="trend-alert-table-wrap">
                         <table class="trend-alert-table">
-                            <caption>各類參數（比例以已判級的硬體果實計）</caption>
+                            <caption>各類參數（比例以檢測資料中所有已判級果實計）</caption>
                             <thead><tr><th scope="col">類別</th><th scope="col">門檻 %</th><th scope="col">上升百分點</th><th scope="col">最少顆數</th><th scope="col">提醒方向</th></tr></thead>
                             <tbody id="trend-alert-categories"></tbody>
                         </table>
                     </div>
+                    <dl class="trend-alert-help">
+                        <div><dt>門檻 %</dt><dd>最近「視窗天數」內，有這類瑕疵的果實佔已判級果實的比例，達到此值就提醒。例：門檻 20%、最近 7 天 50 顆中有 10 顆炭疽病（20%）即提醒。</dd></div>
+                        <div><dt>上升百分點</dt><dd>最近「視窗天數」的比例比再往前同樣天數高出多少就提醒，以百分點相減計算。例：從 10% 升到 25% 是上升 15 個百分點。</dd></div>
+                        <div><dt>最少顆數</dt><dd>視窗內至少要有這麼多顆已判級果實才判斷，避免樣本太少誤報；比較上升時，前後兩段都要達到。調低較容易觸發。</dd></div>
+                        <div><dt>視窗天數、冷卻、當日突增</dt><dd>只看最近幾天的果實；同一類提醒過後多久內不再重發；今日比例達今日之前視窗的幾倍、且今日至少幾顆時，視為突增。</dd></div>
+                    </dl>
+                    <p class="control-guidance">同一次檢查達標的類別合併成一則 LINE 訊息；下方只列出提醒時間、類別與送出狀態。</p>
                     <button id="btn-trend-alert-save" type="submit" class="button secondary">保存提醒設定</button>
                     <p id="trend-alert-status" class="control-guidance" aria-live="polite"></p>
                     <ol id="trend-alert-list" class="trend-alert-list"></ol>
@@ -404,18 +411,18 @@
     </div>
 </dialog>
 
-<button id="assistant-launcher" class="button assistant-launcher" type="button" aria-expanded="false" aria-controls="assistant-panel" aria-label="問助手">
+<button id="assistant-launcher" class="button assistant-launcher" type="button" aria-expanded="false" aria-controls="assistant-panel" aria-label="問奶蛋博士">
     <img id="assistant-launcher-icon" class="assistant-launcher-icon" alt="" hidden>
-    <span id="assistant-launcher-text">問助手</span>
+    <span id="assistant-launcher-text">問奶蛋博士</span>
 </button>
 <section id="assistant-panel" class="assistant-panel" aria-labelledby="assistant-title" hidden>
     <div class="assistant-header">
-        <strong id="assistant-title">Dashboard 助手</strong>
+        <strong id="assistant-title">奶蛋博士</strong>
         <span>只查詢・需網際網路</span>
         <button id="assistant-close" class="button secondary" type="button">關閉</button>
     </div>
     <ol id="assistant-log" class="assistant-log" aria-live="polite">
-        <li class="assistant-entry model"><p>可以問檢測統計（例如「這週炭疽病比例」）、啟動與部署步驟，或百香果病蟲害知識。數字與圖表由系統計算。</p></li>
+        <li class="assistant-entry model"><p>我是奶蛋博士，可以問我檢測統計（例如「這週炭疽病比例」）、為什麼收到趨勢提醒、啟動與部署步驟，或百香果病蟲害知識。數字與圖表由系統計算。</p></li>
     </ol>
     <form id="assistant-form" class="assistant-form">
         <label for="assistant-input" class="visually-hidden">輸入問題</label>
@@ -435,9 +442,9 @@
     </details>
 </section>
 
-<script src="{% static 'fruit_app/js/dashboard.js' %}"></script>
+<script src="{% static 'fruit_app/js/dashboard.js' %}?v={{ asset_version }}"></script>
 <script src="{% static 'fruit_app/vendor/chart-4.4.1.umd.js' %}"></script>
-<script src="{% static 'fruit_app/js/assistant_render.js' %}"></script>
-<script src="{% static 'fruit_app/js/assistant.js' %}"></script>
+<script src="{% static 'fruit_app/js/assistant_render.js' %}?v={{ asset_version }}"></script>
+<script src="{% static 'fruit_app/js/assistant.js' %}?v={{ asset_version }}"></script>
 </body>
 </html>
