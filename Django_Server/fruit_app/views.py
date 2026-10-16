@@ -530,10 +530,22 @@ def _recovery_can_confirm():
 # calibration stay required by the next production start, not by the confirmation.
 
 
+CAMERA_ASSETS = (
+    Path(__file__).resolve().parent / 'static' / 'fruit_app' / 'js' / 'camera.js',
+    Path(__file__).resolve().parent / 'static' / 'fruit_app' / 'css' / 'camera.css',
+)
+
+
+def _camera_asset_version():
+    # 頁面不快取但靜態檔會被手機瀏覽器沿用；以修改時間當版本，更新後強制重新下載。
+    return str(max(int(path.stat().st_mtime) for path in CAMERA_ASSETS))
+
+
 @network_required(cleanup=True, operation='observation')
 def camera_view(request):
     _ensure_dataset_structure()
-    return _no_store_response(render(request, 'camera.html'))
+    context = {'asset_version': _camera_asset_version()}
+    return _no_store_response(render(request, 'camera.html', context))
 
 
 def dashboard_view(request):

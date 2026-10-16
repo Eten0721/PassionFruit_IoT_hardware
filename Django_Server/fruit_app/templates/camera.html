@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>手機 Camera｜百香果資料蒐集</title>
-    <link rel="stylesheet" href="{% static 'fruit_app/css/camera.css' %}">
+    <link rel="stylesheet" href="{% static 'fruit_app/css/camera.css' %}?v={{ asset_version }}">
 </head>
 <body>
 <main>
@@ -19,7 +19,12 @@
         </div>
     </div>
 
-    <div id="status" class="status">等待開啟相機。</div>
+    <div class="bottom-stack">
+        <label id="lens-bar" class="lens-bar hidden">鏡頭
+            <select id="camera-lens"></select>
+        </label>
+        <div id="status" class="status">等待開啟相機。</div>
+    </div>
     <div id="rtc-status" class="rtc-status" role="status" aria-live="polite">RTC 預覽等待連線；不影響正式照片上傳。</div>
     <details class="camera-diagnostics">
         <summary>驗收資訊</summary>
@@ -30,6 +35,6 @@
     </details>
 </main>
 
-<script src="{% static 'fruit_app/js/camera.js' %}"></script>
+<script src="{% static 'fruit_app/js/camera.js' %}?v={{ asset_version }}"></script>
 </body>
 </html>
