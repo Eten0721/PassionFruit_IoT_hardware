@@ -9,8 +9,7 @@ Counting rules:
 
 - Only rows whose result was saved count; a fruit's time is its
   ``capture_time`` (``completed_at`` when missing), compared in local time.
-- Hardware and photo-only rounds both count; ``include_photo_only=False``
-  keeps hardware rounds only when a caller explicitly asks for that.
+- Every graded fruit in the detection partition counts.
 - Graded fruits form the four-grade distribution and the defect denominator;
   ``abandoned`` and ``needs_review`` are counted separately.
 - A fruit shows a defect when any view that finished detection observed it
@@ -38,7 +37,7 @@ OTHER_STATUSES = ('abandoned', 'needs_review')
 
 def query(detection_root: Path, *, start_date: str | None = None,
           end_date: str | None = None, bucket: str = 'none', group_by: str = 'grade',
-          include_photo_only: bool = True, grades: list[str] | None = None,
+          grades: list[str] | None = None,
           compare_grades: bool = False) -> dict:
     """Return statistics and one chart spec for an inclusive local date range.
 
@@ -54,8 +53,6 @@ def query(detection_root: Path, *, start_date: str | None = None,
         raise ValueError(f'不支援的統計級距：{bucket!r}')
     if group_by not in GROUP_BY:
         raise ValueError(f'不支援的分組方式：{group_by!r}')
-    if type(include_photo_only) is not bool:
-        raise ValueError('include_photo_only 必須是 true 或 false。')
     grades = _parse_grades(grades)
     if type(compare_grades) is not bool:
         raise ValueError('compare_grades 必須是 true 或 false。')
@@ -69,7 +66,6 @@ def query(detection_root: Path, *, start_date: str | None = None,
         detection_root,
         start=datetime.combine(start, datetime.min.time()) if start else None,
         end=datetime.combine(end + timedelta(days=1), datetime.min.time()) if end else None,
-        include_photo_only=include_photo_only,
     )
     records = loaded['records']
     if grades:
@@ -93,7 +89,6 @@ def query(detection_root: Path, *, start_date: str | None = None,
             'start_date': start.isoformat() if start else None,
             'end_date': end.isoformat() if end else None,
             'bucket': bucket, 'group_by': group_by,
-            'include_photo_only': include_photo_only,
             'grades': grades, 'compare_grades': compare_grades,
         },
         **summary,
@@ -119,15 +114,12 @@ def _parse_grades(grades):
 
 
 def load_records(detection_root: Path, *, start: datetime | None = None,
-                 end: datetime | None = None, include_photo_only: bool = True) -> dict:
+                 end: datetime | None = None) -> dict:
     """Return saved fruits in ``[start, end)`` plus counts of skipped rows."""
     root = Path(detection_root).resolve()
     records = []
     skipped = {'result_not_saved': 0, 'time_invalid': 0, 'result_unreadable': 0}
     for row in _read_rows(root / SUMMARY_FILENAME):
-        mode = row.get('hardware_mode')
-        if mode == 'photo_only' and not include_photo_only:
-            continue
         if not row.get('result_json'):
             skipped['result_not_saved'] += 1
             continue
@@ -272,7 +264,7 @@ def _record(root, row, moment):
     status = classification.get('status')
     base = {
         'result_id': result.get('result_id'), 'fruit_id': result.get('fruit_id'),
-        'time': moment, 'hardware_mode': result.get('hardware_mode'),
+        'time': moment,
         'status': status, 'label': None, 'source': classification.get('source'),
         'defects': [],
     }

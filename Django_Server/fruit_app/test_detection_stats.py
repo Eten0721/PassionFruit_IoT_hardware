@@ -88,26 +88,23 @@ class DetectionStatsTests(SimpleTestCase):
         self.data.add(7, '2026-10-02 13:00:00', saved=False)
         self.data.add(8, '2026-10-02 14:00:00', raw_result='{broken')
 
-        stats = detection_stats.query(self.data.root, include_photo_only=False)
+        stats = detection_stats.query(self.data.root)
 
-        self.assertEqual(stats['totals'], {'fruits': 5, 'graded': 3, 'abandoned': 1, 'needs_review': 1})
+        # Every graded fruit in the partition counts, whatever its capture mode.
+        self.assertEqual(stats['totals'], {'fruits': 6, 'graded': 4, 'abandoned': 1, 'needs_review': 1})
         self.assertEqual({g['label']: g['count'] for g in stats['grades']},
-                         {'上等': 1, '中等': 0, '下等': 1, '加工': 1})
-        self.assertEqual(stats['sources'], {'model': 2, 'manual': 1})
+                         {'上等': 1, '中等': 0, '下等': 1, '加工': 2})
+        self.assertEqual(stats['sources'], {'model': 3, 'manual': 1})
         defects = {d['key']: (d['count'], d['ratio']) for d in stats['defects']}
-        self.assertEqual(defects['anthracnose'], (1, 0.3333))
-        self.assertEqual(defects['wrinkle'], (1, 0.3333))
-        self.assertEqual(defects['insect_track'], (1, 0.3333))
+        self.assertEqual(defects['anthracnose'], (2, 0.5))
+        self.assertEqual(defects['wrinkle'], (1, 0.25))
+        self.assertEqual(defects['insect_track'], (1, 0.25))
         self.assertEqual(defects['bad_color'], (0, 0.0))
         self.assertEqual(stats['skipped'], {'result_not_saved': 1, 'time_invalid': 0,
                                             'result_unreadable': 1})
         self.assertEqual(stats['chart']['labels'], ['上等', '中等', '下等', '加工'])
-        self.assertEqual(stats['chart']['datasets'][0]['data'], [1, 0, 1, 1])
-
-        with_photo = detection_stats.query(self.data.root)  # every round counts by default
-        self.assertTrue(with_photo['filters']['include_photo_only'])
-        self.assertEqual(with_photo['totals']['graded'], 4)
-        self.assertEqual({d['key']: d['count'] for d in with_photo['defects']}['anthracnose'], 2)
+        self.assertEqual(stats['chart']['datasets'][0]['data'], [1, 0, 1, 2])
+        self.assertNotIn('include_photo_only', stats['filters'])
 
     def test_grade_filter_makes_that_grade_the_defect_denominator(self):
         self.data.add(1, '2026-10-01 09:00:00', grade=0, views_=[
@@ -185,7 +182,7 @@ class DetectionStatsTests(SimpleTestCase):
     def test_invalid_parameters_raise_and_empty_dataset_is_zero(self):
         for kwargs in ({'bucket': 'hour'}, {'group_by': 'fruit'}, {'start_date': '10/01'},
                        {'start_date': '2026-10-02', 'end_date': '2026-10-01'},
-                       {'include_photo_only': 'yes'}):
+                       {'compare_grades': 'yes', 'group_by': 'defect', 'grades': ['上等', '加工']}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 detection_stats.query(self.data.root, **kwargs)
         empty = detection_stats.query(self.data.root, group_by='defect')
@@ -254,7 +251,7 @@ class TrendAlertTests(SimpleTestCase):
         [alert] = outcome['alerts']
         self.assertEqual((alert['key'], alert['wording']), ('anthracnose', 'template'))
         self.assertTrue(alert['text'].startswith('|趨勢提醒|\n'))
-        self.assertIn('（使用硬體的果實）', alert['text'])
+        self.assertIn('比例來自檢測模型觀察，僅供參考', alert['text'])
         for line in ('炭疽病近來有上升趨勢', '最近 7 天：已判級 20 顆，炭疽病 8 顆（40.0%）',
                      '前 7 天：已判級 0 顆，樣本不足不比較', '依據：比例達 20.0% 門檻',
                      '說明：炭疽病比例近來偏高，須注意病害防疫。'):
@@ -269,16 +266,17 @@ class TrendAlertTests(SimpleTestCase):
         self.assertEqual(len(status['recent']), 2)
         self.assertEqual(status['recent'][0]['delivery'], {'status': 'pending', 'reason': None})
 
-    def test_photo_only_rounds_count_and_mark_the_alert_as_test(self):
+    def test_every_graded_fruit_counts_without_extra_labels(self):
         self.add_fruits(10, days_ago=1, defects={'anthracnose': 4})
         self.add_fruits(10, days_ago=2, defects={'anthracnose': 4}, mode='photo_only')
         self.enable()
 
         [alert] = self.monitor().check()['alerts']
 
-        self.assertTrue(alert['text'].startswith('測試 |趨勢提醒|\n炭疽病近來有上升趨勢'))
+        self.assertTrue(alert['text'].startswith('|趨勢提醒|\n炭疽病近來有上升趨勢'))
         self.assertIn('最近 7 天：已判級 20 顆，炭疽病 8 顆（40.0%）', alert['text'])
-        self.assertIn('（含純拍攝測試 10 顆）', alert['text'])
+        for word in ('測試', '純拍攝', '使用硬體'):
+            self.assertNotIn(word, alert['text'])
 
     def test_each_category_uses_its_own_parameters_and_direction(self):
         self.add_fruits(20, days_ago=1, defects={'abrasion': 5, 'anthracnose': 3})
@@ -356,7 +354,7 @@ class TrendAlertTests(SimpleTestCase):
                     self.assertNotIn('約有', alert['text'])
         self.assertEqual(seen[0]['category'], '炭疽病')
         self.assertEqual(seen[0]['reasons'], ['比例達門檻'])
-        self.assertEqual(seen[0]['current'], {'count': 8, 'graded': 20, 'ratio': 0.4, 'photo_only': 0})
+        self.assertEqual(seen[0]['current'], {'count': 8, 'graded': 20, 'ratio': 0.4})
         self.assertEqual(len(self.outbox.queued), 4)
 
     def test_settings_are_validated(self):
@@ -456,8 +454,5 @@ class TrendAlertViewTests(SimpleTestCase):
                 'grade': ['上等', '加工'], 'group_by': 'defect', 'compare_grades': 'true'})
             self.assertTrue(compared.json()['filters']['compare_grades'])
             self.assertIsNone(compared.json()['chart'])  # empty data: no chart
-            self.assertTrue(ok.json()['filters']['include_photo_only'])
-            hardware = self.client.get('/api/detection/stats/', {'include_photo_only': 'false'})
-            self.assertFalse(hardware.json()['filters']['include_photo_only'])
             bad =self.client.get('/api/detection/stats/', {'grade': '特級'})
             self.assertEqual(bad.json()['reason'], 'invalid_stats_query')

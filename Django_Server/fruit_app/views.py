@@ -2109,8 +2109,6 @@ def detection_stats_api(request):
             _dataset_root('detection'),
             start_date=params.get('start_date'), end_date=params.get('end_date'),
             bucket=params.get('bucket', 'none'), group_by=params.get('group_by', 'grade'),
-            # Every round counts unless the caller asks for hardware only.
-            include_photo_only=params.get('include_photo_only', 'true') != 'false',
             # ``grade=加工&grade=下等``; absent means every grade.
             grades=params.getlist('grade') or None,
             compare_grades=params.get('compare_grades', 'false') == 'true',
