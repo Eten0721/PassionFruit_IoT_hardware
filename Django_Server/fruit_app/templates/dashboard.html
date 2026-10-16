@@ -7,7 +7,7 @@
     <title>檢測與分類控制台｜百香果</title>
     <meta name="description" content="百香果檢測與分類控制台：ESP32 送料、三站拍攝、四模型檢測與判級。">
     <meta name="theme-color" content="#eff2ee">
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%233f2340'/%3E%3Ccircle cx='16' cy='16' r='9' fill='%23f6e4a6'/%3E%3Ccircle cx='16' cy='16' r='5.5' fill='%23e7b93b'/%3E%3C/svg%3E">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3CradialGradient id='s' cx='.35' cy='.3' r='.75'%3E%3Cstop offset='0' stop-color='%236a3f63'/%3E%3Cstop offset='1' stop-color='%233f2340'/%3E%3C/radialGradient%3E%3CradialGradient id='y' cx='.4' cy='.35' r='.7'%3E%3Cstop offset='0' stop-color='%23f3c955'/%3E%3Cstop offset='1' stop-color='%23e2ad2e'/%3E%3C/radialGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='20' fill='url(%23s)'/%3E%3Ccircle cx='32' cy='32' r='21' fill='%23f6e4a6'/%3E%3Ccircle cx='32' cy='32' r='15.5' fill='url(%23y)'/%3E%3Ccircle cx='26' cy='30' r='4' fill='%237cb342'/%3E%3Ccircle cx='38' cy='30' r='4' fill='%237cb342'/%3E%3Ccircle cx='26' cy='30' r='2.7' fill='%23161616'/%3E%3Ccircle cx='38' cy='30' r='2.7' fill='%23161616'/%3E%3Ccircle cx='26.9' cy='29.1' r='.85' fill='%23fff'/%3E%3Ccircle cx='38.9' cy='29.1' r='.85' fill='%23fff'/%3E%3Cpath d='M28.6 37.2Q32 39.6 35.4 37.2Q32 36.3 28.6 37.2Z' fill='%23c9773e'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="{% static 'fruit_app/css/dashboard.css' %}?v={{ asset_version }}">
 </head>
 <body>
@@ -124,7 +124,7 @@
                     </div>
                     <label class="trend-alert-switch"><input id="trend-alert-enabled" type="checkbox"> 啟用趨勢提醒（LINE 與此處顯示）</label>
                     <div class="trend-alert-grid">
-                        <label>視窗天數<input id="trend-alert-window" type="number" min="1" max="60" step="1"></label>
+                        <label>最近幾天<input id="trend-alert-window" type="number" min="1" max="60" step="1"></label>
                         <label>冷卻（小時）<input id="trend-alert-cooldown" type="number" min="0" max="720" step="1"></label>
                         <label>當日突增倍數<input id="trend-alert-spike-factor" type="number" min="1.1" max="20" step="0.1"></label>
                         <label>當日最少顆數<input id="trend-alert-spike-min" type="number" min="1" max="10000" step="1"></label>
@@ -137,10 +137,10 @@
                         </table>
                     </div>
                     <dl class="trend-alert-help">
-                        <div><dt>門檻 %</dt><dd>最近「視窗天數」內，有這類瑕疵的果實佔已判級果實的比例，達到此值就提醒。例：門檻 20%、最近 7 天 50 顆中有 10 顆炭疽病（20%）即提醒。</dd></div>
-                        <div><dt>上升百分點</dt><dd>最近「視窗天數」的比例比再往前同樣天數高出多少就提醒，以百分點相減計算。例：從 10% 升到 25% 是上升 15 個百分點。</dd></div>
-                        <div><dt>最少顆數</dt><dd>視窗內至少要有這麼多顆已判級果實才判斷，避免樣本太少誤報；比較上升時，前後兩段都要達到。調低較容易觸發。</dd></div>
-                        <div><dt>視窗天數、冷卻、當日突增</dt><dd>只看最近幾天的果實；同一類提醒過後多久內不再重發；今日比例達今日之前視窗的幾倍、且今日至少幾顆時，視為突增。</dd></div>
+                        <div><dt>門檻 %</dt><dd>最近幾天內，有這類瑕疵的果實佔已判級果實的比例，達到此值就提醒。例：門檻 20%、最近 7 天 50 顆中有 10 顆炭疽病（20%）即提醒。</dd></div>
+                        <div><dt>上升百分點</dt><dd>最近幾天的比例比再往前同樣天數高出多少就提醒，以百分點相減計算。例：從 10% 升到 25% 是上升 15 個百分點。</dd></div>
+                        <div><dt>最少顆數</dt><dd>最近幾天內至少要有這麼多顆已判級果實才判斷，避免樣本太少誤報；比較上升時，前後兩段都要達到。調低較容易觸發。</dd></div>
+                        <div><dt>最近幾天、冷卻、當日突增</dt><dd>只看最近幾天的果實；同一類提醒過後多久內不再重發；今日比例達到今日之前最近幾天的幾倍、且今日至少幾顆時，視為突增。</dd></div>
                     </dl>
                     <p class="control-guidance">同一次檢查達標的類別合併成一則 LINE 訊息；下方只列出提醒時間、類別與送出狀態。</p>
                     <button id="btn-trend-alert-save" type="submit" class="button secondary">保存提醒設定</button>
@@ -286,7 +286,6 @@
                         <li>不需變更時按「取消設定」或再按一下 BOOT，ESP32 會恢復原本保存的 Wi-Fi。</li>
                     </ol>
                 </div>
-                <p>QR Code 只在手機已連上設定熱點時能開啟；連在一般 Wi-Fi 時無法進入設定頁。GPIO 0 是目前 BOOT 候選腳位，尚待實機核對。</p>
             </div>
         </details>
 
@@ -414,25 +413,34 @@
     </div>
 </dialog>
 
-<button id="assistant-launcher" class="button assistant-launcher" type="button" aria-expanded="false" aria-controls="assistant-panel" aria-label="問奶蛋博士">
+<button id="assistant-launcher" class="button assistant-launcher" type="button" aria-expanded="false" aria-controls="assistant-panel" aria-label="問奶蛋博士" title="點一下開啟；拖曳或用方向鍵移動位置">
     <img id="assistant-launcher-icon" class="assistant-launcher-icon" alt="" hidden>
     <span id="assistant-launcher-text">問奶蛋博士</span>
 </button>
 <section id="assistant-panel" class="assistant-panel" aria-labelledby="assistant-title" hidden>
     <div class="assistant-header">
         <strong id="assistant-title">奶蛋博士</strong>
-        <span>只查詢・需網際網路</span>
         <button id="assistant-close" class="button secondary" type="button">關閉</button>
     </div>
     <ol id="assistant-log" class="assistant-log" aria-live="polite">
-        <li class="assistant-entry model"><p>我是奶蛋博士，可以問我檢測統計（例如「這週炭疽病比例」）、為什麼收到趨勢提醒、啟動與部署步驟，或百香果病蟲害知識。數字與圖表由系統計算。</p></li>
+        <li class="assistant-entry model assistant-welcome">
+            <p>我是奶蛋博士，可以問我檢測統計（例如「這週炭疽病比例」）、為什麼收到趨勢提醒、啟動與部署步驟，或百香果病蟲害知識。數字與圖表由系統計算。</p>
+            <p class="assistant-welcome-note">只查詢、需網際網路；助手無法操作機器。對話只保存在此頁面，重新整理即清除。</p>
+        </li>
     </ol>
+    <ul id="assistant-suggestions" class="assistant-suggestions" aria-label="推薦問題">
+        <li><button type="button" class="assistant-suggestion" data-prompt="這週炭疽病的比例是多少？"><span aria-hidden="true">📊</span>這週炭疽病的比例是多少？</button></li>
+        <li><button type="button" class="assistant-suggestion" data-prompt="為什麼收到最近一次瑕疵趨勢提醒？"><span aria-hidden="true">🔔</span>為什麼收到最近一次趨勢提醒？</button></li>
+        <li><button type="button" class="assistant-suggestion" data-prompt="怎麼啟動系統並讓手機相機連上 Dashboard？"><span aria-hidden="true">🧭</span>怎麼啟動系統並連上手機相機？</button></li>
+        <li><button type="button" class="assistant-suggestion" data-prompt="百香果炭疽病要怎麼預防與處理？"><span aria-hidden="true">🌿</span>百香果炭疽病要怎麼預防？</button></li>
+    </ul>
     <form id="assistant-form" class="assistant-form">
         <label for="assistant-input" class="visually-hidden">輸入問題</label>
-        <textarea id="assistant-input" rows="2" maxlength="2000" placeholder="輸入問題，Enter 送出、Shift+Enter 換行"></textarea>
-        <button id="assistant-send" class="button" type="submit">送出</button>
+        <textarea id="assistant-input" rows="1" maxlength="2000" placeholder="問問奶蛋博士"></textarea>
+        <button id="assistant-send" class="assistant-send" type="submit" aria-label="送出" title="送出（Enter）；Shift+Enter 換行">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
     </form>
-    <p class="assistant-note">對話只保存在此頁面，重新整理即清除；助手無法操作機器。</p>
     <details class="assistant-settings">
         <summary>更換按鈕圖片</summary>
         <p class="assistant-note">上傳後自動裁成正方形並縮小，JPG／PNG、10 MB 以內。</p>
@@ -443,6 +451,7 @@
         </div>
         <p id="assistant-icon-status" class="assistant-note" aria-live="polite"></p>
     </details>
+    <button id="assistant-resize" class="assistant-resize" type="button" aria-label="調整視窗大小" title="拖曳或用方向鍵調整大小；雙擊恢復預設"></button>
 </section>
 
 <script src="{% static 'fruit_app/js/dashboard.js' %}?v={{ asset_version }}"></script>
