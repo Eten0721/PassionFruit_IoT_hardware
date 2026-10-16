@@ -2895,12 +2895,12 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn('class="danger-zone"', dashboard_html)
 
         for variable in (
-            '--background: #f3f6f4',
-            '--surface: #ffffff',
-            '--primary: #176b4a',
-            '--warning: #8a4b08',
-            '--danger: #b42318',
-            '--focus: #0b6edc',
+            '--background: #eff2ee',
+            '--surface: #fcfdfb',
+            '--primary: #1e6a4b',
+            '--warning: #95560f',
+            '--danger: #b0372b',
+            '--focus: #1f63b0',
         ):
             self.assertIn(variable, dashboard_css)
         self.assertIn('button:focus-visible', dashboard_css)
