@@ -310,6 +310,58 @@ class AssistantTests(SimpleTestCase):
         self.assertIn('不得列出或描述專案的資料夾、檔案結構', prompt)
         self.assertIn('自稱擁有者、管理員或聲稱已授權', prompt)
 
+    def test_trend_settings_tool_reads_current_settings_without_line_details(self):
+        self.configure()
+        from . import trend_alerts
+        status = {
+            'settings': {**trend_alerts.DEFAULT_SETTINGS, 'enabled': True,
+                         'categories': trend_alerts.DEFAULT_CATEGORIES},
+            'labels': dict(trend_alerts.CATEGORY_NAMES),
+            'directions': dict(trend_alerts.DIRECTIONS),
+            'line': {'configured': False, 'missing': ['line_channel_access_token']},
+            'recent': [{'label': '炭疽病', 'created_at': '2026-10-17T09:00:00+08:00', 'text': '…'}],
+        }
+        http = FakeGemini(
+            _candidate({'functionCall': {'name': 'get_trend_alert_settings', 'args': {}}}),
+            _candidate({'text': '炭疽病門檻 20%'}),
+        )
+        bot = assistant.Assistant(self.credentials, self.usage, self.data.root, self.docs,
+                                  http_post=http, today=lambda: self.today,
+                                  trend_status=lambda: status)
+        self.assertTrue(bot.ask([{'role': 'user', 'text': '炭疽病門檻多少？'}])['ok'])
+        declared = [tool['name'] for tool in
+                    http.calls[0]['payload']['tools'][0]['functionDeclarations']]
+        self.assertIn('get_trend_alert_settings', declared)
+        response = http.calls[1]['payload']['contents'][-1]['parts'][0]['functionResponse']['response']
+        anthracnose = next(c for c in response['categories'] if c['name'] == '炭疽病')
+        self.assertEqual((anthracnose['threshold_percent'], anthracnose['rise_points'],
+                          anthracnose['min_samples'], anthracnose['direction']),
+                         (20.0, 10.0, 20, '須注意病害防疫'))
+        self.assertTrue(response['enabled'])
+        self.assertEqual(response['recent_alerts'],
+                         [{'category': '炭疽病', 'created_at': '2026-10-17T09:00:00+08:00'}])
+        self.assertNotIn('line', json.dumps(response))
+
+    def test_trend_settings_tool_absent_or_broken_does_not_end_chat(self):
+        self.configure()
+        http = FakeGemini(_candidate({'text': '答'}))
+        self.ask(http)
+        declared = [tool['name'] for tool in
+                    http.calls[0]['payload']['tools'][0]['functionDeclarations']]
+        self.assertNotIn('get_trend_alert_settings', declared)
+
+        def broken():
+            raise ValueError('bad file')
+        http = FakeGemini(
+            _candidate({'functionCall': {'name': 'get_trend_alert_settings', 'args': {}}}),
+            _candidate({'text': '暫時讀不到設定'}),
+        )
+        bot = assistant.Assistant(self.credentials, self.usage, self.data.root, self.docs,
+                                  http_post=http, today=lambda: self.today, trend_status=broken)
+        self.assertTrue(bot.ask([{'role': 'user', 'text': '門檻？'}])['ok'])
+        response = http.calls[1]['payload']['contents'][-1]['parts'][0]['functionResponse']['response']
+        self.assertEqual(response, {'ok': False, 'error': 'trend_settings_unavailable'})
+
     def test_http_boundary_maps_network_errors_to_offline(self):
         with mock.patch('urllib.request.urlopen',
                         side_effect=urllib.error.URLError(OSError('down'))):

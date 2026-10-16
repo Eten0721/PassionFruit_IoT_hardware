@@ -2056,6 +2056,7 @@ def dashboard_assistant():
     return assistant.Assistant(
         runtime_root / 'assistant_credentials.json', runtime_root / 'assistant_usage.json',
         _dataset_root('detection'), Path(settings.BASE_DIR).parent / 'docs',
+        trend_status=lambda: trend_alert_monitor().status(),
     )
 
 
