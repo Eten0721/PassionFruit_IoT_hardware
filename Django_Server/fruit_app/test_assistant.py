@@ -143,7 +143,8 @@ class AssistantTests(SimpleTestCase):
 
     def test_comparison_replaces_separate_per_grade_charts(self):
         self.configure()
-        self.data.add(1, '2026-10-15 09:00:00', grade=3)
+        self.data.add(1, '2026-10-15 09:00:00', grade=3,
+                      views_=[_view(defects=['abrasion']), _view(), _view()])
         self.data.add(2, '2026-10-15 10:00:00', grade=0)
         separate = [_candidate({'functionCall': {'name': 'query_detection_stats', 'args': {
             'group_by': 'defect', 'grades': [grade]}}}) for grade in ('上等', '加工')]

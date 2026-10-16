@@ -9,7 +9,8 @@ Counting rules:
 
 - Only rows whose result was saved count; a fruit's time is its
   ``capture_time`` (``completed_at`` when missing), compared in local time.
-- Photo-only rounds are excluded unless ``include_photo_only`` is set.
+- Hardware and photo-only rounds both count; ``include_photo_only=False``
+  keeps hardware rounds only when a caller explicitly asks for that.
 - Graded fruits form the four-grade distribution and the defect denominator;
   ``abandoned`` and ``needs_review`` are counted separately.
 - A fruit shows a defect when any view that finished detection observed it
@@ -37,7 +38,7 @@ OTHER_STATUSES = ('abandoned', 'needs_review')
 
 def query(detection_root: Path, *, start_date: str | None = None,
           end_date: str | None = None, bucket: str = 'none', group_by: str = 'grade',
-          include_photo_only: bool = False, grades: list[str] | None = None,
+          include_photo_only: bool = True, grades: list[str] | None = None,
           compare_grades: bool = False) -> dict:
     """Return statistics and one chart spec for an inclusive local date range.
 
@@ -84,6 +85,8 @@ def query(detection_root: Path, *, start_date: str | None = None,
         chart = chart_spec(summary, group_by=group_by)
         if grades:
             chart['title'] += f"（{'、'.join(grades)}）"
+    if not any(value for dataset in chart['datasets'] for value in dataset['data']):
+        chart = None  # An all-zero chart only suggests data that does not exist.
     return {
         'ok': True,
         'filters': {
@@ -116,7 +119,7 @@ def _parse_grades(grades):
 
 
 def load_records(detection_root: Path, *, start: datetime | None = None,
-                 end: datetime | None = None, include_photo_only: bool = False) -> dict:
+                 end: datetime | None = None, include_photo_only: bool = True) -> dict:
     """Return saved fruits in ``[start, end)`` plus counts of skipped rows."""
     root = Path(detection_root).resolve()
     records = []

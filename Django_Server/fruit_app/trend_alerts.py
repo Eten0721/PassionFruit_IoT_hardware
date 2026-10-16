@@ -2,9 +2,10 @@
 
 Three layers, only the last one may use an LLM:
 
-1. Detection: after a hardware result is saved, the six observation
-   categories and the processing-fruit share run through the same generic
-   rules on graded hardware fruits: share over a threshold in the latest
+1. Detection: after any result is saved, the six observation categories
+   and the processing-fruit share run through the same generic rules on all
+   graded fruits, hardware and photo-only alike (an alert with photo-only
+   fruit behind it starts with「測試」): share over a threshold in the latest
    window, a rise against the previous window of the same length, and a
    same-day spike against the window before today.
 2. Severity: every category has its own threshold, rise, minimum sample and
@@ -75,6 +76,8 @@ REASON_TEXT = {'threshold': '比例達門檻', 'rise': '比前期上升', 'spike
 ADVICE_MAX_CHARS = 200
 DIGITS = re.compile(r'[0-9０-９%％]')
 RECENT_LIMIT = 20
+REASON_WINDOWS = {'threshold': ('current',), 'rise': ('current', 'previous'),
+                  'spike': ('today', 'history')}
 
 _LOCK = threading.RLock()
 
@@ -121,6 +124,9 @@ def evaluate(windows: dict, settings: dict) -> list[dict]:
                 'direction': params['direction'],
                 **{name: dict(windows[name][key]) for name in windows},
                 'baseline_sufficient': baseline,
+                # Photo-only fruit in the windows behind the rules that fired.
+                'photo_only': sum(windows[name][key].get('photo_only', 0) for name in {
+                    window for reason in reasons for window in REASON_WINDOWS[reason]}),
             })
     rising = [key for key, params in settings['categories'].items()
               if previous[key]['graded'] >= params['min_samples']
@@ -158,10 +164,15 @@ def accepted_advice(text) -> str | None:
 
 
 def render_text(trigger: dict, settings: dict, advice: str, *, written_by_ai: bool) -> str:
-    """Final message; every number below comes from Django."""
+    """Final message; every number below comes from Django.
+
+    When photo-only rounds are among the fruit behind the trigger, the first
+    line is「測試 |趨勢提醒|」and the source line says how many.
+    """
     days = settings['window_days']
     label = trigger['label']
-    lines = ['|趨勢提醒|',
+    photo_only = trigger.get('photo_only', 0)
+    lines = ['測試 |趨勢提醒|' if photo_only else '|趨勢提醒|',
              f"{label}{'今日明顯偏高' if trigger['reasons'] == ['spike'] else '近來有上升趨勢'}",
              f"最近 {days} 天：{_share(label, trigger['current'])}"]
     if trigger['baseline_sufficient']:
@@ -181,7 +192,8 @@ def render_text(trigger: dict, settings: dict, advice: str, *, written_by_ai: bo
     if trigger['also_rising']:
         lines.append(f"同時上升：{'、'.join(trigger['also_rising'])}")
     lines.append(f"說明{'（AI 依上列數據撰寫）' if written_by_ai else ''}：{advice}")
-    lines.append('比例來自檢測模型觀察（只計使用硬體的果實），僅供參考，不代表病因判斷或防治效果。')
+    source = f'含純拍攝測試 {photo_only} 顆' if photo_only else '使用硬體的果實'
+    lines.append(f'比例來自檢測模型觀察（{source}），僅供參考，不代表病因判斷或防治效果。')
     return '\n'.join(lines) + '\n'
 
 
@@ -295,7 +307,10 @@ class TrendAlerts:
 
     def _shares(self, start, end):
         loaded = detection_stats.load_records(self.detection_root, start=start, end=end)
-        return category_shares(detection_stats.summarize(loaded['records']))
+        shares = category_shares(detection_stats.summarize(loaded['records']))
+        photo_only = sum(record['hardware_mode'] == 'photo_only' and record['status'] == 'graded'
+                         for record in loaded['records'])
+        return {key: {**share, 'photo_only': photo_only} for key, share in shares.items()}
 
     def _read(self):
         try:

@@ -88,7 +88,7 @@ class DetectionStatsTests(SimpleTestCase):
         self.data.add(7, '2026-10-02 13:00:00', saved=False)
         self.data.add(8, '2026-10-02 14:00:00', raw_result='{broken')
 
-        stats = detection_stats.query(self.data.root)
+        stats = detection_stats.query(self.data.root, include_photo_only=False)
 
         self.assertEqual(stats['totals'], {'fruits': 5, 'graded': 3, 'abandoned': 1, 'needs_review': 1})
         self.assertEqual({g['label']: g['count'] for g in stats['grades']},
@@ -104,7 +104,8 @@ class DetectionStatsTests(SimpleTestCase):
         self.assertEqual(stats['chart']['labels'], ['上等', '中等', '下等', '加工'])
         self.assertEqual(stats['chart']['datasets'][0]['data'], [1, 0, 1, 1])
 
-        with_photo = detection_stats.query(self.data.root, include_photo_only=True)
+        with_photo = detection_stats.query(self.data.root)  # every round counts by default
+        self.assertTrue(with_photo['filters']['include_photo_only'])
         self.assertEqual(with_photo['totals']['graded'], 4)
         self.assertEqual({d['key']: d['count'] for d in with_photo['defects']}['anthracnose'], 2)
 
@@ -189,7 +190,7 @@ class DetectionStatsTests(SimpleTestCase):
                 detection_stats.query(self.data.root, **kwargs)
         empty = detection_stats.query(self.data.root, group_by='defect')
         self.assertEqual(empty['totals']['fruits'], 0)
-        self.assertEqual(empty['chart']['datasets'][0]['data'], [0.0] * 6)
+        self.assertIsNone(empty['chart'])  # an all-zero chart is never drawn
 
 
 class FakeOutbox:
@@ -246,13 +247,14 @@ class TrendAlertTests(SimpleTestCase):
 
     def test_threshold_alert_falls_back_to_template_and_respects_cooldown(self):
         self.add_fruits(20, days_ago=1, defects={'anthracnose': 8})
-        self.add_fruits(10, days_ago=2, defects={'anthracnose': 10}, mode='photo_only')
         self.enable()
 
         outcome = self.monitor().check()
 
         [alert] = outcome['alerts']
         self.assertEqual((alert['key'], alert['wording']), ('anthracnose', 'template'))
+        self.assertTrue(alert['text'].startswith('|趨勢提醒|\n'))
+        self.assertIn('（使用硬體的果實）', alert['text'])
         for line in ('炭疽病近來有上升趨勢', '最近 7 天：已判級 20 顆，炭疽病 8 顆（40.0%）',
                      '前 7 天：已判級 0 顆，樣本不足不比較', '依據：比例達 20.0% 門檻',
                      '說明：炭疽病比例近來偏高，須注意病害防疫。'):
@@ -266,6 +268,17 @@ class TrendAlertTests(SimpleTestCase):
         status = self.monitor().status()
         self.assertEqual(len(status['recent']), 2)
         self.assertEqual(status['recent'][0]['delivery'], {'status': 'pending', 'reason': None})
+
+    def test_photo_only_rounds_count_and_mark_the_alert_as_test(self):
+        self.add_fruits(10, days_ago=1, defects={'anthracnose': 4})
+        self.add_fruits(10, days_ago=2, defects={'anthracnose': 4}, mode='photo_only')
+        self.enable()
+
+        [alert] = self.monitor().check()['alerts']
+
+        self.assertTrue(alert['text'].startswith('測試 |趨勢提醒|\n炭疽病近來有上升趨勢'))
+        self.assertIn('最近 7 天：已判級 20 顆，炭疽病 8 顆（40.0%）', alert['text'])
+        self.assertIn('（含純拍攝測試 10 顆）', alert['text'])
 
     def test_each_category_uses_its_own_parameters_and_direction(self):
         self.add_fruits(20, days_ago=1, defects={'abrasion': 5, 'anthracnose': 3})
@@ -343,7 +356,7 @@ class TrendAlertTests(SimpleTestCase):
                     self.assertNotIn('約有', alert['text'])
         self.assertEqual(seen[0]['category'], '炭疽病')
         self.assertEqual(seen[0]['reasons'], ['比例達門檻'])
-        self.assertEqual(seen[0]['current'], {'count': 8, 'graded': 20, 'ratio': 0.4})
+        self.assertEqual(seen[0]['current'], {'count': 8, 'graded': 20, 'ratio': 0.4, 'photo_only': 0})
         self.assertEqual(len(self.outbox.queued), 4)
 
     def test_settings_are_validated(self):
@@ -397,12 +410,11 @@ class TrendAlertOutboxTests(SimpleTestCase):
 
 
 class TrendAlertViewTests(SimpleTestCase):
-    def test_check_starts_in_background_only_for_saved_graded_hardware_results(self):
+    def test_check_starts_in_background_for_any_saved_graded_result(self):
         saved = {'hardware_mode': 'hardware', 'storage': {'status': 'saved'},
                  'classification': {'status': 'graded'}}
         with mock.patch.object(views.threading, 'Thread') as thread:
-            for skipped in ({**saved, 'hardware_mode': 'photo_only'},
-                            {**saved, 'classification': {'status': 'needs_review'}},
+            for skipped in ({**saved, 'classification': {'status': 'needs_review'}},
                             {**saved, 'storage': {'status': 'failed'}}, None):
                 self.assertEqual(views._check_trend_alerts(skipped), '')
             thread.assert_not_called()
@@ -410,6 +422,8 @@ class TrendAlertViewTests(SimpleTestCase):
             thread.assert_called_once_with(target=views._run_trend_check,
                                            name='trend-alert-check', daemon=True)
             thread.return_value.start.assert_called_once_with()
+            views._check_trend_alerts({**saved, 'hardware_mode': 'photo_only'})
+            self.assertEqual(thread.call_count, 2)
 
     def test_background_check_never_raises(self):
         monitor = mock.Mock()
@@ -440,6 +454,10 @@ class TrendAlertViewTests(SimpleTestCase):
             self.assertEqual(graded.json()['filters']['grades'], ['下等', '加工'])
             compared = self.client.get('/api/detection/stats/', {
                 'grade': ['上等', '加工'], 'group_by': 'defect', 'compare_grades': 'true'})
-            self.assertTrue(compared.json()['chart']['compare'])
-            bad = self.client.get('/api/detection/stats/', {'grade': '特級'})
+            self.assertTrue(compared.json()['filters']['compare_grades'])
+            self.assertIsNone(compared.json()['chart'])  # empty data: no chart
+            self.assertTrue(ok.json()['filters']['include_photo_only'])
+            hardware = self.client.get('/api/detection/stats/', {'include_photo_only': 'false'})
+            self.assertFalse(hardware.json()['filters']['include_photo_only'])
+            bad =self.client.get('/api/detection/stats/', {'grade': '特級'})
             self.assertEqual(bad.json()['reason'], 'invalid_stats_query')

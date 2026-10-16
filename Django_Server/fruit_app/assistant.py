@@ -79,7 +79,7 @@ STATS_TOOL = {
             'group_by': {'type': 'string', 'enum': list(detection_stats.GROUP_BY),
                          'description': 'grade 看四級分布，defect 看瑕疵比例'},
             'include_photo_only': {'type': 'boolean',
-                                   'description': '是否納入純拍攝測試；使用者沒有要求時為 false'},
+                                   'description': '預設 true（使用硬體與純拍攝都計入）；使用者要求只看使用硬體時才傳 false'},
             'grades': {'type': 'array',
                        'items': {'type': 'string', 'enum': list(detection_stats.GRADE_ORDER)},
                        'description': '只統計這些等級的已判級果實（可複選）；不限等級則省略'},
@@ -102,7 +102,7 @@ SYSTEM_RULES = """你是百香果 IoT 分級系統 Dashboard 的唯讀助手，�
 
 規則：
 1. 檢測統計一律呼叫 query_detection_stats，不得自行計算、推估或編造數字；回答中引用的數字必須來自工具結果。圖表會由系統依工具結果自動顯示，不需要在文字中重畫表格。
-2. 比較不同等級時只呼叫一次 query_detection_stats（compare_grades=true），讓系統畫成一張圖。統計預設只計使用硬體的輪次；使用者明確要求時才納入純拍攝測試。放棄本輪與待人工處理不屬於四級分布，需要時另外說明。
+2. 比較不同等級時只呼叫一次 query_detection_stats（compare_grades=true），讓系統畫成一張圖。統計預設計入使用硬體與純拍攝的所有已判級果實；使用者要求只看使用硬體時才傳 include_photo_only=false，回答時說明採用的範圍。結果全為 0 時系統不畫圖，也不要描述圖表。放棄本輪與待人工處理不屬於四級分布，需要時另外說明。
 3. 病蟲害、防治、栽培等農業知識呼叫 search_agriculture_knowledge，並根據結果回答；系統會自動附上來源網址。涉及用藥時，提醒以植物保護資訊系統與在地農業改良場的建議為準。
 4. 部署、啟動與操作問題依下方文件回答，文件沒有寫的不要猜測，請使用者詢問專案擁有者。
 5. 你只能查詢，不能開始運轉、切換模式、分類、刪除資料或控制馬達；使用者要求這些操作時，說明要在 Dashboard 上自行操作。
@@ -243,7 +243,8 @@ class Assistant:
                 })
             except (TypeError, ValueError) as error:
                 return {'ok': False, 'error': str(error)}
-            charts.append(stats['chart'])
+            if stats['chart'] is not None:  # All-zero results draw no chart.
+                charts.append(stats['chart'])
             return {key: stats[key] for key in
                     ('ok', 'filters', 'totals', 'grades', 'sources', 'defects', 'series', 'skipped',
                      'by_grade') if key in stats}
