@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
+
+from . import dataset_store
 
 
 class CommandSequenceError(Exception):
@@ -35,16 +36,8 @@ def _read_last_issued_id(path: Path) -> int:
 
 
 def _write_last_issued_id(path: Path, command_id: int) -> None:
-    staging_path = path.with_name(f'{path.name}.tmp')
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with staging_path.open('w', encoding='utf-8') as sequence_file:
-            json.dump({'last_issued_id': int(command_id)}, sequence_file, ensure_ascii=False, indent=2)
-            sequence_file.write('\n')
-        os.replace(staging_path, path)
+        dataset_store.atomic_write_json(path, {'last_issued_id': int(command_id)})
     except OSError as exc:
-        try:
-            staging_path.unlink(missing_ok=True)
-        except OSError:
-            pass
         raise CommandSequenceError(f'無法保存 motor command ID 設定：{exc}') from exc

@@ -1271,86 +1271,48 @@ def esp32_command_api(request):
         boot_id = (request.GET.get('boot_id') or '').strip() or None
         feeder_state = (request.GET.get('feeder_state') or '').strip()
         current_command = APP_STATE.get('motor_command') or {}
-        if (
-            previous_boot_id
-            and boot_id
-            and boot_id != previous_boot_id
-            and current_command.get('command') == 'feed_one'
-        ):
+        command_name = current_command.get('command')
+        command_id = current_command.get('command_id')
+        restarted = previous_boot_id and boot_id and boot_id != previous_boot_id
+        restart_details = {'previous_boot_id': previous_boot_id, 'boot_id': boot_id}
+        if restarted and command_name == 'feed_one':
             APP_STATE['motor_command'] = None
-            _disable_auto_run()
-            APP_STATE['auto_run_finishing'] = False
-            APP_STATE['last_error_reason'] = 'esp32_restarted_during_feed'
-            APP_STATE['last_error_command'] = current_command.get('command')
-            APP_STATE['last_error_command_id'] = current_command.get('command_id')
             APP_STATE['auto_run_recovery_reason'] = 'esp32_restarted_during_feed'
             APP_STATE['status'] = 'error'
-            APP_STATE['message'] = (
+            _stop_for_esp32_restart(
+                'esp32_restarted_during_feed', command_name, command_id,
                 'ESP32 在送料完成確認前重新啟動；已停止自動運轉且不重送，'
-                '請暫停並檢查送料區域。'
+                '請暫停並檢查送料區域。',
+                details=restart_details,
             )
-            _record_transition(
-                'esp32_restarted_during_feed',
-                command_id=current_command.get('command_id'),
-                details={'previous_boot_id': previous_boot_id, 'boot_id': boot_id},
-            )
-        elif (
-            previous_boot_id
-            and boot_id
-            and boot_id != previous_boot_id
-            and APP_STATE.get('active_fruit_id')
-            and current_command.get('command') in ('start_sequence', 'release_gate')
-        ):
-            command_id = current_command.get('command_id')
+        elif (restarted and APP_STATE.get('active_fruit_id')
+              and command_name in ('start_sequence', 'release_gate')):
             APP_STATE['motor_command'] = None
             APP_STATE['pending_capture'] = False
             APP_STATE['gate3_waiting_boot_id'] = None
-            _disable_auto_run()
-            APP_STATE['auto_run_finishing'] = False
             APP_STATE['auto_run_recovery_reason'] = 'esp32_restarted_during_capture'
-            APP_STATE['last_error_reason'] = 'esp32_restarted_during_capture'
-            APP_STATE['last_error_command'] = current_command.get('command')
-            APP_STATE['last_error_command_id'] = command_id
             APP_STATE['status'] = 'error'
-            APP_STATE['message'] = (
-                'ESP32 在三站拍攝動作完成確認前重新啟動；已停止且不重送命令，'
-                '請檢查 Gate 與果實位置後重新拍攝或刪除。'
-            )
             _clear_wait_timer()
-            _record_transition(
-                'esp32_restarted_during_capture',
-                fruit_id=APP_STATE.get('active_fruit_id'),
-                command_id=command_id,
-                details={'previous_boot_id': previous_boot_id, 'boot_id': boot_id},
+            _stop_for_esp32_restart(
+                'esp32_restarted_during_capture', command_name, command_id,
+                'ESP32 在三站拍攝動作完成確認前重新啟動；已停止且不重送命令，'
+                '請檢查 Gate 與果實位置後重新拍攝或刪除。',
+                details=restart_details,
             )
-        elif (
-            previous_boot_id
-            and boot_id
-            and boot_id != previous_boot_id
-            and current_command.get('command') == 'classify_fruit'
-        ):
-            command_id = current_command.get('command_id')
+        elif restarted and command_name == 'classify_fruit':
             APP_STATE['motor_command'] = None
-            _disable_auto_run()
-            APP_STATE['auto_run_finishing'] = False
             APP_STATE['auto_run_recovery_reason'] = 'esp32_restarted_during_sorter'
-            APP_STATE['last_error_reason'] = 'esp32_restarted_during_sorter'
-            APP_STATE['last_error_command'] = 'classify_fruit'
-            APP_STATE['last_error_command_id'] = command_id
             APP_STATE['sorter_status'] = 'failed'
             APP_STATE['sorter_error'] = 'esp32_restarted_during_sorter'
             APP_STATE['sorter_deadline_monotonic'] = None
             APP_STATE['sorter_recovery_required'] = True
             APP_STATE['status'] = 'error'
-            APP_STATE['message'] = (
+            _stop_for_esp32_restart(
+                'esp32_restarted_during_sorter', command_name, command_id,
                 'ESP32 在複合分類動作完成確認前重新啟動；已停止自動運轉且不重送，'
-                'Dataset 保持已提交，請檢查 Gate 3 與分類器。'
-            )
-            _record_transition(
-                'esp32_restarted_during_sorter',
+                'Dataset 保持已提交，請檢查 Gate 3 與分類器。',
                 fruit_id=APP_STATE.get('sorter_fruit_id'),
-                command_id=command_id,
-                details={'previous_boot_id': previous_boot_id, 'boot_id': boot_id},
+                details=restart_details,
             )
             try:
                 _write_sorter_recovery_marker(
@@ -1360,9 +1322,7 @@ def esp32_command_api(request):
             except OSError:
                 pass
         elif (
-            previous_boot_id
-            and boot_id
-            and boot_id != previous_boot_id
+            restarted
             and APP_STATE.get('active_fruit_id')
             and APP_STATE.get('status') in (
                 'uploaded', 'detection_pending', 'detection_running',
@@ -1370,20 +1330,12 @@ def esp32_command_api(request):
             )
             and not _photo_only_session()
         ):
-            _disable_auto_run()
-            APP_STATE['auto_run_finishing'] = False
             APP_STATE['gate3_waiting_boot_id'] = None
-            APP_STATE['last_error_reason'] = 'esp32_restarted_while_gate3_waiting'
-            APP_STATE['last_error_command'] = 'classify_fruit'
-            APP_STATE['last_error_command_id'] = None
-            APP_STATE['message'] = (
+            _stop_for_esp32_restart(
+                'esp32_restarted_while_gate3_waiting', 'classify_fruit', None,
                 'ESP32 在 Gate 3 等待分類時重新啟動；已保留暫存照片與果實，'
-                '請依斷電程序檢查並重新拍攝或刪除。'
-            )
-            _record_transition(
-                'esp32_restarted_while_gate3_waiting',
-                fruit_id=APP_STATE.get('active_fruit_id'),
-                details={'previous_boot_id': previous_boot_id, 'boot_id': boot_id},
+                '請依斷電程序檢查並重新拍攝或刪除。',
+                details=restart_details,
             )
         APP_STATE['esp32_boot_id'] = boot_id
         APP_STATE['esp32_last_feed_command_id'] = max(
@@ -3253,19 +3205,8 @@ def _initialise_dataset_structure(root):
 
 
 def _write_recovery_payload(path, payload):
-    staging_path = path.with_name(f'{path.name}.tmp')
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with staging_path.open('w', encoding='utf-8') as recovery_file:
-            json.dump(payload, recovery_file, ensure_ascii=False, indent=2)
-            recovery_file.write('\n')
-        os.replace(staging_path, path)
-    except OSError:
-        try:
-            staging_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+    path.parent.mkdir(parents=True, exist_ok=True)
+    dataset_store.atomic_write_json(path, payload)
 
 
 def _write_sorter_recovery_marker(*, phase, reason=None):
@@ -4846,6 +4787,17 @@ def _queue_pending_auto_feed():
 def _disable_auto_run():
     APP_STATE['auto_run_enabled'] = False
     APP_STATE['auto_feed_pending'] = False
+
+
+def _stop_for_esp32_restart(reason, command, command_id, message, *, fruit_id=None, details=None):
+    """Shared stop after an ESP32 reboot; callers set their branch-only fields first."""
+    _disable_auto_run()
+    APP_STATE['auto_run_finishing'] = False
+    APP_STATE['last_error_reason'] = reason
+    APP_STATE['last_error_command'] = command
+    APP_STATE['last_error_command_id'] = command_id
+    APP_STATE['message'] = message
+    _record_transition(reason, fruit_id=fruit_id, command_id=command_id, details=details)
 
 
 def _start_wait_timer():

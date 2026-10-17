@@ -11,7 +11,47 @@ import json
 import uuid
 
 from pathlib import Path
+from time import sleep
 from typing import Callable, Iterable
+
+# Windows refuses to replace a file another handle holds open; readers finish
+# in milliseconds, while Excel holds it until closed.
+REPLACE_ATTEMPTS = 5
+REPLACE_DELAY_SECONDS = 0.1
+
+
+def atomic_write(path: Path, write: Callable[[Path], object]) -> None:
+    """Fill ``<name>.tmp`` with ``write`` and swap it in; never leave the staging file.
+
+    A target still locked after ``REPLACE_ATTEMPTS`` raises ``PermissionError``
+    naming the file so the operator knows what to close.
+    """
+    path = Path(path)
+    staging = path.with_name(f'{path.name}.tmp')
+    try:
+        write(staging)
+        for attempt in range(REPLACE_ATTEMPTS):
+            try:
+                staging.replace(path)
+                return
+            except PermissionError as error:
+                if attempt == REPLACE_ATTEMPTS - 1:
+                    raise PermissionError(
+                        f'{path.name} 正被其他程式開啟（例如 Excel），請關閉後再試。'
+                    ) from error
+                sleep(REPLACE_DELAY_SECONDS)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    atomic_write(path, lambda staging: staging.write_text(text, encoding='utf-8'))
+
+
+def atomic_write_json(path: Path, payload, *, indent: int | None = 2) -> None:
+    """Write UTF-8 JSON (non-ASCII kept) with a trailing newline when indented."""
+    text = json.dumps(payload, ensure_ascii=False, indent=indent)
+    atomic_write_text(path, text + '\n' if indent is not None else text)
 
 
 def save_station_image(
@@ -52,18 +92,12 @@ def save_capture_session(
     ``result_id`` stays stable across restarts and never depends on the
     resettable fruit counter.
     """
-    target = fruit_dir / '.capture-session.json'
-    staging = target.with_suffix('.json.tmp')
-    try:
-        staging.write_text(json.dumps({
-            'hardware_mode': hardware_mode,
-            'work_mode': work_mode,
-            'capture_time': capture_time,
-            'result_id': uuid.uuid4().hex,
-        }), encoding='utf-8')
-        staging.replace(target)
-    finally:
-        staging.unlink(missing_ok=True)
+    atomic_write_text(fruit_dir / '.capture-session.json', json.dumps({
+        'hardware_mode': hardware_mode,
+        'work_mode': work_mode,
+        'capture_time': capture_time,
+        'result_id': uuid.uuid4().hex,
+    }))
 
 
 def read_capture_options(fruit_dir: Path) -> dict:

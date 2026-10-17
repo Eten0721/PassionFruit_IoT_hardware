@@ -177,7 +177,8 @@ class DatasetModeTests(SimpleTestCase):
 
     def test_failed_mode_save_preserves_current_mode_and_restart(self):
         self._select('detection')
-        with mock.patch.object(views.os, 'replace', side_effect=PermissionError('occupied')):
+        with mock.patch('pathlib.Path.replace', side_effect=PermissionError('occupied')), \
+                mock.patch('fruit_app.dataset_store.sleep'):
             response = self._post_json('/api/collection_options/', {
                 'work_mode': 'collection', 'hardware_mode': 'photo_only',
             })

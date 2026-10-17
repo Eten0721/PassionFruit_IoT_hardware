@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Iterable
+
+from . import dataset_store
 
 
 class TimingValidationError(ValueError):
@@ -101,9 +102,6 @@ def read(
 def write(path: Path, timing: dict[str, int | bool], revision: int) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    staging_path = path.with_suffix('.tmp')
-    payload = {'revision': int(revision), 'capture_timing': dict(timing)}
-    with staging_path.open('w', encoding='utf-8') as timing_file:
-        json.dump(payload, timing_file, ensure_ascii=False, indent=2)
-        timing_file.write('\n')
-    os.replace(staging_path, path)
+    dataset_store.atomic_write_json(
+        path, {'revision': int(revision), 'capture_timing': dict(timing)},
+    )

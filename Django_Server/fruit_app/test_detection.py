@@ -30,7 +30,7 @@ class DetectionModelSettingsTests(SimpleTestCase):
 class SummaryReplaceRetryTests(SimpleTestCase):
     def test_brief_lock_retries_and_long_lock_names_the_file(self):
         from tempfile import TemporaryDirectory
-        from . import detection
+        from . import dataset_store, detection
 
         real_replace = Path.replace
         attempts = []
@@ -43,7 +43,7 @@ class SummaryReplaceRetryTests(SimpleTestCase):
                 return real_replace(staging, target)
             return replace
 
-        with TemporaryDirectory() as tmp, mock.patch.object(detection, 'sleep'):
+        with TemporaryDirectory() as tmp, mock.patch.object(dataset_store, 'sleep'):
             path = Path(tmp) / 'detection_summary.csv'
             with mock.patch.object(Path, 'replace', locked_for(2)):
                 detection.reset_summary(path)
@@ -54,7 +54,7 @@ class SummaryReplaceRetryTests(SimpleTestCase):
             with mock.patch.object(Path, 'replace', locked_for(99)), \
                     self.assertRaisesRegex(PermissionError, 'detection_summary.csv'):
                 detection.reset_summary(path)
-            self.assertEqual(len(attempts), detection.SUMMARY_REPLACE_ATTEMPTS)
+            self.assertEqual(len(attempts), dataset_store.REPLACE_ATTEMPTS)
             self.assertEqual(list(Path(tmp).iterdir()), [path])  # No staging file left behind.
 
 

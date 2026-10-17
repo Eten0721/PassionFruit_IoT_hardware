@@ -27,7 +27,6 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import re
 import secrets
 import socket
@@ -41,7 +40,7 @@ from typing import Callable
 
 from PIL import Image, ImageOps
 
-from . import detection_stats, trend_alerts
+from . import dataset_store, detection_stats, trend_alerts
 
 
 API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
@@ -362,14 +361,8 @@ class Assistant:
             if usage['count'] >= limit:
                 raise _Failure('assistant_quota_exceeded', 'daily limit')
             usage['count'] += 1
-            staging = self.usage_path.with_name(f'{self.usage_path.name}.tmp')
-            try:
-                self.usage_path.parent.mkdir(parents=True, exist_ok=True)
-                staging.write_text(json.dumps(usage), encoding='utf-8')
-                os.replace(staging, self.usage_path)
-            except OSError:
-                staging.unlink(missing_ok=True)
-                raise
+            self.usage_path.parent.mkdir(parents=True, exist_ok=True)
+            dataset_store.atomic_write_text(self.usage_path, json.dumps(usage))
 
     def _read_usage(self):
         today = self._today().isoformat()
@@ -411,13 +404,10 @@ def save_launcher_icon(data: bytes, path: Path) -> dict:
     except (OSError, ValueError, Image.DecompressionBombError):
         return {'ok': False, 'reason': 'icon_unreadable'}
     path = Path(path)
-    staging = path.with_name(f'{path.name}.tmp')
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        icon.save(staging, format='PNG', optimize=True)
-        os.replace(staging, path)
+        dataset_store.atomic_write(path, lambda staging: icon.save(staging, format='PNG', optimize=True))
     finally:
-        staging.unlink(missing_ok=True)
         icon.close()
     return {'ok': True, 'reason': None}
 

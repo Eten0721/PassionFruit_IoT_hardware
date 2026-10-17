@@ -23,7 +23,6 @@ notifications and defaults to off.
 from __future__ import annotations
 
 import json
-import os
 import re
 import threading
 import uuid
@@ -31,7 +30,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from . import detection_stats
+from . import dataset_store, detection_stats
 from .notification import OBSERVATION_NAMES
 
 
@@ -269,14 +268,7 @@ class TrendAlerts:
 
     def _write(self, state):
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        staging = self.state_path.with_name(f'{self.state_path.name}.tmp')
-        try:
-            staging.write_text(json.dumps(state, ensure_ascii=False, indent=2) + '\n',
-                               encoding='utf-8')
-            os.replace(staging, self.state_path)
-        except OSError:
-            staging.unlink(missing_ok=True)
-            raise
+        dataset_store.atomic_write_json(self.state_path, state)
 
 
 def _merged_categories(base, changes):

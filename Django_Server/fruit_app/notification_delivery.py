@@ -27,7 +27,6 @@ import hashlib
 import http.client
 import json
 import logging
-import os
 import socket
 import threading
 import time
@@ -39,7 +38,7 @@ from typing import Callable, NamedTuple
 
 from PIL import Image
 
-from . import grading
+from . import dataset_store, grading
 from .notification import generate_notification
 
 
@@ -470,14 +469,7 @@ class Outbox:
 
     def _write(self, state):
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        staging = self.state_path.with_name(f'{self.state_path.name}.tmp')
-        try:
-            staging.write_text(json.dumps(state, ensure_ascii=False, indent=2) + '\n',
-                               encoding='utf-8')
-            os.replace(staging, self.state_path)
-        except OSError:
-            staging.unlink(missing_ok=True)
-            raise
+        dataset_store.atomic_write_json(self.state_path, state)
 
 
 def _text_message(entry):
