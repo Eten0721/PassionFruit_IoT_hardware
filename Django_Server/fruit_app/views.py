@@ -1,10 +1,8 @@
-import csv
 import json
 import logging
 import os
 import re
 import secrets
-import shutil
 import sys
 import threading
 import time
@@ -35,6 +33,7 @@ from . import (
     trend_alerts,
     webrtc_signaling,
 )
+from .dataset_store import DatasetFileBusyError, write_recovery_payload as _write_recovery_payload
 from .runtime_state import RuntimeState
 from .reason_text import REASON_TEXT
 from . import local_network
@@ -44,9 +43,9 @@ from .local_network import network_required
 logger = logging.getLogger(__name__)
 LABELS = ['上等', '中等', '下等', '加工']
 CLASSIFICATION_CODES = grading.CLASSIFICATION_CODES
-IMAGE_COUNT = 3
-IMAGE_FILENAMES = [f'img_{idx:02d}.jpg' for idx in range(1, IMAGE_COUNT + 1)]
-FRUIT_ID_PATTERN = re.compile(r'^fruit_(\d{3,})$')
+IMAGE_COUNT = dataset_store.IMAGE_COUNT
+IMAGE_FILENAMES = dataset_store.IMAGE_FILENAMES
+FRUIT_ID_PATTERN = dataset_store.FRUIT_ID_PATTERN
 ESP32_SETUP_FAILURES = ('setup_ap_failed',)
 ESP32_SETUP_BLOCK_REASON_PATTERN = re.compile(r'[a-z_]{1,48}')
 ESP32_SETUP_URL = 'http://192.168.4.1/'  # Firmware WifiSetup page on the ESP32 softAP default address.
@@ -61,17 +60,6 @@ CAMERA_DIAGNOSTICS_ENUMS = {
 }
 CAMERA_DIAGNOSTICS_BOOLEANS = ('secure_context', 'get_user_media_available', 'track_muted')
 CAMERA_DIAGNOSTICS_LIMITS = {'video_width': 10000, 'video_height': 10000, 'last_live_frame_age_ms': 86400000}
-METADATA_FIELDNAMES = [
-    'fruit_id',
-    'label',
-    'capture_time',
-    'path',
-    'capture_count',
-    'station_01_ok',
-    'station_02_ok',
-    'station_03_ok',
-    'note',
-]
 HOME_ANGLE = 0
 RELEASE_ANGLE = 90
 # Conservative defaults that still preserve the first-station fast path.
@@ -130,8 +118,6 @@ PHOTO_DETECTION_INTERVAL_SECONDS = 1.0
 SORTER_PENDING_TIMEOUT_SECONDS = 30
 SORTER_RUNNING_TIMEOUT_SECONDS = 30
 CAMERA_READY_WINDOW_SECONDS = 5
-FILE_OPERATION_RETRIES = 2
-FILE_OPERATION_RETRY_DELAY_SECONDS = 0.05
 DISCARD_CLEANUP_RETRY_INTERVAL_SECONDS = 30
 UPLOAD_STAGING_SUFFIX = '.uploading'
 CLIENT_TIMING_KEYS = (
@@ -259,10 +245,6 @@ WEBRTC_STATE = {
     'camera_ice': [],
     'updated_at': None,
 }
-
-
-class DatasetFileBusyError(Exception):
-    pass
 
 
 class CaptureCommandError(Exception):
@@ -682,10 +664,10 @@ def set_counter_api(request):
         reason = local_network.NETWORK.request_reason(request, cleanup=True)
         if reason:
             return local_network.network_error(reason)
-        fruit_id = _format_fruit_id(next_id)
+        fruit_id = dataset_store.format_fruit_id(next_id)
         if _fruit_id_exists(fruit_id):
             return _json_error(f'{fruit_id} 已有有效資料，請先重置 dataset 或改用其他起始 ID。', status=409)
-        _write_counter(next_id)
+        dataset_store.write_counter(_dataset_root(), next_id)
         APP_STATE['message'] = f'下一筆資料將從 {fruit_id} 開始。'
     return JsonResponse({'status': 'success', 'next_fruit_id': fruit_id})
 
@@ -978,7 +960,7 @@ def collection_options_api(request):
         if reason:
             return _json_error('目前流程尚未結束，無法切換選項。', status=409, reason=reason)
         try:
-            _write_recovery_payload(_dataset_options_path(), {
+            dataset_store.write_recovery_payload(_dataset_options_path(), {
                 'work_mode': data['work_mode'], 'hardware_mode': data['hardware_mode'],
             })
         except OSError as exc:
@@ -1072,7 +1054,9 @@ def photo_capture_api(request):
         reason = _photo_capture_disabled_reason()
         if reason:
             return _json_error('目前無法開始純拍攝。', status=409, reason=reason)
-        fruit_id = _format_fruit_id(_next_available_number(_read_counter()))
+        fruit_id = dataset_store.format_fruit_id(dataset_store.next_available_number(
+            dataset_store.load_counter(_dataset_root()), _fruit_id_exists,
+        ))
         try:
             fruit_dir = _prepare_fruit_dir(fruit_id, 'photo_only')
             capture_time = _now_string()
@@ -1083,7 +1067,7 @@ def photo_capture_api(request):
             return _json_error(exc.message, status=exc.status, reason=exc.reason)
         except OSError as exc:
             try:
-                _safe_rmtree(fruit_dir)
+                dataset_store.safe_rmtree(fruit_dir)
             except DatasetFileBusyError:
                 pass  # The existing temp cleanup will retry an empty folder.
             return _json_error(f'無法保存本輪選項：{exc}', status=503, reason='capture_options_persist_failed')
@@ -1191,7 +1175,7 @@ def auto_run_api(request):
             _reset_sorter_state()
         if recovery_reason == 'gate3_manual_removal_required':
             try:
-                _clear_gate3_recovery_marker()
+                dataset_store.clear_recovery_marker(_gate3_recovery_path())
             except OSError as exc:
                 return _json_error(
                     f'無法清除 Gate 3 人工復原鎖：{exc}',
@@ -1545,7 +1529,7 @@ def recapture_api(request):
             return _json_error('暫存資料夾不存在，請重新建立拍攝。', status=404)
 
         try:
-            _clear_temp_images(fruit_dir)
+            dataset_store.clear_temp_images(fruit_dir, clear_image_cache=_load_image_list.cache_clear)
         except DatasetFileBusyError as exc:
             return _json_error(str(exc), status=409)
 
@@ -1829,10 +1813,15 @@ def _start_sorting_saved_grade(result):
         return
     try:
         # Intent survives a crash between committed data and command publication.
-        _write_sorter_recovery_intent(fruit_id, label, code)
+        dataset_store.write_sorter_recovery_intent(
+            _sorter_recovery_path(), fruit_id, label, code,
+        )
         APP_STATE['sorter_recovery_required'] = True
-        _write_counter(max(_read_counter(), _fruit_number(fruit_id) + 1))
-        _discard_temp_fruit(_temp_dir() / fruit_id, fruit_id)
+        dataset_store.write_counter(_dataset_root(), max(dataset_store.load_counter(_dataset_root()), dataset_store.parse_fruit_number(fruit_id) + 1))
+        dataset_store.discard_temp_fruit(
+            _dataset_root(), _temp_dir() / fruit_id, fruit_id,
+            now_string=_now_string, fruit_id_exists=_fruit_id_exists,
+        )
     except (OSError, DatasetFileBusyError) as exc:
         _set_sorter_failed(fruit_id, label, code, 'detection_sorter_prepare_failed')
         APP_STATE['message'] += f'：{exc}'
@@ -2271,7 +2260,9 @@ def _clear_saved_photo_input(fruit_dir, fruit_id):
     Returns a message suffix; a busy folder falls back to deferred cleanup.
     """
     try:
-        cleared = _discard_temp_fruit(fruit_dir, fruit_id)
+        cleared = dataset_store.discard_temp_fruit(
+            _dataset_root(), fruit_dir, fruit_id, now_string=_now_string, fruit_id_exists=_fruit_id_exists,
+        )
     except (DatasetFileBusyError, OSError) as exc:
         return f' 暫存原圖暫時無法清除，結果已保存：{exc}'
     if cleared['mode'] == 'deleted':
@@ -2506,7 +2497,7 @@ def classify_api(request):
         src_dir = _temp_dir() / fruit_id
         if not src_dir.exists():
             return _json_error('暫存資料夾不存在，請重新拍攝。', status=404)
-        if APP_STATE['status'] != 'uploaded' or _temp_image_count(src_dir) != IMAGE_COUNT:
+        if APP_STATE['status'] != 'uploaded' or dataset_store.temp_image_count(src_dir) != IMAGE_COUNT:
             return _json_error(f'{fruit_id} 尚未完成 {IMAGE_COUNT} 張照片上傳。', status=409)
         photo_only = _photo_only_session()
         if not photo_only:
@@ -2519,10 +2510,10 @@ def classify_api(request):
 
         dest_dir = _dataset_root() / label / fruit_id
         if dest_dir.exists():
-            if _is_ignored_reset_path(dest_dir):
-                moved_warning = _move_reset_leftover_to_pending(dest_dir, reason='classify')
+            if dataset_store.is_ignored_reset_path(_dataset_root(), dest_dir):
+                moved_warning = dataset_store.move_reset_leftover_to_pending(_dataset_root(), dest_dir, reason='classify')
                 if not dest_dir.exists():
-                    _remove_ignored_reset_path(dest_dir)
+                    dataset_store.remove_ignored_reset_path(_dataset_root(), dest_dir)
                 else:
                     return _json_error(moved_warning, status=409)
             else:
@@ -2534,7 +2525,10 @@ def classify_api(request):
         classification_code = CLASSIFICATION_CODES[label]
         if not photo_only:
             try:
-                _write_sorter_recovery_intent(fruit_id, label, classification_code)
+                dataset_store.write_sorter_recovery_intent(
+                    _sorter_recovery_path(),
+                    fruit_id, label, classification_code,
+                )
             except OSError as exc:
                 return _json_error(
                     f'無法建立分類器安全復原紀錄：{exc}',
@@ -2549,11 +2543,11 @@ def classify_api(request):
         APP_STATE['message'] = f'{fruit_id} 正在分類為「{label}」。'
 
     try:
-        _safe_move(src_dir, dest_dir)
-        _append_metadata(fruit_id, label, capture_time, relative_path, note, dest_dir)
-        fruit_number = _fruit_number(fruit_id)
+        dataset_store.safe_move(src_dir, dest_dir)
+        dataset_store.append_metadata(_dataset_root(), fruit_id, label, capture_time, relative_path, note, dest_dir)
+        fruit_number = dataset_store.parse_fruit_number(fruit_id)
         if fruit_number is not None:
-            _write_counter(max(_read_counter(), fruit_number + 1))
+            dataset_store.write_counter(_dataset_root(), max(dataset_store.load_counter(_dataset_root()), fruit_number + 1))
         if photo_only:
             try:
                 (dest_dir / '.capture-session.json').unlink(missing_ok=True)
@@ -2625,7 +2619,7 @@ def classify_api(request):
             'fruit_id': fruit_id,
             'label': label,
             'path': relative_path,
-            'next_fruit_id': _format_fruit_id(_read_counter()),
+            'next_fruit_id': dataset_store.format_fruit_id(dataset_store.load_counter(_dataset_root())),
             **sorter_result,
         }
     return JsonResponse(payload)
@@ -2664,7 +2658,7 @@ def discard_api(request):
         gate3_waiting = _gate3_manual_removal_required()
         if gate3_waiting:
             try:
-                _write_gate3_recovery_marker(fruit_id)
+                dataset_store.write_gate3_recovery_marker(_gate3_recovery_path(), fruit_id)
             except OSError as exc:
                 return _json_error(
                     f'無法保存 Gate 3 人工復原鎖：{exc}',
@@ -2688,9 +2682,13 @@ def discard_api(request):
         if result_dir is not None:
             detection.remove_summary_rows(_detection_summary_path(), fruit_id)
         result_discard = (
-            _discard_temp_fruit(result_dir, fruit_id) if result_dir is not None else None
+            dataset_store.discard_temp_fruit(
+                _dataset_root(), result_dir, fruit_id, now_string=_now_string, fruit_id_exists=_fruit_id_exists,
+            ) if result_dir is not None else None
         )
-        discard_result = _discard_temp_fruit(fruit_dir, fruit_id)
+        discard_result = dataset_store.discard_temp_fruit(
+            _dataset_root(), fruit_dir, fruit_id, now_string=_now_string, fruit_id_exists=_fruit_id_exists,
+        )
         if result_discard and result_discard['mode'] != 'deleted':
             discard_result = result_discard
     except (DatasetFileBusyError, OSError) as exc:
@@ -2738,7 +2736,7 @@ def discard_api(request):
             'discard_mode': discard_mode,
             'discard_cleanup_pending': discard_mode != 'deleted',
             'discard_cleanup_path': discard_result.get('cleanup_path'),
-            'next_fruit_id': discard_result.get('next_fruit_id') or _format_fruit_id(_read_counter()),
+            'next_fruit_id': discard_result.get('next_fruit_id') or dataset_store.format_fruit_id(dataset_store.load_counter(_dataset_root())),
         })
     return JsonResponse(payload)
 
@@ -2783,7 +2781,12 @@ def reset_dataset_api(request):
         APP_STATE['message'] = '正在重置 dataset。'
 
     try:
-        delete_warnings = _reset_dataset_contents()
+        _ensure_dataset_structure()
+        delete_warnings = dataset_store.reset_dataset_contents(
+            _dataset_root(), collects_by_label=_collects_by_label(), labels=LABELS,
+            now_string=_now_string, reset_summary=detection.reset_summary,
+            clear_image_cache=_load_image_list.cache_clear,
+        )
     except (DatasetFileBusyError, OSError) as exc:
         with STATE_LOCK:
             APP_STATE.finish_dataset_operation(operation_token)
@@ -2842,8 +2845,8 @@ def detection_image_api(request, fruit_id, filename):
             raise Http404('image not found')
         image_path = _detection_output_root() / fruit_id / filename
         if (not image_path.is_file()
-                or _is_ignored_reset_path(image_path.parent)
-                or _is_deferred_discard_path(image_path.parent)
+                or dataset_store.is_ignored_reset_path(_dataset_root(), image_path.parent)
+                or dataset_store.is_deferred_discard_path(_dataset_root(), image_path.parent)
                 or image_path.suffix.lower() not in ('.jpg', '.jpeg', '.png')):
             raise Http404('image not found')
         stat = image_path.stat()
@@ -3060,15 +3063,27 @@ def _dataset_root(work_mode=None):
 
 
 def _detection_output_root():
-    return _dataset_root('detection') / 'results'
+    return _dataset_root('detection') / dataset_store.DETECTION_OUTPUT_DIRNAME
 
 
 def _detection_summary_path():
-    return _dataset_root('detection') / 'detection_summary.csv'
+    return _dataset_root('detection') / dataset_store.DETECTION_SUMMARY_FILENAME
 
 
 def _dataset_options_path():
     return Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).with_name('dataset_options.json')
+
+
+def _temp_dir():
+    return _dataset_root() / dataset_store.TEMP_DIRNAME
+
+
+def _sorter_recovery_path():
+    return Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).with_name('sorter_recovery.json')
+
+
+def _gate3_recovery_path():
+    return Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).with_name('gate3_recovery.json')
 
 
 @cache
@@ -3116,14 +3131,6 @@ def _no_store_response(response):
     return response
 
 
-def _temp_dir():
-    return _dataset_root() / 'temp'
-
-
-def _counter_path():
-    return _dataset_root() / 'counter.json'
-
-
 def _capture_timing_path():
     return Path(settings.CAPTURE_TIMING_CONFIG_PATH)
 
@@ -3137,45 +3144,8 @@ def _collects_by_label():
     return APP_STATE['work_mode'] == 'collection'
 
 
-def _remove_empty_label_scaffold(root):
-    """Drop empty label folders and a header-only metadata.csv; keep content."""
-    for label in LABELS:
-        try:
-            (root / label).rmdir()
-        except OSError:
-            pass  # Missing, non-empty or busy: leave it where it is.
-    metadata = root / 'metadata.csv'
-    try:
-        with metadata.open('r', encoding='utf-8-sig', newline='') as csv_file:
-            has_rows = any(True for _row in csv.DictReader(csv_file))
-        if not has_rows:
-            metadata.unlink()
-    except OSError:
-        pass
-
-
 def _legacy_capture_timing_path():
     return Path(settings.DATASET_ROOT) / 'capture_timing.json'
-
-
-def _metadata_path():
-    return _dataset_root() / 'metadata.csv'
-
-
-def _reset_state_path():
-    return _dataset_root() / 'reset_state.json'
-
-
-def _discard_state_path():
-    return _dataset_root() / 'discard_state.json'
-
-
-def _sorter_recovery_path():
-    return Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).with_name('sorter_recovery.json')
-
-
-def _gate3_recovery_path():
-    return Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).with_name('gate3_recovery.json')
 
 
 def _ensure_dataset_structure():
@@ -3188,29 +3158,24 @@ def _ensure_dataset_structure():
 def _initialise_dataset_structure(root):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    (root / 'temp').mkdir(parents=True, exist_ok=True)
+    (root / dataset_store.TEMP_DIRNAME).mkdir(parents=True, exist_ok=True)
     if _collects_by_label():
         for label in LABELS:
             (root / label).mkdir(parents=True, exist_ok=True)
     else:
-        _remove_empty_label_scaffold(root)
-    if not (root / 'counter.json').exists():
-        _write_counter(1)
+        dataset_store.remove_empty_label_scaffold(root, labels=LABELS)
+    if not (root / dataset_store.COUNTER_FILENAME).exists():
+        dataset_store.write_counter(_dataset_root(), 1)
     _ensure_capture_timing_config()
     if _collects_by_label():
-        _ensure_metadata_header()
+        dataset_store.ensure_metadata_header(_dataset_root())
     _restore_gate3_recovery_marker()
     _restore_sorter_recovery_marker()
     NETWORK_RECOVERY.restore()
 
 
-def _write_recovery_payload(path, payload):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    dataset_store.atomic_write_json(path, payload)
-
-
 def _write_sorter_recovery_marker(*, phase, reason=None):
-    _write_recovery_payload(_sorter_recovery_path(), {
+    dataset_store.write_recovery_payload(_sorter_recovery_path(), {
         'command_id': APP_STATE.get('sorter_command_id'),
         'fruit_id': APP_STATE.get('sorter_fruit_id'),
         'label': APP_STATE.get('sorter_label'),
@@ -3220,40 +3185,13 @@ def _write_sorter_recovery_marker(*, phase, reason=None):
     })
 
 
-def _write_sorter_recovery_intent(fruit_id, label, classification_code):
-    _write_recovery_payload(_sorter_recovery_path(), {
-        'command_id': None,
-        'fruit_id': fruit_id,
-        'label': label,
-        'classification_code': classification_code,
-        'phase': 'dataset_committing',
-        'reason': None,
-    })
-
-
 def _restore_sorter_recovery_marker():
     path = _sorter_recovery_path()
     if not path.exists() or APP_STATE.get('sorter_recovery_required'):
         return
-    try:
-        with path.open('r', encoding='utf-8') as recovery_file:
-            payload = json.load(recovery_file)
-        raw_command_id = payload.get('command_id')
-        command_id = None if raw_command_id is None else int(raw_command_id)
-        fruit_id = str(payload['fruit_id'])
-        label = str(payload['label'])
-        classification_code = str(payload['classification_code'])
-        if (
-            (command_id is not None and command_id <= 0)
-            or not fruit_id
-            or label not in LABELS
-            or classification_code not in CLASSIFICATION_CODES.values()
-        ):
-            raise ValueError('invalid sorter recovery fields')
-    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-        payload = {}
-        command_id = None
-        classification_code = None
+    payload, command_id, classification_code = dataset_store.read_sorter_recovery_marker(
+        path, labels=LABELS, classification_codes=CLASSIFICATION_CODES.values(),
+    )
 
     _disable_auto_run()
     APP_STATE['sorter_recovery_required'] = True
@@ -3279,15 +3217,8 @@ def _restore_sorter_recovery_marker():
 
 
 def _clear_sorter_recovery_marker():
-    _sorter_recovery_path().unlink(missing_ok=True)
+    dataset_store.clear_recovery_marker(_sorter_recovery_path())
     APP_STATE['sorter_recovery_required'] = False
-
-
-def _write_gate3_recovery_marker(fruit_id):
-    _write_recovery_payload(_gate3_recovery_path(), {
-        'fruit_id': fruit_id,
-        'reason': 'gate3_manual_removal_required',
-    })
 
 
 def _restore_gate3_recovery_marker():
@@ -3306,7 +3237,9 @@ def _restore_gate3_recovery_marker():
 
 
 def _clear_gate3_recovery_marker():
-    _gate3_recovery_path().unlink(missing_ok=True)
+    dataset_store.clear_recovery_marker(
+        _gate3_recovery_path()
+    )
 
 
 def _request_data(request):
@@ -3317,26 +3250,6 @@ def _request_data(request):
         except json.JSONDecodeError:
             return {}
     return request.POST.dict()
-
-
-def _read_counter():
-    return _load_counter(_dataset_root())
-
-
-@cache
-def _load_counter(root):
-    try:
-        with (Path(root) / 'counter.json').open('r', encoding='utf-8') as counter_file:
-            data = json.load(counter_file)
-        return max(int(data.get('next_id', 1)), 1)
-    except (FileNotFoundError, json.JSONDecodeError, TypeError, ValueError):
-        _write_counter(1)
-        return 1
-
-
-def _write_counter(next_id):
-    _write_recovery_payload(_counter_path(), {'next_id': int(next_id)})
-    _load_counter.cache_clear()
 
 
 def _normalise_capture_timing(raw_timing, *, require_all):
@@ -3458,7 +3371,7 @@ def _remove_legacy_capture_timing_config():
     if legacy_path == _capture_timing_path() or not legacy_path.exists():
         return
     try:
-        _safe_unlink(legacy_path)
+        dataset_store.safe_unlink(legacy_path)
     except DatasetFileBusyError as exc:
         print(f'無法移除舊版停穩設定檔 {legacy_path}：{exc}', flush=True)
 
@@ -3482,40 +3395,24 @@ def _capture_timing_state_payload():
     }
 
 
-def _format_fruit_id(number):
-    return f'fruit_{int(number):03d}'
-
-
-def _fruit_number(fruit_id):
-    match = FRUIT_ID_PATTERN.match(fruit_id or '')
-    return int(match.group(1)) if match else None
-
-
-def _next_available_number(start_number):
-    number = max(int(start_number), 1)
-    while _fruit_id_exists(_format_fruit_id(number)):
-        number += 1
-    return number
-
-
 def _fruit_id_exists(fruit_id):
     if APP_STATE['work_mode'] == 'detection' and (
         (_detection_output_root() / fruit_id).exists()
-        and not _is_ignored_reset_path(_detection_output_root() / fruit_id)
+        and not dataset_store.is_ignored_reset_path(_dataset_root(), _detection_output_root() / fruit_id)
     ):
         return True
     temp_fruit_dir = _temp_dir() / fruit_id
-    if temp_fruit_dir.exists() and _is_deferred_discard_path(temp_fruit_dir):
+    if temp_fruit_dir.exists() and dataset_store.is_deferred_discard_path(_dataset_root(), temp_fruit_dir):
         return True
     if (
         temp_fruit_dir.exists()
-        and not _is_ignored_reset_path(temp_fruit_dir)
-        and not _is_reusable_temp_dir(temp_fruit_dir)
+        and not dataset_store.is_ignored_reset_path(_dataset_root(), temp_fruit_dir)
+        and not dataset_store.is_reusable_temp_dir(temp_fruit_dir)
     ):
         return True
     return any(
         (_dataset_root() / label / fruit_id).exists()
-        and not _is_ignored_reset_path(_dataset_root() / label / fruit_id)
+        and not dataset_store.is_ignored_reset_path(_dataset_root(), _dataset_root() / label / fruit_id)
         for label in LABELS
     )
 
@@ -3524,8 +3421,8 @@ def _find_fruit_image(fruit_id, filename):
     candidates = [_temp_dir() / fruit_id / filename]
     candidates.extend(_dataset_root() / label / fruit_id / filename for label in LABELS)
     for candidate in candidates:
-        if (candidate.is_file() and not _is_ignored_reset_path(candidate.parent)
-                and not _is_deferred_discard_path(candidate.parent)):
+        if (candidate.is_file() and not dataset_store.is_ignored_reset_path(_dataset_root(), candidate.parent)
+                and not dataset_store.is_deferred_discard_path(_dataset_root(), candidate.parent)):
             return candidate
     return None
 
@@ -3550,63 +3447,8 @@ def _load_image_list(root, fruit_id):
 def _reset_dataset_caches():
     _initialise_dataset_structure.cache_clear()
     _restore_dataset_options.cache_clear()
-    _load_counter.cache_clear()
+    dataset_store.load_counter.cache_clear()
     _load_image_list.cache_clear()
-
-
-def _ensure_metadata_header():
-    path = _metadata_path()
-    if not path.exists():
-        with path.open('w', encoding='utf-8-sig', newline='') as csv_file:
-            writer = csv.DictWriter(csv_file, fieldnames=METADATA_FIELDNAMES)
-            writer.writeheader()
-        return
-
-    with path.open('r', encoding='utf-8-sig', newline='') as csv_file:
-        reader = csv.DictReader(csv_file)
-        if reader.fieldnames == METADATA_FIELDNAMES:
-            return
-        rows = list(reader)
-
-    upgraded_rows = []
-    for row in rows:
-        upgraded_rows.append({
-            'fruit_id': row.get('fruit_id', ''),
-            'label': row.get('label', ''),
-            'capture_time': row.get('capture_time', ''),
-            'path': row.get('path', ''),
-            'capture_count': row.get('capture_count') or '',
-            'station_01_ok': row.get('station_01_ok') or '',
-            'station_02_ok': row.get('station_02_ok') or '',
-            'station_03_ok': row.get('station_03_ok') or '',
-            'note': row.get('note', ''),
-        })
-
-    with path.open('w', encoding='utf-8-sig', newline='') as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=METADATA_FIELDNAMES)
-        writer.writeheader()
-        writer.writerows(upgraded_rows)
-
-
-def _append_metadata(fruit_id, label, capture_time, relative_path, note, fruit_dir):
-    _ensure_metadata_header()
-    station_ok = [
-        str((Path(fruit_dir) / filename).exists()).lower()
-        for filename in IMAGE_FILENAMES
-    ]
-    with _metadata_path().open('a', encoding='utf-8-sig', newline='') as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=METADATA_FIELDNAMES)
-        writer.writerow({
-            'fruit_id': fruit_id,
-            'label': label,
-            'capture_time': capture_time,
-            'path': relative_path,
-            'capture_count': _temp_image_count(fruit_dir),
-            'station_01_ok': station_ok[0],
-            'station_02_ok': station_ok[1],
-            'station_03_ok': station_ok[2],
-            'note': note,
-        })
 
 
 def _create_capture_session(source):
@@ -3638,8 +3480,8 @@ def _create_capture_session(source):
             reason='active_fruit_exists',
         )
 
-    fruit_number = _next_available_number(_read_counter())
-    fruit_id = _format_fruit_id(fruit_number)
+    fruit_number = dataset_store.next_available_number(dataset_store.load_counter(_dataset_root()), _fruit_id_exists)
+    fruit_id = dataset_store.format_fruit_id(fruit_number)
     fruit_dir = _prepare_fruit_dir(fruit_id, source)
     if APP_STATE['work_mode'] == 'detection':
         try:
@@ -3651,7 +3493,7 @@ def _create_capture_session(source):
             )
         except OSError as exc:
             try:
-                _safe_rmtree(fruit_dir)
+                dataset_store.safe_rmtree(fruit_dir)
             except DatasetFileBusyError:
                 pass
             raise CaptureCommandError(
@@ -3743,8 +3585,8 @@ def _handle_hcsr04_station_1_ready(data):
         )
 
     try:
-        fruit_number = _next_available_number(_read_counter())
-        fruit_id = _format_fruit_id(fruit_number)
+        fruit_number = dataset_store.next_available_number(dataset_store.load_counter(_dataset_root()), _fruit_id_exists)
+        fruit_id = dataset_store.format_fruit_id(fruit_number)
         _prepare_fruit_dir(fruit_id, source='esp32_fast_station_1')
     except CaptureCommandError as exc:
         return _fast_path_fallback(
@@ -3863,27 +3705,27 @@ def _fast_path_enabled():
 def _prepare_fruit_dir(fruit_id, source):
     if APP_STATE['work_mode'] == 'detection':
         result_dir = _detection_output_root() / fruit_id
-        if result_dir.exists() and _is_ignored_reset_path(result_dir):
-            warning = _move_reset_leftover_to_pending(result_dir, reason=source)
+        if result_dir.exists() and dataset_store.is_ignored_reset_path(_dataset_root(), result_dir):
+            warning = dataset_store.move_reset_leftover_to_pending(_dataset_root(), result_dir, reason=source)
             if result_dir.exists():
                 raise CaptureCommandError(warning, reason='reset_leftover_busy')
-            _remove_ignored_reset_path(result_dir)
+            dataset_store.remove_ignored_reset_path(_dataset_root(), result_dir)
     fruit_dir = _temp_dir() / fruit_id
-    if fruit_dir.exists() and _is_ignored_reset_path(fruit_dir):
-        moved_warning = _move_reset_leftover_to_pending(fruit_dir, reason=source)
+    if fruit_dir.exists() and dataset_store.is_ignored_reset_path(_dataset_root(), fruit_dir):
+        moved_warning = dataset_store.move_reset_leftover_to_pending(_dataset_root(), fruit_dir, reason=source)
         if fruit_dir.exists():
             raise CaptureCommandError(
                 moved_warning,
                 reason='reset_leftover_busy',
             )
-    if fruit_dir.exists() and not _is_reusable_temp_dir(fruit_dir):
+    if fruit_dir.exists() and not dataset_store.is_reusable_temp_dir(fruit_dir):
         raise CaptureCommandError(
             f'{fruit_id} temp 資料夾已有內容，請先分類、刪除或 reset dataset。',
             reason='temp_folder_not_reusable',
         )
     fruit_dir.mkdir(parents=True, exist_ok=True)
     try:
-        _clear_temp_images(fruit_dir)
+        dataset_store.clear_temp_images(fruit_dir, clear_image_cache=_load_image_list.cache_clear)
     except DatasetFileBusyError as exc:
         raise CaptureCommandError(str(exc), reason='file_busy') from exc
     return fruit_dir
@@ -4331,7 +4173,7 @@ def _handle_sequence_finished(command_id=None):
         raise CaptureCommandError('ESP32 完成回報的 command_id 與目前馬達命令不符。', reason='command_id_mismatch')
 
     fruit_dir = _temp_dir() / fruit_id
-    if _temp_image_count(fruit_dir) != IMAGE_COUNT:
+    if dataset_store.temp_image_count(fruit_dir) != IMAGE_COUNT:
         raise CaptureCommandError(f'{fruit_id} 尚未完成 3 張照片，不能結束流程。', reason='capture_incomplete')
 
     APP_STATE['pending_capture'] = False
@@ -4593,13 +4435,13 @@ def _has_unclassified_temp_fruit():
     for fruit_dir in temp_dir.glob('fruit_*'):
         if not fruit_dir.is_dir() or not FRUIT_ID_PATTERN.match(fruit_dir.name):
             continue
-        if _is_deferred_discard_path(fruit_dir):
+        if dataset_store.is_deferred_discard_path(_dataset_root(), fruit_dir):
             continue
-        if _is_ignored_reset_path(fruit_dir):
+        if dataset_store.is_ignored_reset_path(_dataset_root(), fruit_dir):
             continue
         if _completed_photo_only_detection_input(fruit_dir):
             continue
-        if not _is_reusable_temp_dir(fruit_dir):
+        if not dataset_store.is_reusable_temp_dir(fruit_dir):
             return True
     return False
 
@@ -5017,7 +4859,7 @@ def _gate3_manual_removal_required():
         'uploaded', 'error', 'detection_completed', 'detection_failed',
     ):
         return False
-    return _temp_image_count(_temp_dir() / fruit_id) == IMAGE_COUNT
+    return dataset_store.temp_image_count(_temp_dir() / fruit_id) == IMAGE_COUNT
 
 
 def _discardable_fruit_id():
@@ -5083,7 +4925,7 @@ def _state_payload(extra=None):
         'active_station_index': APP_STATE.get('active_station_index'),
         'station_statuses': APP_STATE.get('station_statuses') or {},
         'capture_time': APP_STATE['capture_time'],
-        'next_fruit_id': _format_fruit_id(_next_available_number(_read_counter())),
+        'next_fruit_id': dataset_store.format_fruit_id(dataset_store.next_available_number(dataset_store.load_counter(_dataset_root()), _fruit_id_exists)),
         'labels': LABELS,
         'image_count': IMAGE_COUNT,
         'image_total': image_total,
@@ -5263,7 +5105,7 @@ def _sync_active_state_with_filesystem():
         if not APP_STATE.get('active_fruit_id'):
             pending = sorted(path for path in _temp_dir().glob('fruit_*')
                              if path.is_dir() and FRUIT_ID_PATTERN.match(path.name)
-                             and not _is_deferred_discard_path(path))
+                             and not dataset_store.is_deferred_discard_path(_dataset_root(), path))
             if pending:
                 APP_STATE['active_fruit_id'] = pending[0].name
         APP_STATE['pending_capture'] = False
@@ -5298,7 +5140,7 @@ def _sync_active_state_with_filesystem():
             APP_STATE['message'] = APP_STATE['message'] or f'{active_fruit_id} 拍攝流程進行中。'
             return
 
-        image_total = _temp_image_count(active_dir)
+        image_total = dataset_store.temp_image_count(active_dir)
         if image_total == IMAGE_COUNT:
             APP_STATE['pending_capture'] = False
             APP_STATE['status'] = 'uploaded'
@@ -5308,7 +5150,7 @@ def _sync_active_state_with_filesystem():
 
         if image_total == 0 and not APP_STATE['pending_capture']:
             try:
-                _safe_rmtree(active_dir)
+                dataset_store.safe_rmtree(active_dir)
                 _clear_active_state(f'{active_fruit_id} 沒有照片，已自動清除，可重新拍攝。', status='idle')
             except DatasetFileBusyError as exc:
                 _clear_active_state(
@@ -5331,8 +5173,8 @@ def _sync_active_state_with_filesystem():
         if (
             path.is_dir()
             and FRUIT_ID_PATTERN.match(path.name)
-            and not _is_ignored_reset_path(path)
-            and not _is_deferred_discard_path(path)
+            and not dataset_store.is_ignored_reset_path(_dataset_root(), path)
+            and not dataset_store.is_deferred_discard_path(_dataset_root(), path)
         )
     )
     non_empty_dirs = []
@@ -5345,10 +5187,10 @@ def _sync_active_state_with_filesystem():
                 continue
             terminal_dirs.append(fruit_dir)
             continue
-        image_total = _temp_image_count(fruit_dir)
+        image_total = dataset_store.temp_image_count(fruit_dir)
         if image_total == 0:
             try:
-                _safe_rmtree(fruit_dir)
+                dataset_store.safe_rmtree(fruit_dir)
                 removed_empty = True
             except DatasetFileBusyError as exc:
                 removed_empty = True
@@ -5357,7 +5199,7 @@ def _sync_active_state_with_filesystem():
             non_empty_dirs.append(fruit_dir)
 
     if not non_empty_dirs and terminal_dirs and APP_STATE.get('detection_result') is None:
-        non_empty_dirs = [max(terminal_dirs, key=lambda path: _fruit_number(path.name))]
+        non_empty_dirs = [max(terminal_dirs, key=lambda path: dataset_store.parse_fruit_number(path.name))]
 
     if len(non_empty_dirs) > 1:
         fruit_dir = non_empty_dirs[0]
@@ -5375,7 +5217,7 @@ def _sync_active_state_with_filesystem():
         return
 
     fruit_dir = non_empty_dirs[0]
-    image_total = _temp_image_count(fruit_dir)
+    image_total = dataset_store.temp_image_count(fruit_dir)
     completed = image_total == IMAGE_COUNT
     APP_STATE['active_fruit_id'] = fruit_dir.name
     APP_STATE['pending_capture'] = not completed
@@ -5465,19 +5307,6 @@ def _clear_active_state(message, status='idle'):
     APP_STATE['message'] = message
     _clear_wait_timer()
     _reset_timing_state()
-
-
-def _temp_image_count(fruit_dir):
-    return sum(1 for filename in IMAGE_FILENAMES if (fruit_dir / filename).exists())
-
-
-def _is_reusable_temp_dir(fruit_dir):
-    fruit_dir = Path(fruit_dir)
-    if not fruit_dir.exists() or not fruit_dir.is_dir():
-        return True
-    if _temp_image_count(fruit_dir) > 0:
-        return False
-    return not any(fruit_dir.iterdir())
 
 
 def _timing_payload():
@@ -5573,141 +5402,6 @@ def _ice_from_index(value, total):
     return max(0, min(index, total))
 
 
-def _safe_rmtree(path):
-    path = Path(path)
-    if not path.exists():
-        return
-    last_error = None
-    for _ in range(FILE_OPERATION_RETRIES):
-        try:
-            shutil.rmtree(path)
-            return
-        except PermissionError as exc:
-            last_error = exc
-            time.sleep(FILE_OPERATION_RETRY_DELAY_SECONDS)
-    raise DatasetFileBusyError(f'無法刪除 {path}，可能正被瀏覽器預覽、檔案總管或其他程式使用。請關閉相關視窗後再試。') from last_error
-
-
-def _discard_temp_fruit(fruit_dir, fruit_id):
-    fruit_dir = Path(fruit_dir)
-    if not fruit_dir.exists():
-        return {'mode': 'deleted', 'cleanup_path': None, 'next_fruit_id': None}
-
-    try:
-        _safe_rmtree(fruit_dir)
-        if not fruit_dir.exists():
-            return {'mode': 'deleted', 'cleanup_path': None, 'next_fruit_id': None}
-        raise DatasetFileBusyError(f'刪除 {fruit_dir} 後資料夾仍存在。')
-    except DatasetFileBusyError as delete_error:
-        target = _unique_delete_pending_path(
-            fruit_dir,
-            reason=datetime.now().strftime('discard_%Y%m%d_%H%M%S'),
-        )
-        try:
-            _safe_move(fruit_dir, target)
-        except DatasetFileBusyError:
-            _record_discard_cleanup(fruit_dir, fruit_id=fruit_id, blocked_in_temp=True)
-            next_fruit_id = _advance_counter_after_deferred_discard(fruit_id)
-            return {
-                'mode': 'deferred_cleanup',
-                'cleanup_path': _dataset_relative_path(fruit_dir),
-                'next_fruit_id': next_fruit_id,
-                'warning': str(delete_error),
-            }
-
-        if fruit_dir.exists():
-            _record_discard_cleanup(fruit_dir, fruit_id=fruit_id, blocked_in_temp=True)
-            next_fruit_id = _advance_counter_after_deferred_discard(fruit_id)
-            return {
-                'mode': 'deferred_cleanup',
-                'cleanup_path': _dataset_relative_path(fruit_dir),
-                'next_fruit_id': next_fruit_id,
-                'warning': str(delete_error),
-            }
-
-        _record_discard_cleanup(
-            fruit_dir,
-            fruit_id=fruit_id,
-            cleanup_path=target,
-            blocked_in_temp=False,
-        )
-        return {
-            'mode': 'quarantined',
-            'cleanup_path': _dataset_relative_path(target),
-            'next_fruit_id': None,
-            'warning': str(delete_error),
-        }
-
-
-def _advance_counter_after_deferred_discard(fruit_id):
-    fruit_number = _fruit_number(fruit_id) or _read_counter()
-    next_number = _next_available_number(max(_read_counter(), fruit_number + 1))
-    _write_counter(next_number)
-    return _format_fruit_id(next_number)
-
-
-def _read_discard_state():
-    try:
-        with _discard_state_path().open('r', encoding='utf-8') as state_file:
-            data = json.load(state_file)
-    except (FileNotFoundError, json.JSONDecodeError, TypeError):
-        return {'pending_paths': []}
-
-    pending_paths = data.get('pending_paths') if isinstance(data, dict) else None
-    if not isinstance(pending_paths, list):
-        pending_paths = []
-    return {
-        'pending_paths': [
-            entry for entry in pending_paths
-            if (
-                isinstance(entry, dict)
-                and _is_safe_dataset_relative_path(entry.get('source_path'))
-                and _is_safe_dataset_relative_path(entry.get('cleanup_path'))
-            )
-        ],
-    }
-
-
-def _write_discard_state(data):
-    _discard_state_path().parent.mkdir(parents=True, exist_ok=True)
-    with _discard_state_path().open('w', encoding='utf-8') as state_file:
-        json.dump(data, state_file, ensure_ascii=False, indent=2)
-        state_file.write('\n')
-
-
-def _record_discard_cleanup(source_path, *, fruit_id, cleanup_path=None, blocked_in_temp):
-    source_relative_path = _dataset_relative_path(source_path)
-    cleanup_relative_path = _dataset_relative_path(cleanup_path or source_path)
-    state = _read_discard_state()
-    entries = [
-        entry for entry in state['pending_paths']
-        if entry.get('source_path') != source_relative_path
-    ]
-    entries.append({
-        'fruit_id': fruit_id,
-        'source_path': source_relative_path,
-        'cleanup_path': cleanup_relative_path,
-        'blocked_in_temp': bool(blocked_in_temp),
-        'recorded_at': _now_string(),
-    })
-    _write_discard_state({'pending_paths': entries})
-
-
-def _is_safe_dataset_relative_path(value):
-    if not isinstance(value, str) or not value.strip():
-        return False
-    path = Path(value)
-    return not path.is_absolute() and '..' not in path.parts
-
-
-def _is_deferred_discard_path(path):
-    relative_path = _dataset_relative_path(path)
-    return any(
-        entry.get('blocked_in_temp') and entry.get('source_path') == relative_path
-        for entry in _read_discard_state()['pending_paths']
-    )
-
-
 def _retry_deferred_discards_if_due():
     now = time.monotonic()
     # ponytail: single-process maintenance gate; add a dedicated lock only if
@@ -5717,7 +5411,7 @@ def _retry_deferred_discards_if_due():
         return
     APP_STATE['discard_cleanup_last_monotonic'] = now
 
-    state = _read_discard_state()
+    state = dataset_store.read_discard_state(_dataset_root())
     remaining_entries = []
     for entry in state['pending_paths']:
         cleanup_path = _dataset_root() / entry.get('cleanup_path', '')
@@ -5725,67 +5419,14 @@ def _retry_deferred_discards_if_due():
             continue
         try:
             if cleanup_path.is_dir():
-                _safe_rmtree(cleanup_path)
+                dataset_store.safe_rmtree(cleanup_path)
             else:
-                _safe_unlink(cleanup_path)
+                dataset_store.safe_unlink(cleanup_path)
         except DatasetFileBusyError:
             remaining_entries.append(entry)
 
     if remaining_entries != state['pending_paths']:
-        _write_discard_state({'pending_paths': remaining_entries})
-
-
-def _safe_unlink(path):
-    path = Path(path)
-    if not path.exists():
-        return
-    last_error = None
-    for _ in range(FILE_OPERATION_RETRIES):
-        try:
-            path.unlink()
-            return
-        except PermissionError as exc:
-            last_error = exc
-            time.sleep(FILE_OPERATION_RETRY_DELAY_SECONDS)
-    raise DatasetFileBusyError(f'無法刪除 {path}，可能正被其他程式使用。請關閉相關視窗後再試。') from last_error
-
-
-def _safe_move(src, dest):
-    src = Path(src)
-    dest = Path(dest)
-    last_error = None
-    for _ in range(FILE_OPERATION_RETRIES):
-        try:
-            shutil.move(str(src), str(dest))
-            return
-        except PermissionError as exc:
-            last_error = exc
-            time.sleep(FILE_OPERATION_RETRY_DELAY_SECONDS)
-    raise DatasetFileBusyError(f'無法移動 {src} 到 {dest}，可能正被其他程式使用。請關閉預覽後再試。') from last_error
-
-
-def _safe_replace(src, dest):
-    src = Path(src)
-    dest = Path(dest)
-    last_error = None
-    for _ in range(FILE_OPERATION_RETRIES):
-        try:
-            src.replace(dest)
-            return
-        except PermissionError as exc:
-            last_error = exc
-            time.sleep(FILE_OPERATION_RETRY_DELAY_SECONDS)
-    raise DatasetFileBusyError(f'無法替換 {dest}，可能正被其他程式使用。請關閉預覽後再試。') from last_error
-
-
-def _clear_temp_images(fruit_dir):
-    fruit_dir = Path(fruit_dir)
-    try:
-        for image_file in fruit_dir.glob('img_*.jpg'):
-            _safe_unlink(image_file)
-    finally:
-        if FRUIT_ID_PATTERN.match(fruit_dir.name):
-            _load_image_list.cache_clear()
+        dataset_store.write_discard_state(_dataset_root(), {'pending_paths': remaining_entries})
 
 
 def _save_station_image(fruit_dir, station_index, image_file):
@@ -5795,155 +5436,13 @@ def _save_station_image(fruit_dir, station_index, image_file):
         image_file,
         image_filenames=IMAGE_FILENAMES,
         staging_suffix=UPLOAD_STAGING_SUFFIX,
-        safe_unlink=_safe_unlink,
-        safe_replace=_safe_replace,
+        safe_unlink=dataset_store.safe_unlink,
+        safe_replace=dataset_store.safe_replace,
     )
     active_fruit_id = APP_STATE.get('active_fruit_id')
     if active_fruit_id:
         _load_image_list.cache_clear()
     return result
-
-
-def _reset_dataset_contents():
-    _ensure_dataset_structure()
-    delete_warnings = []
-    moved_paths = []
-    ignored_paths = []
-    reset_id = datetime.now().strftime('reset_%Y%m%d_%H%M%S')
-    parents = [_temp_dir()]
-    if _collects_by_label():
-        parents.extend(_dataset_root() / label for label in LABELS)
-    else:
-        parents.append(_detection_output_root())
-    for parent in parents:
-        parent.mkdir(parents=True, exist_ok=True)
-        for child in parent.iterdir():
-            result = _remove_or_archive_reset_path(child, reset_id)
-            if result['warning']:
-                delete_warnings.append(result['warning'])
-            if result['moved_to']:
-                moved_paths.append({
-                    'from': result['relative_path'],
-                    'to': result['moved_to'],
-                })
-            if result['ignored']:
-                ignored_paths.append(result['relative_path'])
-    if _collects_by_label():
-        with _metadata_path().open('w', encoding='utf-8-sig', newline='') as csv_file:
-            writer = csv.DictWriter(csv_file, fieldnames=METADATA_FIELDNAMES)
-            writer.writeheader()
-    else:
-        detection.reset_summary(_detection_summary_path())
-    _load_image_list.cache_clear()
-    _write_counter(1)
-    _write_reset_state({
-        'reset_at': _now_string(),
-        'ignored_paths': ignored_paths,
-        'moved_paths': moved_paths,
-    })
-    return delete_warnings
-
-
-def _remove_or_archive_reset_path(path, reset_id):
-    path = Path(path)
-    relative_path = _dataset_relative_path(path)
-    result = {
-        'relative_path': relative_path,
-        'warning': None,
-        'moved_to': None,
-        'ignored': False,
-    }
-
-    try:
-        if path.is_dir():
-            _safe_rmtree(path)
-        else:
-            _safe_unlink(path)
-        return result
-    except DatasetFileBusyError as delete_error:
-        moved_warning = _move_reset_leftover_to_pending(path, reason=reset_id)
-        if not path.exists():
-            result['warning'] = f'{relative_path} 刪除失敗，已移到 {moved_warning}。'
-            result['moved_to'] = moved_warning
-            return result
-
-        result['warning'] = f'{delete_error}；搬移到 _delete_pending 也失敗，已在 reset_state.json 標記為忽略。'
-        result['ignored'] = True
-        return result
-
-
-def _move_reset_leftover_to_pending(path, reason):
-    path = Path(path)
-    if not path.exists():
-        return ''
-
-    target = _unique_delete_pending_path(path, reason)
-    try:
-        _safe_move(path, target)
-    except DatasetFileBusyError as exc:
-        return str(exc)
-    return _dataset_relative_path(target)
-
-
-def _unique_delete_pending_path(path, reason):
-    relative_path = _dataset_relative_path(path)
-    target = _dataset_root() / '_delete_pending' / reason / relative_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if not target.exists():
-        return target
-
-    suffix = 1
-    while True:
-        candidate = target.with_name(f'{target.name}_{suffix}')
-        if not candidate.exists():
-            return candidate
-        suffix += 1
-
-
-def _dataset_relative_path(path):
-    try:
-        return Path(path).relative_to(_dataset_root()).as_posix()
-    except ValueError:
-        return Path(path).as_posix()
-
-
-def _read_reset_state():
-    try:
-        with _reset_state_path().open('r', encoding='utf-8') as reset_file:
-            data = json.load(reset_file)
-    except (FileNotFoundError, json.JSONDecodeError, TypeError):
-        return {'reset_at': None, 'ignored_paths': [], 'moved_paths': []}
-
-    ignored_paths = data.get('ignored_paths')
-    moved_paths = data.get('moved_paths')
-    return {
-        'reset_at': data.get('reset_at'),
-        'ignored_paths': ignored_paths if isinstance(ignored_paths, list) else [],
-        'moved_paths': moved_paths if isinstance(moved_paths, list) else [],
-    }
-
-
-def _write_reset_state(data):
-    _reset_state_path().parent.mkdir(parents=True, exist_ok=True)
-    with _reset_state_path().open('w', encoding='utf-8') as reset_file:
-        json.dump(data, reset_file, ensure_ascii=False, indent=2)
-        reset_file.write('\n')
-
-
-def _is_ignored_reset_path(path):
-    relative_path = _dataset_relative_path(path)
-    return relative_path in set(_read_reset_state().get('ignored_paths', []))
-
-
-def _remove_ignored_reset_path(path):
-    relative_path = _dataset_relative_path(path)
-    state = _read_reset_state()
-    state['ignored_paths'] = [
-        ignored_path
-        for ignored_path in state.get('ignored_paths', [])
-        if ignored_path != relative_path
-    ]
-    _write_reset_state(state)
 
 
 def _is_session_description(value, expected_type):

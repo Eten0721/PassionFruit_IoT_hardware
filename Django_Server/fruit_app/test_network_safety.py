@@ -3,6 +3,7 @@ import json
 from unittest import mock
 
 from django.test import SimpleTestCase
+from . import dataset_store
 from . import views, local_network
 from . import test_network as onboarding
 
@@ -345,7 +346,7 @@ class NetworkSafetyTests(SimpleTestCase):
             ):
                 with self.subTest(phase=phase, mode=mode, reason=reason):
                     # Literal 1e8f06e schema: no lock-kind or device-capability fields.
-                    views._write_recovery_payload(views._network_recovery_path(), {
+                    dataset_store.write_recovery_payload(views._network_recovery_path(), {
                         'phase': phase, 'generation': 7, 'reason': reason, 'hardware_mode': mode,
                         'fruit_id': fruit_id, 'boot_id': 'board-a', 'command_id': 41,
                         'command': 'start_sequence', 'server_run_id': 'old-run', 'network_revision': 3,
@@ -372,7 +373,7 @@ class NetworkSafetyTests(SimpleTestCase):
         for phase in ('locked', 'homing', 'committing'):
             for mode in ('hardware', 'photo_only'):
                 with self.subTest(phase=phase, mode=mode):
-                    views._write_recovery_payload(views._network_recovery_path(), {
+                    dataset_store.write_recovery_payload(views._network_recovery_path(), {
                         'phase': phase, 'generation': 8, 'reason': 'network_changed',
                         'hardware_mode': mode, 'data_locked': False, 'motor_locked': False,
                     })
@@ -385,7 +386,7 @@ class NetworkSafetyTests(SimpleTestCase):
                     self.assertTrue(recovery['data_locked'] or recovery['motor_locked'])
 
     def test_legacy_photo_only_interlock_allows_photos_until_hardware_recovery(self):
-        views._write_recovery_payload(views._network_recovery_path(), {
+        dataset_store.write_recovery_payload(views._network_recovery_path(), {
             'phase': 'locked', 'generation': 7,
             'reason': 'esp32_network_interlocked', 'hardware_mode': 'photo_only',
         })
@@ -650,7 +651,7 @@ class NetworkSafetyTests(SimpleTestCase):
         state = self.lock()
         self.assertIsNotNone(state['network_recovery'])
         self.assertTrue((self.dataset_root / '上等/fruit_001/img_03.jpg').exists())
-        self.assertEqual(views._read_counter(), 2)
+        self.assertEqual(dataset_store.load_counter(views._dataset_root()), 2)
         self.assertIsNone(state['active_fruit_id'])
 
     def test_service_restart_restores_lock_and_cannot_resume_old_command(self):
@@ -743,7 +744,7 @@ class NetworkRecoveryMatrixTests(SimpleTestCase):
             state.update(recovery_generation=1,
                          status='idle' if mode == 'photo_only' and locks == 'motor' else 'error',
                          auto_run_recovery_reason=reason)
-            views._write_recovery_payload(views._network_recovery_path(), state['network_recovery'])
+            dataset_store.write_recovery_payload(views._network_recovery_path(), state['network_recovery'])
         if operation in ('discard', 'reset'):
             fruit_dir = self.dataset_root / 'temp/fruit_001'
             fruit_dir.mkdir()

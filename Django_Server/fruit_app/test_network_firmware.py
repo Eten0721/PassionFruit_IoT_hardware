@@ -6,6 +6,7 @@ from unittest import skipUnless
 from urllib.parse import parse_qs, urlsplit
 
 from django.test import SimpleTestCase
+from . import dataset_store
 from . import views
 from . import test_network_safety as safety
 
@@ -103,7 +104,7 @@ class FirmwareHttpTests(SimpleTestCase):
         self.assertEqual(sum(event[0] == 'network_recovery_completed' for event in events), 1)
         self.assertEqual(sum(event[0] == 'network_recovery_committed' for event in events), 1)
         self.assertFalse((self.dataset_root / 'temp/fruit_001').exists())
-        self.assertEqual(views._read_counter(), 1)
+        self.assertEqual(dataset_store.load_counter(views._dataset_root()), 1)
 
     def test_loss_cleanup_human_recovery_and_new_feed(self):
         self.exercise()

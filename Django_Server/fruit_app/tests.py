@@ -10,6 +10,7 @@ from unittest import mock
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, SimpleTestCase, override_settings
 
+from . import dataset_store
 from . import views
 from . import local_network
 
@@ -991,7 +992,7 @@ class DataCollectionFlowTests(SimpleTestCase):
 
         with (self.dataset_root / 'metadata.csv').open('r', encoding='utf-8-sig', newline='') as csv_file:
             rows = list(csv.reader(csv_file))
-        self.assertEqual(rows, [views.METADATA_FIELDNAMES])
+        self.assertEqual(rows, [dataset_store.METADATA_FIELDNAMES])
 
         with (self.dataset_root / 'counter.json').open('r', encoding='utf-8') as counter_file:
             self.assertEqual(json.load(counter_file)['next_id'], 5)
@@ -1005,7 +1006,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self._report('hcsr04_trigger')
         views.APP_STATE['auto_run_enabled'] = True
 
-        with mock.patch.object(views, '_discard_temp_fruit', side_effect=OSError('delete failed')):
+        with mock.patch.object(dataset_store, 'discard_temp_fruit', side_effect=OSError('delete failed')):
             response = self._post_json('/api/discard/')
 
         self.assertEqual(response.status_code, 409)
@@ -1028,8 +1029,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         views.APP_STATE['auto_run_enabled'] = True
 
         with mock.patch.object(
-            views,
-            '_clear_temp_images',
+            dataset_store,
+            'clear_temp_images',
             side_effect=views.DatasetFileBusyError('delete failed'),
         ):
             response = self._post_json('/api/recapture/')
@@ -1045,8 +1046,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         (fruit_dir / 'img_01.jpg').write_bytes(b'image')
 
         with mock.patch.object(
-            views,
-            '_safe_rmtree',
+            dataset_store,
+            'safe_rmtree',
             side_effect=views.DatasetFileBusyError('delete locked'),
         ):
             response = self._post_json('/api/discard/')
@@ -1069,12 +1070,12 @@ class DataCollectionFlowTests(SimpleTestCase):
         (fruit_dir / 'img_01.jpg').write_bytes(b'image')
 
         with mock.patch.object(
-            views,
-            '_safe_rmtree',
+            dataset_store,
+            'safe_rmtree',
             side_effect=views.DatasetFileBusyError('delete locked'),
         ), mock.patch.object(
-            views,
-            '_safe_move',
+            dataset_store,
+            'safe_move',
             side_effect=views.DatasetFileBusyError('move locked'),
         ):
             response = self._post_json('/api/discard/')
@@ -1097,7 +1098,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         fruit_dir = self.dataset_root / 'temp' / 'fruit_009'
         fruit_dir.mkdir(parents=True)
         (fruit_dir / 'img_01.jpg').write_bytes(b'image')
-        views._write_discard_state({'pending_paths': [{
+        dataset_store.write_discard_state(self.dataset_root, {'pending_paths': [{
             'fruit_id': 'fruit_009',
             'source_path': 'temp/fruit_009',
             'cleanup_path': 'temp/fruit_009',
@@ -1112,7 +1113,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertFalse(fruit_dir.exists())
         self.assertEqual(response.json()['status'], 'idle')
         self.assertNotIn('can_manual_capture', response.json())
-        self.assertEqual(views._read_discard_state()['pending_paths'], [])
+        self.assertEqual(dataset_store.read_discard_state(self.dataset_root)['pending_paths'], [])
 
     def test_capture_timing_defaults_persist_and_are_acknowledged_by_esp32(self):
         initial = self.client.get('/api/state/').json()
@@ -2254,7 +2255,7 @@ class DataCollectionFlowTests(SimpleTestCase):
 
         with (self.dataset_root / 'metadata.csv').open('r', encoding='utf-8-sig', newline='') as csv_file:
             rows = list(csv.reader(csv_file))
-        self.assertEqual(rows, [views.METADATA_FIELDNAMES])
+        self.assertEqual(rows, [dataset_store.METADATA_FIELDNAMES])
         with (self.dataset_root / 'counter.json').open('r', encoding='utf-8') as counter_file:
             self.assertEqual(json.load(counter_file)['next_id'], 1)
 
@@ -2639,8 +2640,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.client.get('/api/camera/state/')
         with (
             mock.patch.object(views, '_sync_active_state_with_filesystem') as sync_state,
-            mock.patch.object(views, '_read_counter') as read_counter,
-            mock.patch.object(views, '_ensure_metadata_header') as ensure_metadata,
+            mock.patch.object(dataset_store, 'load_counter') as read_counter,
+            mock.patch.object(dataset_store, 'ensure_metadata_header') as ensure_metadata,
             mock.patch.object(views, '_retry_deferred_discards_if_due') as retry_cleanup,
         ):
             response = self.client.get('/api/camera/state/')
@@ -2701,7 +2702,7 @@ class DataCollectionFlowTests(SimpleTestCase):
                 content_type='application/json',
             )
 
-        with mock.patch.object(views, '_safe_move', side_effect=slow_move):
+        with mock.patch.object(dataset_store, 'safe_move', side_effect=slow_move):
             worker = threading.Thread(target=classify_in_thread)
             worker.start()
             self.assertTrue(operation_started.wait(timeout=1))

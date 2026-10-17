@@ -6,6 +6,7 @@ from unittest import mock
 
 from django.test import SimpleTestCase
 
+from . import dataset_store
 from . import tests as existing, views
 from . import test_detection as detection_tests
 
@@ -130,7 +131,7 @@ class DatasetModeTests(SimpleTestCase):
         kept = detection / '加工' / 'fruit_009'
         kept.mkdir(parents=True)
         (detection / 'metadata.csv').write_text(
-            ','.join(views.METADATA_FIELDNAMES) + '\n', encoding='utf-8-sig',
+            ','.join(dataset_store.METADATA_FIELDNAMES) + '\n', encoding='utf-8-sig',
         )
         views._initialise_dataset_structure.cache_clear()
 
@@ -153,7 +154,7 @@ class DatasetModeTests(SimpleTestCase):
         detection.mkdir(parents=True, exist_ok=True)
         metadata = detection / 'metadata.csv'
         metadata.write_text(
-            ','.join(views.METADATA_FIELDNAMES) + '\nfruit_001,上等\n',
+            ','.join(dataset_store.METADATA_FIELDNAMES) + '\nfruit_001,上等\n',
             encoding='utf-8-sig',
         )
         views._initialise_dataset_structure.cache_clear()
@@ -227,8 +228,8 @@ class DatasetModeTests(SimpleTestCase):
         old_photo = result_dir / 'img_01_original.jpg'
         old_photo.write_bytes(b'occupied')
         collection_counter = (self.dataset_base / 'collection' / 'counter.json').read_bytes()
-        with mock.patch.object(views.shutil, 'rmtree', side_effect=PermissionError('occupied')), \
-                mock.patch.object(views.shutil, 'move', side_effect=PermissionError('occupied')):
+        with mock.patch.object(dataset_store.shutil, 'rmtree', side_effect=PermissionError('occupied')), \
+                mock.patch.object(dataset_store.shutil, 'move', side_effect=PermissionError('occupied')):
             reset = self._post_json('/api/reset_dataset/')
             self.assertEqual(reset.status_code, 200, reset.content)
             self.assertTrue(reset.json()['delete_warnings'])
