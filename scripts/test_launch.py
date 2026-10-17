@@ -187,27 +187,30 @@ class ModelTests(TemporaryDirectoryTest):
 
 
 class FirewallTests(TemporaryDirectoryTest):
-    def test_parser_reports_only_missing_rules(self):
+    def test_reports_only_missing_rules(self):
         first, second = launch.FIREWALL_RULES
-        self.assertEqual(launch.missing_firewall_rules(f'\r\n {first}\r\n'), [second])
-        self.assertEqual(launch.missing_firewall_rules(f'{first}\n{second}\n'), [])
-        self.assertEqual(launch.missing_firewall_rules(''), list(launch.FIREWALL_RULES))
+        runner = Mock(side_effect=[Mock(returncode=0), Mock(returncode=1)])
+        self.assertTrue(launch.check_firewall(runner, 'nt')['ok'])
+        message = self.report.call_args.args[0]
+        self.assertIn(second, message)
+        self.assertNotIn(first, message)
+        self.assertIn('首次設定防火牆.bat', message)
+        self.assertEqual(runner.call_args.args[0][-1], f'name={second}')
+        self.assertEqual(runner.call_args.kwargs['timeout'], 10)
 
-    def test_non_windows_does_not_spawn_powershell(self):
+    def test_present_rules_print_no_warning(self):
+        launch.check_firewall(Mock(return_value=Mock(returncode=0)), 'nt')
+        self.report.assert_called_once_with('檢查 Windows 防火牆規則……')
+
+    def test_non_windows_does_not_spawn_netsh(self):
         runner = Mock()
         self.assertTrue(launch.check_firewall(runner, 'posix')['ok'])
         runner.assert_not_called()
 
-    def test_missing_rules_and_check_errors_are_soft_warnings(self):
-        for response in (Mock(returncode=0, stdout='', stderr=''),
-                         Mock(returncode=1, stdout='', stderr='failed')):
-            with self.subTest(code=response.returncode):
-                runner = Mock(return_value=response)
-                self.assertTrue(launch.check_firewall(runner, 'nt')['ok'])
-                self.assertIn('首次設定防火牆.bat', self.report.call_args.args[0])
-                self.assertEqual(runner.call_args.kwargs['timeout'], 10)
-        for error in (OSError('no PowerShell'), subprocess.TimeoutExpired('powershell', 10)):
+    def test_check_errors_are_soft_warnings(self):
+        for error in (OSError('no netsh'), subprocess.TimeoutExpired('netsh', 10)):
             self.assertTrue(launch.check_firewall(Mock(side_effect=error), 'nt')['ok'])
+            self.assertIn('無法確認', self.report.call_args.args[0])
 
 
 class PortTests(TemporaryDirectoryTest):
