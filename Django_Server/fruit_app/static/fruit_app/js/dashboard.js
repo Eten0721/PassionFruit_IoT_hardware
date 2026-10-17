@@ -610,11 +610,11 @@ const remoteVideo = document.getElementById('remote-video');
                 : '跳過／刪除目前資料',
         );
         if (photoOnly) {
-            setTextIfChanged(autoRunButton, '拍攝本輪三張');
+            setTextIfChanged(autoRunButton, '開始拍攝');
             autoRunButton.dataset.mode = 'photo';
             autoRunButton.disabled = Boolean(controlActionInFlight) || !data.can_start_photo_capture;
         } else if (data.auto_run_enabled) {
-            setTextIfChanged(autoRunButton, '優雅暫停');
+            setTextIfChanged(autoRunButton, '停止拍攝');
             autoRunButton.dataset.mode = 'pause';
             autoRunButton.disabled = Boolean(controlActionInFlight);
         } else if (data.auto_run_finishing) {
@@ -622,7 +622,7 @@ const remoteVideo = document.getElementById('remote-video');
             autoRunButton.dataset.mode = 'finishing';
             autoRunButton.disabled = true;
         } else {
-            setTextIfChanged(autoRunButton, '開始執行');
+            setTextIfChanged(autoRunButton, '開始拍攝');
             autoRunButton.dataset.mode = 'start';
             autoRunButton.disabled = Boolean(controlActionInFlight)
                 || !data.can_start_auto_run
@@ -631,6 +631,9 @@ const remoteVideo = document.getElementById('remote-video');
         recaptureButton.disabled = Boolean(controlActionInFlight)
             || data.sorter_busy
             || !data.can_recapture;
+        // Detection runs unattended; these only appear when a round needs recovery.
+        recaptureButton.hidden = detectionMode && !data.can_recapture;
+        discardButton.hidden = detectionMode && !data.can_discard;
         renderActionGuidance(data, photoOnly);
         resetDatasetButton.disabled = Boolean(controlActionInFlight) || !data.can_reset_dataset;
         setCounterButton.disabled = Boolean(controlActionInFlight);
@@ -743,8 +746,8 @@ const remoteVideo = document.getElementById('remote-video');
             return recoveryReason
                 ? `目前無法確認安全復原：${reasonText(recoveryReason)}`
                 : data.hardware_mode === 'photo_only'
-                    ? '按「開始執行」確認本輪資料已清理，再開始新一輪拍攝。馬達安全鎖仍保留。'
-                    : '按「開始執行」確認人工安全復原；只會讓馬達歸位並解除安全鎖。正式運轉仍需相機、HC-SR04 與設定同步。';
+                    ? '按「開始拍攝」確認本輪資料已清理，再開始新一輪拍攝。馬達安全鎖仍保留。'
+                    : '按「開始拍攝」確認人工安全復原；只會讓馬達歸位並解除安全鎖。正式運轉仍需相機、HC-SR04 與設定同步。';
         }
         if (data.hardware_mode === 'photo_only') {
             const reason = data.photo_capture_disabled_reason;
@@ -755,7 +758,7 @@ const remoteVideo = document.getElementById('remote-video');
         if (data.auto_run_enabled) {
             return data.work_mode === 'detection'
                 ? '本輪使用硬體送料與三站拍攝；檢測完成後不會放行 Gate 3 或送入下一顆。'
-                : '目前為連續自動運轉；優雅暫停會讓目前果實完成後停止送入下一顆。';
+                : '目前為連續自動運轉；按「停止拍攝」會讓目前果實完成後停止送入下一顆。';
         }
         if (data.auto_run_finishing) {
             return '正在完成目前果實，完成後不會送入下一顆。';
@@ -1469,13 +1472,13 @@ const remoteVideo = document.getElementById('remote-video');
         recaptureButton.title = '';
         discardButton.title = '';
         autoRunButton.title = autoRunButton.disabled ? items[0] : '';
-        if (recaptureButton.disabled) {
+        if (recaptureButton.disabled && !recaptureButton.hidden) {
             recaptureButton.title = `重新拍攝：${photoOnly
                 ? '純拍攝不提供重新拍攝，請先跳過／刪除本輪再開始'
                 : data.active_fruit_id ? '目前流程狀態不允許重新拍攝' : '目前沒有拍攝中的資料'}`;
             items.push(recaptureButton.title);
         }
-        if (discardButton.disabled) {
+        if (discardButton.disabled && !discardButton.hidden) {
             discardButton.title = `${discardButton.textContent}：${data.status === 'uploading'
                 ? '照片上傳中，完成後才能刪除'
                 : data.dataset_operation ? '資料處理中' : '目前沒有可刪除的暫存資料'}`;
@@ -1655,7 +1658,7 @@ const remoteVideo = document.getElementById('remote-video');
             return '步驟 1／3：設定尚未套用；請先保存數值。';
         }
         if (timing.feeder_calibrated) {
-            return `已完成：revision ${revision} 的送料確認已保存，可以直接開始執行。`;
+            return `已完成：revision ${revision} 的送料確認已保存，可以直接開始拍攝。`;
         }
         if (data.capture_timing_status !== 'applied') {
             return `步驟 1／3：等待 ESP32 套用 revision ${revision}。`;
@@ -2119,7 +2122,7 @@ const remoteVideo = document.getElementById('remote-video');
             || (lastState.work_mode === 'detection' && lastState.hardware_mode !== 'photo_only');
         const prompt = gate3Recovery
             ? `安全復原（Gate 3）\n\n${fruitId} 的檢測結果已另存。這只會處理暫存原圖，Gate 3 與分類器仍保持鎖定，不會自動動作。\n\n`
-                + '請切斷伺服電源，確認 Gate 3 與分類器不會動作後人工移除果實；手離開機構並恢復安全狀態後，再按「開始執行」。\n\n'
+                + '請切斷伺服電源，確認 Gate 3 與分類器不會動作後人工移除果實；手離開機構並恢復安全狀態後，再按「開始拍攝」。\n\n'
                 + '是否進入人工安全復原？'
             : `確定刪除 ${fruitId} 的暫存照片嗎？`;
         if (!confirm(prompt)) {

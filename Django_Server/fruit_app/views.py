@@ -881,7 +881,7 @@ def feeder_calibration_confirm_api(request):
             )
 
         APP_STATE['capture_timing'] = timing
-        APP_STATE['message'] = '送料校正確認已保存；其他安全條件就緒後可直接開始執行。'
+        APP_STATE['message'] = '送料校正確認已保存；其他安全條件就緒後可直接開始拍攝。'
         _record_transition(
             'feeder_calibration_confirmed',
             details={'revision': current_revision},
@@ -4803,22 +4803,22 @@ def _operator_alert_payload():
         'dataset_commit_failed': '照片保存狀態不確定，請檢查暫存資料與 Dataset 後再操作。',
         'capture_options_invalid': '請保留照片並檢查暫存資料的復原紀錄。',
         'feeder_max_run_timeout': (
-            '優雅暫停已生效；請檢查送料筒、出口、卡料與感測區域。'
+            '已自動停止拍攝；請檢查送料筒、出口、卡料與感測區域。'
             '若果實延遲抵達，讓它完成三站流程，不要補轉。'
         ),
         'feeder_sensor_not_clear': (
-            '請移除 HC-SR04 感測區內的果實，確認有效距離大於 8.0 cm 後再開始執行。'
+            '請移除 HC-SR04 感測區內的果實，確認有效距離大於 8.0 cm 後再開始拍攝。'
         ),
         'feeder_sensor_unavailable': (
-            '請檢查 HC-SR04 線材、供電、Echo 分壓與感測方向，取得有效距離後再開始執行。'
+            '請檢查 HC-SR04 線材、供電、Echo 分壓與感測方向，取得有效距離後再開始拍攝。'
         ),
         'gate3_manual_removal_required': (
             '請切斷伺服電源，確認 Gate 3 與分類器不會動作後人工移除果實；'
-            '手離開機構並恢復安全狀態後，再開始執行。'
+            '手離開機構並恢復安全狀態後，再開始拍攝。'
         ),
     }.get(
         reason,
-        '暫停 → 排除／重新拍攝／刪除 → 開始執行'
+        '暫停 → 排除／重新拍攝／刪除 → 開始拍攝'
         '（請自行暫停、排除狀況後重新開始）',
     )
     return {

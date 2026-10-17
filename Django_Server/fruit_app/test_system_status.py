@@ -132,7 +132,7 @@ class SystemStatusTests(SimpleTestCase):
             'reason': 'gate3_manual_removal_required',
             'location': 'Gate 3 / MG996R classifier',
             'instruction': '請切斷伺服電源，確認 Gate 3 與分類器不會動作後人工移除果實；'
-                           '手離開機構並恢復安全狀態後，再開始執行。',
+                           '手離開機構並恢復安全狀態後，再開始拍攝。',
         })
         self.assertEqual(status['auto_run_disabled_reason'], 'network_changed')
         self.assertEqual(status['photo_capture_disabled_reason'], 'photo_only_required')
