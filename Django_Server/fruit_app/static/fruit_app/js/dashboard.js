@@ -72,6 +72,10 @@ const remoteVideo = document.getElementById('remote-video');
     const discardButton = document.getElementById('btn-discard');
     const resetDatasetButton = document.getElementById('btn-reset-dataset');
     const setCounterButton = document.getElementById('btn-set-counter');
+    const exportZone = document.getElementById('detection-export');
+    const exportButton = document.getElementById('btn-export-detection');
+    const exportIncludeResults = document.getElementById('export-include-results');
+    let exportInFlight = false;
     const readinessItems = {
         esp32: document.getElementById('readiness-esp32'),
         camera: document.getElementById('readiness-camera'),
@@ -643,6 +647,8 @@ const remoteVideo = document.getElementById('remote-video');
         renderActionGuidance(data, photoOnly);
         resetDatasetButton.disabled = Boolean(controlActionInFlight) || !data.can_reset_dataset;
         setCounterButton.disabled = Boolean(controlActionInFlight);
+        exportZone.hidden = data.work_mode !== 'detection';
+        exportButton.disabled = exportInFlight;
     }
 
     function captureStatusText(status) {
@@ -1998,7 +2004,44 @@ const remoteVideo = document.getElementById('remote-video');
         }
     }
 
+    async function exportDetection() {
+        if (!lastState?.work_mode) {
+            setMessage('尚未取得目前資料區，請稍候再匯出。');
+            return;
+        }
+        exportInFlight = true;
+        exportButton.disabled = true;
+        exportButton.textContent = '匯出中…';
+        try {
+            const params = new URLSearchParams({
+                dataset_mode: lastState.work_mode,
+                include_results: exportIncludeResults.checked ? '1' : '0',
+            });
+            const response = await fetch(`/api/export_detection/?${params}`);
+            if (!response.ok) {
+                const payload = await response.json().catch(() => ({}));
+                throw new Error(payload.message || `HTTP ${response.status}`);
+            }
+            const disposition = response.headers.get('Content-Disposition') || '';
+            const filename = /filename="?([^";]+)"?/.exec(disposition)?.[1] || 'detection_export.zip';
+            const url = URL.createObjectURL(await response.blob());
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 0);
+            setMessage(`已匯出 ${filename}。`);
+        } catch (error) {
+            setMessage(`匯出檢測報告失敗：${error.message}`);
+        } finally {
+            exportInFlight = false;
+            exportButton.disabled = false;
+            exportButton.textContent = '匯出檢測報告';
+        }
+    }
+
     document.getElementById('btn-set-counter').addEventListener('click', setCounter);
+    exportButton.addEventListener('click', exportDetection);
     testFeederButton.addEventListener('click', testFeederOnce);
     autoRunButton.addEventListener('click', toggleAutoRun);
     operationToggle.addEventListener('click', () => {

@@ -1251,6 +1251,29 @@ textarea {
     background: var(--danger-soft);
 }
 
+.export-zone {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-muted);
+}
+
+.export-zone h3 {
+    margin: 0 0 3px;
+    font-size: 15px;
+}
+
+.export-zone p {
+    margin: 0 0 8px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
 .danger-zone .section-kicker {
     color: var(--danger);
 }
@@ -1376,6 +1399,7 @@ textarea {
     }
 
     .camera-actions,
+    .export-zone,
     .danger-zone {
         align-items: stretch;
         flex-direction: column;
@@ -1424,6 +1448,7 @@ textarea {
     }
 
     .data-management-grid > .button,
+    .export-zone .button,
     .danger-zone .button {
         width: 100%;
     }

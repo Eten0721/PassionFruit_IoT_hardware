@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from django.test import RequestFactory, SimpleTestCase, override_settings
+from PIL import Image
 
 from . import detection_stats, notification_delivery, trend_alerts, views
 from .detection import SUMMARY_FIELDS
@@ -193,9 +194,11 @@ class DetectionStatsTests(SimpleTestCase):
 class FakeOutbox:
     def __init__(self):
         self.queued = []
+        self.reports = []
 
-    def enqueue_alert(self, alert_id, text):
+    def enqueue_alert(self, alert_id, text, report=None):
         self.queued.append((alert_id, text))
+        self.reports.append(report)
         return {'ok': True, 'queued': True, 'reason': None}
 
     def entry_statuses(self, ids):
@@ -256,6 +259,12 @@ class TrendAlertTests(SimpleTestCase):
                          '數據詳情可詢問奶蛋博士獲得更多資訊')
         self.assertNotRegex(alert['text'], trend_alerts.DIGITS)
         self.assertEqual(self.outbox.queued, [(alert['id'], alert['text'])])
+        [report] = self.outbox.reports  # the LINE image carries the numbers instead
+        self.assertEqual((report['title'], report['highlight']), ('趨勢提醒：炭疽病偏高', ['anthracnose']))
+        self.assertEqual(report['totals']['graded'], 20)
+        anthracnose = next(d for d in report['defects'] if d['key'] == 'anthracnose')
+        self.assertEqual((anthracnose['count'], anthracnose['ratio']), (8, 0.4))
+        self.assertTrue(all(d['count'] == 0 for d in report['previous_defects']))
 
         self.now += timedelta(hours=23)
         self.assertEqual(self.monitor().check()['alerts'], [])
@@ -465,6 +474,51 @@ class TrendAlertOutboxTests(SimpleTestCase):
             self.assertEqual(outbox.entry_statuses(['trend_1', 'missing']),
                              {'trend_1': {'status': 'sent', 'reason': None}})
             self.assertEqual(outbox.status('hardware')['counts']['sent'], 0)
+
+
+    def test_alert_with_report_is_sent_as_flex_with_statistics_image(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'credentials.json').write_text(json.dumps(
+                dict.fromkeys(notification_delivery.CREDENTIAL_FIELDS, 'x')), encoding='utf-8')
+            calls = []
+            image_url = 'https://res.cloudinary.com/x/image/upload/v1/passionfruit_notifications/trend_1.jpg'
+
+            def post(url, body, headers, timeout):
+                if 'cloudinary' in url:
+                    calls.append(url)
+                    return notification_delivery.HttpResponse(
+                        200, {}, json.dumps({'secure_url': image_url}).encode())
+                calls.append(json.loads(body))
+                return notification_delivery.HttpResponse(200, {}, b'{}')
+
+            def draw(report, target, *, image_format, font_path):
+                self.assertEqual((report, image_format), ({'title': 't'}, 'jpg'))
+                Image.new('RGB', (40, 50), 'white').save(target, 'JPEG')
+
+            outbox = notification_delivery.Outbox(root / 'outbox.json', root / 'credentials.json',
+                                                  http_post=post, now=lambda: 1000.0)
+            with self.assertRaises(ValueError):
+                outbox.enqueue_alert('trend_1', 'text', report=['not', 'a', 'dict'])
+            outbox.enqueue_alert('trend_1', '|趨勢提醒|\n近來偏高：擦傷', report={'title': 't'})
+            with mock.patch.object(notification_delivery.detection_report, 'render', side_effect=draw):
+                outbox.deliver_pending()
+
+            self.assertEqual(calls[0], notification_delivery.UPLOAD_URL.format(cloud='x'))
+            [message] = calls[1]['messages']
+            self.assertEqual(message['type'], 'flex')
+            hero = message['contents']['hero']
+            self.assertEqual((hero['aspectRatio'], hero['action']['uri']), ('40:50', image_url))
+            self.assertEqual(message['contents']['body']['contents'][0]['text'], '|趨勢提醒|')
+            self.assertEqual(outbox.entry_statuses(['trend_1'])['trend_1']['status'], 'sent')
+
+            outbox.enqueue_alert('trend_2', 'text', report={'title': 't'})
+            with mock.patch.object(notification_delivery.detection_report, 'render',
+                                   side_effect=FileNotFoundError('找不到中文字型')):
+                outbox.deliver_pending()
+            status = outbox.entry_statuses(['trend_2'])['trend_2']
+            self.assertEqual(status['status'], 'failed')
+            self.assertIn('統計圖無法產生', status['reason'])
 
 
 class TrendAlertViewTests(SimpleTestCase):

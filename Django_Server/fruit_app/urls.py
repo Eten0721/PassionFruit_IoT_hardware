@@ -47,6 +47,7 @@ urlpatterns = [
         views.detection_image_api,
         name='detection_image_api',
     ),
+    path('api/export_detection/', views.export_detection_api, name='export_detection_api'),
     path('api/open_dataset_folder/', views.open_dataset_folder_api, name='open_dataset_folder_api'),
     path('api/webrtc/offer', views.webrtc_offer_api, name='webrtc_offer_api'),
     path('api/webrtc/answer', views.webrtc_answer_api, name='webrtc_answer_api'),

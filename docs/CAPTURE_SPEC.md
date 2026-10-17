@@ -397,6 +397,8 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 既有 `DATASET_ROOT` 根目錄及舊 `Django_Server/detection_results/` 保留原位，只作歷史資料，不自動搬遷、升級或納入新流程的恢復與清理。Dashboard 資料管理只顯示目前模式，不顯示目前與歷史目錄路徑，重置區明示只影響目前模式；開啟、編號、刪除與重置只作用於目前模式。檢測的 `result.json` 與總表列都保存成功後，純拍攝立即清除該輪 `temp/`（原圖已存於 `results/`）；硬體有效判級在持久保存 sorter intent 後推進 counter、清理暫存，再建立分槽命令，待人工判級或安全移除的輪次則保留暫存。Dashboard 的跳過／刪除只處理暫存與未保存成功的部分產物，不刪除已保存的檢測結果，已保存結果只隨重置檢測分區清除。重置檢測包含 `results/` 與總表；Windows 占用沿用隔離、延後清理及忽略標記，未能隔離的舊產物不得被覆寫或展示為新結果。
 
+自動檢測模式的資料管理另有「匯出檢測報告」，提醒使用者在重置前先匯出。`GET /api/export_detection/?dataset_mode=detection&include_results=0|1` 回傳 `detection_export_YYYYMMDD_HHMM.zip`，內含 `report.png`（以目前檢測分區全部結果繪製，版面同趨勢提醒圖但沒有標紅與前期線）與 `detection_summary.csv`；`include_results=1` 另附總表中已保存列指向的 `results/fruit_NNN/` 全部檔案，略過重置留下的忽略路徑。網路檢查同重置：未選網只限本機 Dashboard。參數錯誤回 `400 export_options_invalid`，蒐集模式回 `409 export_detection_only`，有檔案操作進行中回 `409 dataset_busy`，讀檔或繪圖失敗回 `500 export_failed`。ZIP 先寫入暫存檔再串流下載；匯出期間不鎖定 dataset。
+
 目前模式與硬體選項原子保存於 runtime 的 `dataset_options.json`，重啟先恢復模式再讀取該分區；紀錄損壞時禁止資料變更、開始拍攝與接收照片，並顯示具體原因。硬體 command sequence、timing 與復原鎖仍共用，不隨分區重置。開始後固定本輪模式；有處理中工作或資料鎖時拒絕切換；馬達鎖的模式例外見「失聯門檻與安全交握」。Dashboard 的資料操作附 `dataset_mode`，缺少或與目前模式不符回 `409 stale_dataset_mode`；照片 URL 帶 `work_mode`，缺少或模式不符回 `404` 並要求快取重新驗證。
 
 ## 純拍攝與自動檢測
@@ -486,7 +488,8 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
   數據詳情可詢問奶蛋博士獲得更多資訊
   ```
   「近來偏高」只列因門檻或上升觸發的類別；只因當日突增觸發的類別另列「今日明顯偏高：…」，沒有對應類別的行省略。類別依設定順序排列；「須注意」依 `direction` 分組，同方向以「、」合併，方向文字取自 `DIRECTIONS`。全文不得有半形或全形阿拉伯數字及百分比符號，不經 Gemini 措辭。
-- 文字與觸發快照先寫入同一筆 `recent` 紀錄，再以 `trend_<id>` 排入 `notification_outbox.json`；沿用同一憑證、retry key、重試與送達不明規則，不受加工果通知開關影響。每筆另存當時的 `window_days` 與 `details`：每個觸發類別的 `key`、`label`、`reasons`（`threshold／rise／spike`）、`direction`、四個視窗 `current／previous／today／history` 的 `{count, graded, ratio}`，以及當時該類的 `threshold`、`rise`、`min_samples` 與全域 `spike_factor`、`spike_min_samples`；比例保存為 `0～1`，不保存 `wording`。檢查與排送失敗只寫入 log，不阻塞檢測、人工接手與分槽。
+- 訊息與加工果通知同為一個 Flex bubble：hero 為 `detection_report.py` 繪製的統計圖（點擊開原圖），body 為上述文字。圖以最近 `window_days` 天為範圍，含四個指標、四級分布、各等級瑕疵比例與六類瑕疵比例；觸發類別標紅，瑕疵長條另以黑線標出前一個同長度視窗的比例。只因當日突增觸發時，圖仍顯示最近 `window_days` 天。觸發類別合計超過 `12` 字時標題改為「多項指標偏高」。
+- 文字與觸發快照先寫入同一筆 `recent` 紀錄，再以 `trend_<id>` 排入 `notification_outbox.json`，待送項目同時保存 `detection_report.snapshot` 的統計快照（標題、期間、`totals`、`grades`、`defects`、`by_grade`、`previous_defects` 與標紅類別）；背景 worker 送出前依快照繪製 JPEG 並上傳 Cloudinary，所以圖中數字不會因日後新增或重置資料而改變。繪圖失敗（例如缺少字型）為 `failed`，不自動重送；沒有快照的舊待送項目仍以純文字送出。沿用同一憑證、retry key、重試與送達不明規則，不受加工果通知開關影響。每筆另存當時的 `window_days` 與 `details`：每個觸發類別的 `key`、`label`、`reasons`（`threshold／rise／spike`）、`direction`、四個視窗 `current／previous／today／history` 的 `{count, graded, ratio}`，以及當時該類的 `threshold`、`rise`、`min_samples` 與全域 `spike_factor`、`spike_min_samples`；比例保存為 `0～1`，不保存 `wording`。檢查與排送失敗只寫入 log，不阻塞檢測、人工接手與分槽。
 
 ### 奶蛋博士
 

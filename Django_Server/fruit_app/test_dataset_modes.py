@@ -1,6 +1,8 @@
 """Mode isolation through HTTP, using disposable datasets only."""
 
+import io
 import json
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -9,6 +11,7 @@ from django.test import SimpleTestCase
 from . import dataset_store
 from . import tests as existing, views
 from . import test_detection as detection_tests
+from .test_detection_stats import FakeDataset
 
 
 class DatasetModeTests(SimpleTestCase):
@@ -305,3 +308,36 @@ class DatasetModeTests(SimpleTestCase):
         with views.STATE_LOCK, self.assertRaises(views.CaptureCommandError) as raised:
             views._create_capture_session(source='esp32')
         self.assertEqual(raised.exception.reason, 'dataset_options_invalid')
+
+    def test_export_packs_detection_report_and_optional_results(self):
+        url = '/api/export_detection/'
+        self._select('collection')
+        response = self.client.get(url, {'dataset_mode': 'collection', 'include_results': '0'})
+        self.assertEqual((response.status_code, response.json()['reason']), (409, 'export_detection_only'))
+
+        self._select('detection')
+        data = FakeDataset(self.dataset_base / 'detection')
+        data.add(1, '2026-10-16 10:00:00')
+        data.add(2, '2026-10-16 10:01:00', saved=False)
+        (data.root / 'results' / 'fruit_001' / 'img_01_original.jpg').write_bytes(b'photo')
+        self.assertEqual(self.client.get(url, {'dataset_mode': 'detection'}).json()['reason'],
+                         'export_options_invalid')
+
+        def draw(report, target, *, font_path=None, image_format='png'):
+            self.assertEqual(report['totals']['fruits'], 1)
+            target.write(b'png')
+
+        with mock.patch.object(views.detection_report, 'render', side_effect=draw):
+            names = {}
+            for include in ('0', '1'):
+                response = self.client.get(url, {'dataset_mode': 'detection', 'include_results': include})
+                self.assertEqual(response.status_code, 200)
+                self.assertIn('attachment; filename="detection_export_', response['Content-Disposition'])
+                with zipfile.ZipFile(io.BytesIO(b''.join(response.streaming_content))) as archive:
+                    names[include] = set(archive.namelist())
+                    self.assertEqual(archive.read('report.png'), b'png')
+                response.close()
+        self.assertEqual(names['0'], {'report.png', 'detection_summary.csv'})
+        # The unsaved fruit_002 row has no result to pack.
+        self.assertEqual(names['1'] - names['0'], {
+            'results/fruit_001/result.json', 'results/fruit_001/img_01_original.jpg'})

@@ -251,7 +251,7 @@
 
         <details id="dataset-management" class="disclosure-panel">
             <summary>
-                <span><strong>資料管理</strong><small>設定下一筆 ID、開啟 Dataset 資料夾或重置資料。<span id="dataset-scope" aria-live="polite"></span></small></span>
+                <span><strong>資料管理</strong><small>設定下一筆 ID、開啟 Dataset 資料夾、匯出檢測報告或重置資料。<span id="dataset-scope" aria-live="polite"></span></small></span>
                 <span class="summary-badge neutral">低頻操作</span>
             </summary>
             <div class="disclosure-content data-management-grid">
@@ -264,6 +264,14 @@
                     </div>
                 </div>
                 <button id="btn-open-folder" type="button" class="button secondary">開啟 Dataset 資料夾</button>
+                <section id="detection-export" class="export-zone" aria-labelledby="export-title" hidden>
+                    <div>
+                        <h3 id="export-title">匯出檢測報告</h3>
+                        <p>下載 ZIP，內含統計圖與 detection_summary.csv；重置前請先匯出保存。</p>
+                        <label class="trend-alert-switch"><input id="export-include-results" type="checkbox"> 包含每顆果實的照片與結果（results/）</label>
+                    </div>
+                    <button id="btn-export-detection" type="button" class="button secondary">匯出檢測報告</button>
+                </section>
                 <section class="danger-zone" aria-labelledby="danger-zone-title">
                     <div>
                         <span class="section-kicker">DANGER ZONE</span>
