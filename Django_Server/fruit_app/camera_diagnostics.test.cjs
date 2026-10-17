@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { test } = require('node:test');
 
 const elements = new Map();
 function element(id) {
@@ -108,3 +109,183 @@ assert.equal(pickDefaultCamera([{ deviceId: 'main', label: 'Back Camera' }], '')
     assert.equal(requests.at(-1).facingMode.ideal, 'environment');
     console.log('Camera diagnostics: unavailable, live camera with failed RTC, stale frame, and lens selection checks passed.');
 })().catch((error) => { console.error(error); process.exit(1); });
+
+function reportingCamera({ cameraError = null, failFirst = false, reportError = null, reportOk = true } = {}) {
+    const nodes = new Map();
+    const reports = [];
+    const warnings = [];
+    const connections = [];
+    let cameraRequests = 0;
+    const track = {
+        kind: 'video', label: 'private camera label', readyState: 'live', muted: false,
+        getSettings: () => ({ deviceId: 'rear' }), stop() {},
+        addEventListener(event, handler) { this[event] = handler; },
+    };
+    const stream = { getTracks: () => [track], getVideoTracks: () => [track] };
+    function node(id) {
+        if (!nodes.has(id)) nodes.set(id, {
+            videoWidth: 1920, videoHeight: 1080, textContent: '', value: '',
+            classList: { add() {}, remove() {}, toggle() {} }, replaceChildren() {},
+            addEventListener(event, handler) { this[event] = handler; },
+        });
+        return nodes.get(id);
+    }
+    const sandbox = vm.createContext({
+        document: { getElementById: node, addEventListener() {}, createElement: () => ({}) },
+        window: {
+            isSecureContext: true, setTimeout() {}, clearTimeout() {},
+            location: { origin: 'https://private.example', pathname: '/camera/' },
+        },
+        navigator: {
+            userAgent: 'private userAgent', mediaDevices: {
+                async getUserMedia() {
+                    cameraRequests += 1;
+                    if (cameraError && (!failFirst || cameraRequests === 1)) throw cameraError;
+                    return stream;
+                },
+                async enumerateDevices() { return []; },
+            },
+        },
+        performance: { now: () => 5000 },
+        console: { warn: (...args) => warnings.push(args) },
+        async fetch(url, options) {
+            assert.equal(url, '/api/camera/diagnostics/');
+            assert.equal(options.method, 'POST');
+            assert.equal(options.headers['Content-Type'], 'application/json');
+            reports.push(JSON.parse(options.body));
+            if (reportError) throw reportError;
+            return { ok: reportOk, status: reportOk ? 200 : 400, json: async () => ({ ok: reportOk }) };
+        },
+        RTCPeerConnection: class {
+            constructor() {
+                this.connectionState = 'new'; this.iceConnectionState = 'new';
+                connections.push(this);
+            }
+            addTrack() {}
+            getSenders() { return []; }
+            close() { this.connectionState = 'closed'; }
+        },
+    });
+    vm.runInContext(fs.readFileSync(`${__dirname}/static/fruit_app/js/camera.js`, 'utf8'), sandbox);
+    return { sandbox, node, reports, warnings, track, connections };
+}
+
+const reportKeys = [
+    'event', 'secure_context', 'get_user_media_available', 'track_muted', 'permission',
+    'video_track_state', 'rtc_connection_state', 'rtc_ice_connection_state',
+    'video_width', 'video_height', 'last_live_frame_age_ms',
+].sort();
+
+test('camera start, track end and both RTC state events report only whitelisted fields', async () => {
+    const camera = reportingCamera();
+    assert.equal(camera.reports.length, 0);
+    await camera.node('btn-start-camera').click();
+    assert.deepEqual(camera.reports.map((body) => body.event), ['camera_started']);
+    assert.equal(camera.reports[0].permission, 'granted');
+    assert.equal(camera.reports[0].video_track_state, 'live');
+    assert.equal(camera.node('btn-start-camera').disabled, true);
+
+    camera.track.readyState = 'ended';
+    camera.track.ended();
+    assert.equal(camera.reports.at(-1).event, 'track_ended');
+    assert.equal(camera.reports.at(-1).video_track_state, 'ended');
+
+    vm.runInContext('createPeerConnection()', camera.sandbox);
+    const rtc = camera.connections[0];
+    rtc.connectionState = 'connected';
+    rtc.onconnectionstatechange();
+    assert.equal(camera.reports.at(-1).rtc_connection_state, 'connected');
+    rtc.iceConnectionState = 'failed';
+    rtc.oniceconnectionstatechange();
+    assert.equal(camera.reports.at(-1).rtc_ice_connection_state, 'failed');
+    assert.deepEqual(camera.reports.map((body) => body.event), [
+        'camera_started', 'track_ended', 'rtc_state_changed', 'rtc_state_changed',
+    ]);
+    for (const body of camera.reports) {
+        assert.deepEqual(Object.keys(body).sort(), reportKeys);
+        assert.equal(JSON.stringify(body).includes('private'), false);
+        assert.equal(Object.hasOwn(body, 'userAgent'), false);
+    }
+});
+
+test('camera failure reports the permission error name and drops free text', async () => {
+    for (const name of ['NotAllowedError', 'NotFoundError', 'NotReadableError', 'OverconstrainedError',
+        'SecurityError', 'AbortError', 'TypeError', 'arbitrary private name']) {
+        const camera = reportingCamera({ cameraError: { name, message: 'private error message' } });
+        await camera.node('btn-start-camera').click();
+        assert.equal(camera.reports.length, 1);
+        for (const body of camera.reports) {
+            assert.equal(body.event, 'camera_failed');
+            assert.equal(body.permission, name.startsWith('arbitrary') ? 'unknown' : name);
+            assert.deepEqual(Object.keys(body).sort(), reportKeys);
+            assert.equal(JSON.stringify(body).includes('private'), false);
+        }
+        assert.equal(camera.node('btn-start-camera').disabled, false);
+    }
+});
+
+test('getUserMedia fallback success reports only camera_started', async () => {
+    const camera = reportingCamera({ cameraError: { name: 'OverconstrainedError' }, failFirst: true });
+    await camera.node('btn-start-camera').click();
+    assert.deepEqual(camera.reports.map((body) => [body.event, body.permission]), [
+        ['camera_started', 'granted'],
+    ]);
+    assert.match(camera.node('status').textContent, /相機已開啟/);
+});
+
+test('lens fallback success reports only camera_started', async () => {
+    const camera = reportingCamera();
+    await camera.node('btn-start-camera').click();
+    camera.reports.length = 0;
+    let attempts = 0;
+    camera.sandbox.navigator.mediaDevices.getUserMedia = async () => {
+        if (++attempts === 1) throw { name: 'NotReadableError', message: 'private error' };
+        return { getTracks: () => [camera.track], getVideoTracks: () => [camera.track] };
+    };
+    camera.node('camera-lens').value = 'other';
+    await camera.node('camera-lens').change();
+    assert.deepEqual(camera.reports.map((body) => [body.event, body.permission]), [
+        ['camera_started', 'granted'],
+    ]);
+    assert.match(camera.node('status').textContent, /已切換鏡頭/);
+});
+
+test('camera start and lens switch report one failure with the final fallback error name', async () => {
+    for (const switching of [false, true]) {
+        const camera = reportingCamera();
+        if (switching) {
+            await camera.node('btn-start-camera').click();
+            camera.reports.length = 0;
+        }
+        const failures = switching
+            ? ['NotReadableError', 'OverconstrainedError', 'AbortError']
+            : ['OverconstrainedError', 'AbortError'];
+        camera.sandbox.navigator.mediaDevices.getUserMedia = async () => {
+            throw { name: failures.shift(), message: 'private error' };
+        };
+        if (switching) {
+            camera.node('camera-lens').value = 'other';
+            await camera.node('camera-lens').change();
+        } else {
+            await camera.node('btn-start-camera').click();
+        }
+        assert.equal(failures.length, 0);
+        assert.deepEqual(camera.reports.map((body) => [body.event, body.permission]), [
+            ['camera_failed', 'AbortError'],
+        ]);
+        assert.equal(camera.node('btn-start-camera').disabled, false);
+    }
+});
+
+test('diagnostic network and HTTP failures are warnings and leave camera start successful', async () => {
+    for (const options of [{ reportError: new Error('offline') }, { reportOk: false }]) {
+        const camera = reportingCamera(options);
+        await assert.doesNotReject(camera.node('btn-start-camera').click());
+        await new Promise(setImmediate);
+        assert.equal(camera.reports.length, 1);
+        assert.equal(camera.node('btn-start-camera').disabled, true);
+        assert.match(camera.node('status').textContent, /相機已開啟/);
+        assert.equal(camera.warnings.length, 1);
+        assert.equal(await vm.runInContext("reportCameraDiagnostics('rtc_state_changed')", camera.sandbox), undefined);
+    }
+});

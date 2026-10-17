@@ -211,6 +211,7 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 |---|---|---|
 | `GET` | `/api/state/` | Dashboard 完整狀態 |
 | `GET` | `/api/camera/state/` | 手機精簡 capture state 與相機 ready heartbeat |
+| `POST` | `/api/camera/diagnostics/` | 手機相機狀態改變時的旁路診斷上報 |
 | `POST` | `/api/capture_timing/` | 更新 runtime profile 數值 |
 | `POST` | `/api/collection_options/` | 安全閒置時選擇工作與硬體模式 |
 | `POST` | `/api/photo_capture/` | 僅純拍攝可用的單輪三張入口 |
@@ -224,6 +225,23 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 | `POST` | `/api/discard/` | 跳過／刪除目前暫存果實 |
 
 `/api/camera/state/` 禁止快取且只讀記憶體狀態與套用 session timeout，不得掃描 Dataset 或同步 metadata／counter。手機 polling 必須 single in-flight；頁面進入背景時停止，回到前景才重啟。只有相機 stream 存在、video track 為 live、已有可擷取影格與有效尺寸時，手機才在 polling query 回報 `camera_ready=1`；Django 只在記憶體保存最後 ready 時間。每次 upload 必須帶 `fruit_id`、`capture_token` 與 `station_index`。
+
+`POST /api/camera/diagnostics/` 接受最多 `4096 bytes` 的 JSON object，網路身分檢查沿用相機 state API；不符回 `409` 與原網路原因碼，不保存。成功回 `200 {"ok": true}`。白名單如下，除 `event` 必填外皆選填，省略或 `null` 均保存為 `null`：
+
+| 欄位 | 可接受值 |
+|---|---|
+| `event` | `camera_started`、`camera_failed`、`track_ended`、`rtc_state_changed` |
+| `secure_context`、`get_user_media_available`、`track_muted` | JSON 布林 |
+| `permission` | `granted`、`NotAllowedError`、`NotFoundError`、`NotReadableError`、`OverconstrainedError`、`SecurityError`、`AbortError`、`TypeError`、`unknown` |
+| `video_track_state` | `live`、`ended`、`none` |
+| `rtc_connection_state` | `new`、`connecting`、`connected`、`disconnected`、`failed`、`closed` |
+| `rtc_ice_connection_state` | `new`、`checking`、`connected`、`completed`、`disconnected`、`failed`、`closed` |
+| `video_width`、`video_height` | `0–10000` 整數，布林不算整數 |
+| `last_live_frame_age_ms` | `0–86400000` 整數，布林不算整數 |
+
+白名單外的鍵直接丟棄，不保存、不回傳、不記錄內容；白名單值不合法、缺少 `event`、非 JSON object 或超量時，回 `400 {"ok": false, "reason": "camera_diagnostics_invalid"}`，舊資料不變。伺服器在 `STATE_LOCK` 內只保存最新一筆於 `APP_STATE`，加上與 `camera_last_live_frame_at` 同格式的 `received_at`；不寫檔，手動選網及自動網路身分變更時與該時間同處清除。`get_camera_diagnostics()` 回傳獨立快照或 `None`，不加入 `/api/state/`、Dashboard 或助手。
+
+手機僅在開相機成功／失敗、video track 結束、RTC connection／ICE 狀態改變時上報；開相機與切換鏡頭只上報所有 fallback 結束後的最終結果，失敗只傳最終錯誤名稱，其他名稱轉成 `unknown`。上報不新增輪詢且不等待完成，失敗只 `console.warn`，不影響拍攝、上傳與 WebRTC。
 
 Dashboard 的即時預覽外框在未連線時保持隱藏，左欄不得被右欄內容高度拉伸；連線後 video 使用 `width: auto`、`max-width: 100%`、`height: auto` 依來源原始比例縮放，並以 `min(52vh, 520px)` 限制預覽高度，不得固定預留 `16:9` 高度或放大到超過單頁可預覽範圍。
 

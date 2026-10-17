@@ -21,6 +21,7 @@ const localVideo = document.getElementById('local-video');
     let capturePollTimer = null;
     let webrtcPollTimer = null;
     let watchingLiveFrames = false;
+    let cameraPermission = null;
     const captureRetryDelayMs = 2000;
     const captureIdlePollMs = 250;
     const captureActivePollMs = 50;
@@ -32,6 +33,10 @@ const localVideo = document.getElementById('local-video');
     const ULTRA_WIDE_LABEL = /ultra\s*wide|超廣角|超广角|超広角/i;
     const FRONT_LABEL = /front|前置|前鏡頭|前镜头/i;
     const LENS_STORAGE_KEY = 'pf-camera-device-id';
+    const CAMERA_PERMISSION_ERRORS = [
+        'NotAllowedError', 'NotFoundError', 'NotReadableError', 'OverconstrainedError',
+        'SecurityError', 'AbortError', 'TypeError',
+    ];
     const RTC_CONFIG = {
         iceServers: [],
     };
@@ -130,10 +135,12 @@ const localVideo = document.getElementById('local-video');
         updateDiagnostic();
         if (!window.isSecureContext) {
             setStatus('camera_secure_context_required：目前不是安全來源，相機權限不會被瀏覽器開放。');
+            reportCameraDiagnostics('camera_failed');
             return;
         }
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             setStatus('此瀏覽器不支援相機 API。');
+            reportCameraDiagnostics('camera_failed');
             return;
         }
 
@@ -156,6 +163,7 @@ const localVideo = document.getElementById('local-video');
         } catch (error) {
             setStatus(`相機開啟失敗：${error.name || 'Error'}，${error.message || '請檢查瀏覽器權限設定。'}`);
             startButton.disabled = false;
+            reportCameraFailure(error);
         }
     }
 
@@ -213,6 +221,8 @@ const localVideo = document.getElementById('local-video');
         if (sender && track) {
             sender.replaceTrack(track).catch((error) => console.warn('RTC 預覽切換鏡頭失敗', error));
         }
+        track?.addEventListener('ended', () => reportCameraDiagnostics('track_ended'), { once: true });
+        reportCameraDiagnostics('camera_started', 'granted');
     }
 
     function renderLensOptions(cameras) {
@@ -246,6 +256,7 @@ const localVideo = document.getElementById('local-video');
             startPanel.classList.remove('hidden');
             startButton.disabled = false;
             setStatus(`切換鏡頭失敗：${error.name || 'Error'}，請重新開啟相機。`);
+            reportCameraFailure(error);
         } finally {
             lensSelect.disabled = false;
         }
@@ -298,9 +309,11 @@ const localVideo = document.getElementById('local-video');
         };
         peerConnection.onconnectionstatechange = () => {
             renderWebRTCStatus();
+            reportCameraDiagnostics('rtc_state_changed');
         };
         peerConnection.oniceconnectionstatechange = () => {
             renderWebRTCStatus();
+            reportCameraDiagnostics('rtc_state_changed');
         };
     }
 
@@ -621,6 +634,34 @@ const localVideo = document.getElementById('local-video');
     function markLiveFrame() {
         if (localVideo.videoWidth > 0 && localVideo.videoHeight > 0) {
             lastLiveFrameAtMs = performance.now();
+        }
+    }
+
+    function reportCameraFailure(error) {
+        const permission = CAMERA_PERMISSION_ERRORS.includes(error.name) ? error.name : 'unknown';
+        reportCameraDiagnostics('camera_failed', permission);
+    }
+
+    async function reportCameraDiagnostics(event, permission = cameraPermission) {
+        try {
+            cameraPermission = permission;
+            const track = localStream?.getVideoTracks()[0];
+            await postJson('/api/camera/diagnostics/', {
+                event,
+                secure_context: window.isSecureContext,
+                get_user_media_available: Boolean(navigator.mediaDevices?.getUserMedia),
+                permission,
+                video_track_state: track?.readyState ?? 'none',
+                track_muted: track?.muted ?? null,
+                rtc_connection_state: peerConnection?.connectionState ?? null,
+                rtc_ice_connection_state: peerConnection?.iceConnectionState ?? null,
+                video_width: localVideo.videoWidth,
+                video_height: localVideo.videoHeight,
+                last_live_frame_age_ms: lastLiveFrameAtMs === null
+                    ? null : Math.min(86400000, Math.max(0, Math.round(performance.now() - lastLiveFrameAtMs))),
+            });
+        } catch (error) {
+            console.warn('相機診斷上報失敗');
         }
     }
 

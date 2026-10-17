@@ -14,6 +14,7 @@ urlpatterns = [
     path('api/network/setup_request/', views.network_setup_request_api, name='network_setup_request_api'),
     path('api/state/', views.state_api, name='state_api'),
     path('api/camera/state/', views.camera_state_api, name='camera_state_api'),
+    path('api/camera/diagnostics/', views.camera_diagnostics_api, name='camera_diagnostics_api'),
     path('api/set_counter/', views.set_counter_api, name='set_counter_api'),
     path('api/capture_timing/', views.capture_timing_api, name='capture_timing_api'),
     path('api/collection_options/', views.collection_options_api, name='collection_options_api'),

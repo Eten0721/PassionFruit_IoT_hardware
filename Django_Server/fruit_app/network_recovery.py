@@ -140,6 +140,7 @@ class Policy:
             self.lock('network_changed')
             self.state['camera_last_live_frame_monotonic'] = None
             self.state['camera_last_live_frame_at'] = None
+            self.state['camera_diagnostics'] = None
             self.state['last_esp32_poll_monotonic'] = None
             self.state['esp32_network_capable'] = False
         self.state['network_identity'] = identity
