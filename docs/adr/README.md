@@ -9,7 +9,7 @@ ADR 記錄長期有效、跨模組或涉及安全與資料一致性的決策。�
 | [0003](0003-guarded-station-one-fast-path.md) | Accepted | 受守門的首站捷徑與有界重試 |
 | [0004](0004-hcsr04-echo-voltage-safety.md) | Accepted | HC-SR04 Echo 電壓安全 |
 | [0005](0005-initial-uniform-timing-profile.md) | Superseded | 初始統一 timing profile |
-| [0006](0006-dashboard-managed-capture-timing.md) | Accepted | Dashboard 管理與 snapshot timing |
+| [0006](0006-dashboard-managed-capture-timing.md) | Superseded | Dashboard 管理與 snapshot timing；由 ADR-0023 取代 |
 | [0007](0007-classification-after-data-commit.md) | Accepted | 資料提交後才執行實體分類 |
 | [0008](0008-legacy-four-class-command-mapping.md) | Superseded | 舊四級分類 command mapping |
 | [0009](0009-canonical-four-class-contract.md) | Accepted | 現行四級分類契約 |
@@ -26,5 +26,7 @@ ADR 記錄長期有效、跨模組或涉及安全與資料一致性的決策。�
 | [0020](0020-single-network-recovery-policy.md) | Accepted | 網路安全鎖集中為單一復原政策 |
 | [0021](0021-double-click-launcher-and-release-zip.md) | Accepted | Windows 雙擊啟動器與 Release ZIP 散布，不採用 Docker |
 | [0022](0022-dashboard-gemini-assistant.md) | Accepted（目標） | Dashboard 唯讀 Gemini 助手：Django 計算統計、文件問答、搜尋接地與規則式瑕疵趨勢提醒（Gemini 只負責措辭）；尚未實作 |
+
+| [0023](0023-file-based-hardware-params.md) | Accepted | 硬體參數改由 `hardware_params.toml` 設定、重新啟動生效，取消送料校正確認 |
 
 完成項目的實作過程、版本進度與 commit 歷史不另建 ADR，由 Git、tag 與 release 保存。

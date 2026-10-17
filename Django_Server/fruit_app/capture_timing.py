@@ -1,12 +1,12 @@
-"""Validation and atomic persistence for capture timing profiles."""
+"""Validation and loading of the maintainer-edited hardware parameter file."""
 
 from __future__ import annotations
 
 import json
+import tomllib
+import zlib
 from pathlib import Path
 from typing import Any, Iterable
-
-from . import dataset_store
 
 
 class TimingValidationError(ValueError):
@@ -69,39 +69,26 @@ def normalise(
     return timing
 
 
-def read(
-    path: Path,
-    normalise_profile,
-    *,
-    migration_defaults: dict[str, int] | None = None,
-    migrate_profile=None,
-) -> tuple[dict[str, int | bool], int, bool] | None:
+def load(path: Path, fields: Iterable[str]) -> tuple[dict[str, Any], int]:
+    """Read the maintainer-edited TOML file; the revision is derived from its values."""
     path = Path(path)
     try:
-        with path.open('r', encoding='utf-8') as timing_file:
-            data = json.load(timing_file)
-        raw_timing = data.get('capture_timing')
-        raw_timing = dict(raw_timing) if isinstance(raw_timing, dict) else raw_timing
-        migrated = False
-        if isinstance(raw_timing, dict):
-            if migrate_profile:
-                raw_timing, migrated = migrate_profile(raw_timing)
-            for field, default_value in (migration_defaults or {}).items():
-                if field not in raw_timing:
-                    raw_timing[field] = default_value
-                    migrated = True
-        timing = normalise_profile(raw_timing)
-        revision = int(data.get('revision'))
-        if revision < 1:
-            raise ValueError('invalid timing revision')
-        return timing, revision, migrated
-    except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError, ValueError, TimingValidationError):
-        return None
-
-
-def write(path: Path, timing: dict[str, int | bool], revision: int) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    dataset_store.atomic_write_json(
-        path, {'revision': int(revision), 'capture_timing': dict(timing)},
-    )
+        with path.open('rb') as params_file:
+            raw = tomllib.load(params_file)
+    except FileNotFoundError:
+        raise TimingValidationError(
+            f'找不到硬體參數檔：{path}。', 'hardware_params_missing',
+        ) from None
+    except tomllib.TOMLDecodeError as exc:
+        raise TimingValidationError(
+            f'硬體參數檔格式錯誤：{exc}。', 'hardware_params_invalid_toml',
+        ) from None
+    unknown = sorted(set(raw) - set(fields))
+    if unknown:
+        raise TimingValidationError(
+            f'硬體參數檔有未知欄位：{"、".join(unknown)}。', 'hardware_params_unknown_field',
+        )
+    canonical = json.dumps({field: raw.get(field) for field in fields}, sort_keys=True)
+    # Same values keep the same revision across restarts, so ESP32 only re-applies real changes.
+    revision = zlib.crc32(canonical.encode('utf-8')) % 999_999 + 1
+    return raw, revision

@@ -12,6 +12,7 @@ from functools import cache, wraps
 from pathlib import Path
 
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseNotModified, JsonResponse
 from django.shortcuts import render
 from django.utils.http import http_date
@@ -80,17 +81,8 @@ CAPTURE_TIMING_RECOMMENDED = {
     'feeder_stop_us': FEEDER_STOP_US,
     'feeder_drive_us': FEEDER_DRIVE_US,
     'feeder_max_run_ms': FEEDER_MAX_RUN_MS,
-    'feeder_calibrated': False,
 }
-CAPTURE_TIMING_FIELDS = tuple(
-    field for field in CAPTURE_TIMING_RECOMMENDED
-    if field != 'feeder_calibrated'
-)
-FEEDER_MECHANICAL_FIELDS = (
-    'feeder_stop_us',
-    'feeder_drive_us',
-    'feeder_max_run_ms',
-)
+CAPTURE_TIMING_FIELDS = tuple(CAPTURE_TIMING_RECOMMENDED)
 CAPTURE_TIMING_STEP_MS = 50
 CAPTURE_TIMING_MIN_MS = 50
 CAPTURE_TIMING_MAX_MS = 3000
@@ -185,7 +177,6 @@ APP_STATE = RuntimeState({
     'capture_timing_applied_revision': 0,
     'capture_timing_applied_at': None,
     'capture_timing_loaded_path': None,
-    'capture_timing_warning': None,
     'auto_run_enabled': False,
     'auto_feed_pending': False,
     'auto_run_finishing': False,
@@ -201,7 +192,6 @@ APP_STATE = RuntimeState({
     'esp32_last_feed_command_id': 0,
     'gate3_waiting_boot_id': None,
     'last_completed_feed_command_id': 0,
-    'feeder_test_passed_revision': None,
     'feeder_test_result': None,
     'discard_cleanup_last_monotonic': None,
     'dataset_operation': None,
@@ -674,107 +664,6 @@ def set_counter_api(request):
 
 @csrf_exempt
 @require_POST
-@network_required(cleanup=True, operation='timing')
-def capture_timing_api(request):
-    """Persist a complete next-fruit timing profile while the controller is idle."""
-    _ensure_dataset_structure()
-    data = _request_data(request)
-    with STATE_LOCK:
-        reason = local_network.NETWORK.request_reason(request, cleanup=True)
-        if reason:
-            return local_network.network_error(reason)
-        _sync_active_state_with_filesystem()
-        if (
-            APP_STATE.get('auto_run_enabled')
-            or _sorter_busy()
-            or APP_STATE['status'] != 'idle'
-            or APP_STATE.get('active_fruit_id')
-            or APP_STATE.get('motor_command')
-        ):
-            return _json_error(
-                '拍攝流程進行中，請等待目前 fruit 完成、分類或跳過後再調整停穩時間。',
-                status=409,
-                reason='capture_timing_update_requires_idle',
-            )
-
-        try:
-            timing_data = dict(data)
-            timing_data.setdefault(
-                'idle_command_poll_interval_ms',
-                APP_STATE['capture_timing']['idle_command_poll_interval_ms'],
-            )
-            for field in (
-                'feeder_stop_us',
-                'feeder_drive_us',
-                'feeder_max_run_ms',
-            ):
-                timing_data.setdefault(field, APP_STATE['capture_timing'][field])
-            # Calibration is server-managed through feeder_calibration_confirm_api.
-            # A timing form submission must never confirm or revoke it directly.
-            timing_data['feeder_calibrated'] = APP_STATE['capture_timing']['feeder_calibrated']
-            timing = _normalise_capture_timing(timing_data, require_all=True)
-        except CaptureCommandError as exc:
-            return _json_error(exc.message, status=exc.status, reason=exc.reason)
-
-        feeder_changed = any(
-            timing[field] != APP_STATE['capture_timing'][field]
-            for field in FEEDER_MECHANICAL_FIELDS
-        )
-        if feeder_changed:
-            timing['feeder_calibrated'] = False
-
-        if timing == APP_STATE['capture_timing']:
-            return JsonResponse(_state_payload(extra={
-                'ok': True,
-                'capture_timing_unchanged': True,
-            }))
-
-        previous_timing = APP_STATE['capture_timing']
-        previous_revision = APP_STATE['capture_timing_revision']
-        previous_applied_at = APP_STATE['capture_timing_applied_at']
-        previous_passed_revision = APP_STATE.get('feeder_test_passed_revision')
-        APP_STATE['capture_timing'] = timing
-        profile_changed = any(
-            timing[field] != previous_timing[field]
-            for field in CAPTURE_TIMING_FIELDS
-        )
-        APP_STATE['capture_timing_revision'] = previous_revision + int(profile_changed)
-        if profile_changed:
-            APP_STATE['capture_timing_applied_at'] = None
-        if feeder_changed:
-            APP_STATE['feeder_test_passed_revision'] = None
-        try:
-            capture_timing.write(
-                _capture_timing_path(),
-                timing,
-                APP_STATE['capture_timing_revision'],
-            )
-        except OSError as exc:
-            APP_STATE['capture_timing'] = previous_timing
-            APP_STATE['capture_timing_revision'] = previous_revision
-            APP_STATE['capture_timing_applied_at'] = previous_applied_at
-            APP_STATE['feeder_test_passed_revision'] = previous_passed_revision
-            return _json_error(
-                f'無法保存拍攝停穩設定：{exc}',
-                status=500,
-                reason='capture_timing_persist_failed',
-            )
-        _record_transition(
-            'capture_timing_updated',
-            details={
-                'revision': APP_STATE['capture_timing_revision'],
-                **timing,
-            },
-        )
-        payload = _state_payload(extra={
-            'ok': True,
-            'capture_timing_updated': True,
-        })
-    return JsonResponse(payload)
-
-
-@csrf_exempt
-@require_POST
 @network_required
 def feeder_test_api(request):
     _ensure_dataset_structure()
@@ -793,29 +682,6 @@ def feeder_test_api(request):
                 status=409,
                 reason=reason,
             )
-        if APP_STATE['capture_timing'].get('feeder_calibrated'):
-            timing = {**APP_STATE['capture_timing'], 'feeder_calibrated': False}
-            try:
-                capture_timing.write(
-                    _capture_timing_path(),
-                    timing,
-                    APP_STATE['capture_timing_revision'],
-                )
-            except OSError as exc:
-                return _json_error(
-                    f'無法撤銷舊送料確認，未開始測試：{exc}',
-                    status=500,
-                    reason='capture_timing_persist_failed',
-                )
-            APP_STATE['capture_timing'] = timing
-            _record_transition(
-                'feeder_calibration_revoked',
-                details={
-                    'revision': APP_STATE['capture_timing_revision'],
-                    'reason': 'feeder_retest_started',
-                },
-            )
-        APP_STATE['feeder_test_passed_revision'] = None
         try:
             command = _set_motor_command('feed_one', feed_context='calibration')
         except CaptureCommandError as exc:
@@ -826,70 +692,6 @@ def feeder_test_api(request):
         APP_STATE['status'] = 'waiting_feeder'
         APP_STATE['message'] = 'ESP32 正在執行一次送料校正測試。'
         payload = _state_payload(extra={'ok': True, 'feeder_test_started': True})
-    return JsonResponse(payload)
-
-
-@csrf_exempt
-@require_POST
-@network_required
-def feeder_calibration_confirm_api(request):
-    """Persist operator confirmation for one successful test at the current revision."""
-    _ensure_dataset_structure()
-    data = _request_data(request)
-    revision = data.get('timing_revision')
-    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
-        return _json_error(
-            'timing_revision 必須是正整數。',
-            status=400,
-            reason='invalid_timing_revision',
-        )
-
-    with STATE_LOCK:
-        reason = local_network.NETWORK.request_reason(request)
-        if reason:
-            return local_network.network_error(reason)
-        reason = _network_hardware_disabled_reason()
-        if reason:
-            return local_network.network_error(reason)
-        _sync_active_state_with_filesystem()
-        current_revision = APP_STATE['capture_timing_revision']
-        if revision != current_revision:
-            return _json_error(
-                f'送料測試 revision {revision} 已過期；目前設定為 revision {current_revision}。',
-                status=409,
-                reason='stale_timing_revision',
-            )
-
-        reason = _feeder_calibration_confirm_disabled_reason()
-        if reason:
-            return _json_error(
-                '目前無法保存送料確認；請等待相同 revision 套用並成功完成一次送料測試。',
-                status=409,
-                reason=reason,
-            )
-
-        previous_timing = APP_STATE['capture_timing']
-        timing = {**previous_timing, 'feeder_calibrated': True}
-        try:
-            capture_timing.write(_capture_timing_path(), timing, current_revision)
-        except OSError as exc:
-            return _json_error(
-                f'無法保存送料校正確認：{exc}',
-                status=500,
-                reason='capture_timing_persist_failed',
-                extra={'state': _state_payload()},
-            )
-
-        APP_STATE['capture_timing'] = timing
-        APP_STATE['message'] = '送料校正確認已保存；其他安全條件就緒後可直接開始拍攝。'
-        _record_transition(
-            'feeder_calibration_confirmed',
-            details={'revision': current_revision},
-        )
-        payload = _state_payload(extra={
-            'ok': True,
-            'feeder_calibration_confirmed': True,
-        })
     return JsonResponse(payload)
 
 
@@ -3006,7 +2808,6 @@ def reset_runtime_state_for_tests():
             'capture_timing_applied_revision': 0,
             'capture_timing_applied_at': None,
             'capture_timing_loaded_path': None,
-            'capture_timing_warning': None,
             'auto_run_enabled': False,
             'auto_feed_pending': False,
             'auto_run_finishing': False,
@@ -3022,7 +2823,6 @@ def reset_runtime_state_for_tests():
             'esp32_last_feed_command_id': 0,
             'gate3_waiting_boot_id': None,
             'last_completed_feed_command_id': 0,
-            'feeder_test_passed_revision': None,
             'feeder_test_result': None,
             'discard_cleanup_last_monotonic': None,
             'dataset_operation': None,
@@ -3132,7 +2932,7 @@ def _no_store_response(response):
 
 
 def _capture_timing_path():
-    return Path(settings.CAPTURE_TIMING_CONFIG_PATH)
+    return Path(settings.HARDWARE_PARAMS_PATH)
 
 
 def _collects_by_label():
@@ -3142,10 +2942,6 @@ def _collects_by_label():
     and ``detection_summary.csv``.
     """
     return APP_STATE['work_mode'] == 'collection'
-
-
-def _legacy_capture_timing_path():
-    return Path(settings.DATASET_ROOT) / 'capture_timing.json'
 
 
 def _ensure_dataset_structure():
@@ -3254,19 +3050,6 @@ def _request_data(request):
 
 def _normalise_capture_timing(raw_timing, *, require_all):
     raw_timing = raw_timing if isinstance(raw_timing, dict) else {}
-    raw_calibrated = raw_timing.get('feeder_calibrated')
-    if raw_calibrated is None and require_all:
-        raise CaptureCommandError(
-            '缺少送料校正確認欄位：feeder_calibrated。',
-            status=400,
-            reason='capture_timing_field_missing',
-        )
-    if raw_calibrated not in (True, False, 0, 1):
-        raise CaptureCommandError(
-            'feeder_calibrated 必須是布林值。',
-            status=400,
-            reason='capture_timing_invalid_value',
-        )
     try:
         timing = capture_timing.normalise(
             raw_timing,
@@ -3287,47 +3070,7 @@ def _normalise_capture_timing(raw_timing, *, require_all):
             status=400,
             reason='feeder_drive_matches_stop',
         )
-    timing['feeder_calibrated'] = bool(raw_calibrated)
     return timing
-
-
-def _read_capture_timing_config(path):
-    try:
-        return capture_timing.read(
-            Path(path),
-            lambda raw: _normalise_capture_timing(raw, require_all=True),
-            migration_defaults={
-                'idle_command_poll_interval_ms': IDLE_COMMAND_POLL_INTERVAL_MS,
-                'feeder_stop_us': FEEDER_STOP_US,
-                'feeder_drive_us': FEEDER_DRIVE_US,
-                'feeder_max_run_ms': FEEDER_MAX_RUN_MS,
-                'feeder_calibrated': False,
-            },
-            migrate_profile=_migrate_feeder_profile,
-        )
-    except CaptureCommandError:
-        return None
-
-
-def _migrate_feeder_profile(timing):
-    deprecated_fields = {'feeder_run_ms', 'fruit_arrival_warning_ms'}
-    raw_max_run_ms = timing.get('feeder_max_run_ms')
-    try:
-        legacy_max_run_ms = int(raw_max_run_ms)
-        has_legacy_max_run = (
-            50 <= legacy_max_run_ms <= 500
-            and legacy_max_run_ms % 5 == 0
-        )
-    except (TypeError, ValueError):
-        has_legacy_max_run = raw_max_run_ms is None
-
-    if not (deprecated_fields & timing.keys()) and not has_legacy_max_run:
-        return timing, False
-    timing.pop('feeder_run_ms', None)
-    timing.pop('fruit_arrival_warning_ms', None)
-    timing['feeder_max_run_ms'] = FEEDER_MAX_RUN_MS
-    timing['feeder_calibrated'] = False
-    return timing, True
 
 
 def _ensure_capture_timing_config():
@@ -3335,45 +3078,18 @@ def _ensure_capture_timing_config():
     path_key = str(path)
     if APP_STATE.get('capture_timing_loaded_path') == path_key:
         return
-
-    path_existed = path.exists()
-    loaded_config = _read_capture_timing_config(path)
-    needs_write = False
-    warning = None
-    if loaded_config is None:
-        loaded_config = _read_capture_timing_config(_legacy_capture_timing_path())
-        if loaded_config is None:
-            loaded_config = (dict(CAPTURE_TIMING_RECOMMENDED), 1, False)
-            warning = (
-                '送料 runtime profile 損壞或驗證失敗，已載入推薦值並取消校正。'
-                if path_existed
-                else '送料 runtime profile 遺失，已載入推薦值並取消校正。'
-            )
-        needs_write = True
-
-    timing, revision, migrated = loaded_config
-    if migrated:
-        revision += 1
-        needs_write = True
-    if needs_write:
-        capture_timing.write(_capture_timing_path(), timing, revision)
+    try:
+        raw, revision = capture_timing.load(path, CAPTURE_TIMING_FIELDS)
+        timing = _normalise_capture_timing(raw, require_all=True)
+    except (capture_timing.TimingValidationError, CaptureCommandError) as exc:
+        raise ImproperlyConfigured(
+            f'硬體參數檔 {path} 無效（{exc.reason}）：{exc.message} 修正後重新啟動 Django。'
+        ) from None
     APP_STATE['capture_timing'] = timing
     APP_STATE['capture_timing_revision'] = revision
     APP_STATE['capture_timing_applied_revision'] = 0
     APP_STATE['capture_timing_applied_at'] = None
     APP_STATE['capture_timing_loaded_path'] = path_key
-    APP_STATE['capture_timing_warning'] = warning
-    _remove_legacy_capture_timing_config()
-
-
-def _remove_legacy_capture_timing_config():
-    legacy_path = _legacy_capture_timing_path()
-    if legacy_path == _capture_timing_path() or not legacy_path.exists():
-        return
-    try:
-        dataset_store.safe_unlink(legacy_path)
-    except DatasetFileBusyError as exc:
-        print(f'無法移除舊版停穩設定檔 {legacy_path}：{exc}', flush=True)
 
 
 def _capture_timing_status():
@@ -3387,7 +3103,6 @@ def _capture_timing_status():
 def _capture_timing_state_payload():
     return {
         'capture_timing': dict(APP_STATE['capture_timing']),
-        'capture_timing_recommended': dict(CAPTURE_TIMING_RECOMMENDED),
         'capture_timing_revision': APP_STATE['capture_timing_revision'],
         'capture_timing_applied_revision': APP_STATE['capture_timing_applied_revision'],
         'capture_timing_applied_at': APP_STATE['capture_timing_applied_at'],
@@ -4316,9 +4031,6 @@ def _handle_feed_result(event, data, command_id):
             if result['ok']
             else f'測試送料已停止：{result["stop_reason"]}。'
         )
-        APP_STATE['feeder_test_passed_revision'] = (
-            command.get('timing_revision') if result['ok'] else None
-        )
     elif result['ok']:
         APP_STATE['status'] = 'waiting_fruit'
         APP_STATE['message'] = 'HC-SR04 已在本機停止送料，等待同一筆觸發啟動第一站。'
@@ -4509,36 +4221,6 @@ def _feeder_test_disabled_reason():
     return _feeder_hardware_disabled_reason()
 
 
-def _feeder_calibration_confirm_disabled_reason():
-    reason = NETWORK_RECOVERY.disabled_reason('calibration')
-    if reason:
-        return reason
-    if APP_STATE['capture_timing'].get('feeder_calibrated'):
-        return 'feeder_calibration_already_confirmed'
-    if APP_STATE.get('auto_run_enabled'):
-        return 'auto_run_must_be_stopped'
-    if _sorter_busy():
-        return 'classifier_busy'
-    if APP_STATE.get('active_fruit_id'):
-        return 'active_fruit_exists'
-    if APP_STATE.get('motor_command'):
-        return 'pending_motor_command'
-    if APP_STATE.get('status') != 'idle':
-        return 'system_not_idle'
-    current_revision = APP_STATE['capture_timing_revision']
-    if APP_STATE['capture_timing_applied_revision'] != current_revision:
-        return 'feeder_timing_not_applied'
-    result = APP_STATE.get('feeder_test_result') or {}
-    if (
-        APP_STATE.get('feeder_test_passed_revision') != current_revision
-        or result.get('timing_revision') != current_revision
-        or not result.get('ok')
-        or result.get('stop_reason') != 'hcsr04'
-    ):
-        return 'feeder_test_required'
-    return None
-
-
 def _feeder_hardware_disabled_reason(*, allow_recovery=False):
     reason = NETWORK_RECOVERY.disabled_reason('motor')
     if reason:
@@ -4591,8 +4273,6 @@ def _auto_run_disabled_reason(*, allow_recovery=False):
         return recovery_reason
     if _has_unclassified_temp_fruit():
         return 'temp_fruit_exists'
-    if not APP_STATE['capture_timing'].get('feeder_calibrated'):
-        return 'feeder_calibration_required'
     if not _camera_is_ready():
         return 'camera_not_ready'
     return None
@@ -4774,7 +4454,6 @@ def _operator_alert_payload():
         'hardware_timeout': 'ESP32 / SG90 gates',
         'motor_error': 'ESP32 / actuator',
         'feeder_capability_missing': 'ESP32 / upstream_feeder',
-        'feeder_calibration_required': 'upstream_feeder',
         'feeder_sensor_not_clear': 'upstream_feeder / HC-SR04',
         'feeder_sensor_unavailable': 'upstream_feeder / HC-SR04',
         'feeder_max_run_timeout': 'upstream_feeder',
@@ -4950,11 +4629,6 @@ def _state_payload(extra=None):
         'esp32_feeder_state': APP_STATE.get('esp32_feeder_state'),
         'feeder_sensor_state': APP_STATE.get('esp32_feeder_sensor_state'),
         'feeder_test_result': APP_STATE.get('feeder_test_result'),
-        'feeder_test_passed_revision': APP_STATE.get('feeder_test_passed_revision'),
-        'can_confirm_feeder_calibration': (
-            _feeder_calibration_confirm_disabled_reason() is None
-        ),
-        'capture_timing_warning': APP_STATE.get('capture_timing_warning'),
         'can_test_feeder': _feeder_test_disabled_reason() is None,
         'feeder_test_disabled_reason': _feeder_test_disabled_reason(),
         'can_start_auto_run': _auto_run_disabled_reason(allow_recovery=True) is None,
@@ -5006,8 +4680,7 @@ def _state_payload(extra=None):
         payload['camera_ready'] = False
         for key in ('can_change_options', 'can_start_photo_capture', 'can_classify',
                     'can_manual_grade',
-                    'can_recapture', 'can_test_feeder', 'can_start_auto_run',
-                    'can_confirm_feeder_calibration'):
+                    'can_recapture', 'can_test_feeder', 'can_start_auto_run'):
             payload[key] = False
         payload['options_disabled_reason'] = network['reason']
         payload['photo_capture_disabled_reason'] = network['reason']

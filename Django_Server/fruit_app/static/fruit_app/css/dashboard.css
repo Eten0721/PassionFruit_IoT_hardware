@@ -1072,8 +1072,7 @@ textarea {
     color: var(--text-soft);
 }
 
-.settings-content,
-.calibration-panel {
+.settings-content {
     display: grid;
     gap: 14px;
 }
@@ -1099,98 +1098,27 @@ textarea {
     line-height: 1.45;
 }
 
-.timing-config-actions {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
+/* Values come from hardware_params.toml; the fields only display them. */
+.timing-config-field input[readonly] {
+    background: var(--surface-muted);
+    color: var(--text-soft);
+    cursor: default;
+    pointer-events: none;
 }
 
-.static-warning,
-.inline-warning:not(:empty) {
+.summary-action {
+    min-height: 32px;
+    padding: 4px 12px;
+    font-size: 13px;
+}
+
+.static-warning {
     padding: 9px 11px;
     border-left: 4px solid var(--warning);
     border-radius: 4px var(--radius-small) var(--radius-small) 4px;
     background: var(--warning-soft);
     color: #633705;
     font-size: 13px;
-}
-
-.calibration-panel {
-    padding: 14px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface-muted);
-}
-
-.feeder-calibration-heading {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-}
-
-.feeder-help {
-    position: relative;
-    display: inline-flex;
-}
-
-.feeder-help-button {
-    width: 30px;
-    min-height: 30px;
-    padding: 0;
-    border-radius: 50%;
-    font-size: 14px;
-}
-
-.feeder-help-panel {
-    position: absolute;
-    z-index: var(--z-popover);
-    top: calc(100% + 6px);
-    right: 0;
-    left: auto;
-    display: none;
-    width: min(340px, 82vw);
-    padding: 10px 11px;
-    border-color: var(--border-strong);
-    border-style: solid;
-    border-width: 1px;
-    border-radius: var(--radius-small);
-    background: var(--surface);
-    box-shadow: var(--shadow-raised);
-    color: var(--text-soft);
-    font-size: 13px;
-    font-weight: 400;
-    line-height: 1.55;
-}
-
-.feeder-help:hover .feeder-help-panel,
-.feeder-help:focus-within .feeder-help-panel,
-.feeder-help.is-open .feeder-help-panel {
-    display: block;
-}
-
-.feeder-calibration-status {
-    padding: 8px 10px;
-    border-left: 4px solid var(--primary);
-    border-color: var(--primary);
-    background: var(--primary-soft);
-    color: var(--text-soft);
-    font-size: 13px;
-    line-height: 1.45;
-}
-
-.feeder-confirmation {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    color: var(--text-soft);
-    font-size: 13px;
-    line-height: 1.45;
-}
-
-.feeder-confirmation input {
-    width: auto;
-    margin-top: 3px;
 }
 
 .diagnostics-grid {
@@ -1419,10 +1347,6 @@ textarea {
     .detection-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
-
-    .timing-config-actions {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
 }
 
 @media (max-width: 640px) {
@@ -1454,7 +1378,6 @@ textarea {
     .timing-config-grid,
     .button-row,
     .sorter-summary,
-    .timing-config-actions,
     .data-management-grid {
         grid-template-columns: 1fr;
     }

@@ -243,6 +243,7 @@ class DatasetModeTests(SimpleTestCase):
 
     def test_corrupt_mode_record_stops_mutation_without_touching_data(self):
         path = self.motor_command_sequence_path.with_name('dataset_options.json')
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('{broken', encoding='utf-8')
         views.reset_runtime_state_for_tests()
         state = self.client.get('/api/state/').json()
@@ -254,6 +255,7 @@ class DatasetModeTests(SimpleTestCase):
 
     def test_corrupt_mode_record_survives_a_later_recovery_lock(self):
         path = self.motor_command_sequence_path.with_name('dataset_options.json')
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('{broken', encoding='utf-8')
         views.reset_runtime_state_for_tests()
         self.client.get('/api/state/')

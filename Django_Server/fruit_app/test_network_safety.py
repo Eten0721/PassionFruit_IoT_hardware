@@ -538,7 +538,6 @@ class NetworkSafetyTests(SimpleTestCase):
 
     def test_recovery_refreshes_blocked_sensor_before_committing_new_feed(self):
         self.prepare()
-        views.APP_STATE['capture_timing']['feeder_calibrated'] = True
         applied = self.post('/api/esp32/report/', self.device(
             event='timing_config_applied', timing_revision=views.APP_STATE['capture_timing_revision'],
         ))
@@ -572,7 +571,6 @@ class NetworkSafetyTests(SimpleTestCase):
 
     def test_recovery_sensor_blockers_never_commit_new_feed(self):
         self.prepare()
-        views.APP_STATE['capture_timing']['feeder_calibrated'] = True
         applied = self.post('/api/esp32/report/', self.device(
             event='timing_config_applied', timing_revision=views.APP_STATE['capture_timing_revision'],
         ))
@@ -729,10 +727,8 @@ class NetworkRecoveryMatrixTests(SimpleTestCase):
         self.prepare(photo_only=mode == 'photo_only')
         self.client.get('/api/esp32/command/', self.device())
         state = views.APP_STATE
-        state['capture_timing']['feeder_calibrated'] = operation != 'calibration'
         revision = state['capture_timing_revision']
         state['capture_timing_applied_revision'] = revision
-        state['feeder_test_passed_revision'] = revision
         state['feeder_test_result'] = {'ok': True, 'stop_reason': 'hcsr04', 'timing_revision': revision}
         if locks != 'none':
             reason = {'data': 'camera_connection_lost', 'motor': 'esp32_network_interlocked',
@@ -760,9 +756,7 @@ class NetworkRecoveryMatrixTests(SimpleTestCase):
             'notification': ('/api/notification/', {'enabled': True}),
             'options': ('/api/collection_options/', {'work_mode': 'collection',
                         'hardware_mode': 'photo_only' if mode == 'hardware' else 'hardware'}),
-            'timing': ('/api/capture_timing/', dict(state['capture_timing'])),
             'feeder': ('/api/feeder/test/', {}),
-            'calibration': ('/api/feeder/calibration/confirm/', {'timing_revision': revision}),
             'network': ('/api/network/', {'interface_id': '7', 'ipv4': '192.168.50.10'}),
             'setup': ('/api/network/setup_request/', {}),
             'counter': ('/api/set_counter/', {'start_id': 42}),
@@ -810,12 +804,12 @@ def _matrix_test(mode, locks, operation, expected_reason):
 
 # Columns are literal observable reasons, not values computed by the implementation.
 _MATRIX_OPERATIONS = ('auto', 'photo', 'confirm', 'discard', 'notification', 'options',
-                      'timing', 'feeder', 'calibration', 'network', 'setup', 'command', 'counter', 'reset')
+                      'feeder', 'network', 'setup', 'command', 'counter', 'reset')
 _RECOVERY_MATRIX = {
     ('hardware', 'none'): (None, 'photo_only_required', None, None, None, None,
-                           None, None, None, None, None, None, None, None),
+                           None, None, None, None, None, None),
     ('photo_only', 'none'): ('hardware_mode_required', None, None, None, None, None,
-                             None, 'hardware_mode_required', None, None, None, None, None, None),
+                             'hardware_mode_required', None, None, None, None, None),
 }
 for _mode in ('hardware', 'photo_only'):
     for _locks, _reason in (('data', 'camera_connection_lost'), ('motor', 'esp32_network_interlocked'),
@@ -823,16 +817,16 @@ for _mode in ('hardware', 'photo_only'):
         _RECOVERY_MATRIX[(_mode, _locks)] = (
             'network_recovery_confirmation_required' if _mode == 'hardware' else 'hardware_mode_required',
             'network_recovery_confirmation_required' if _mode == 'photo_only' else 'photo_only_required',
-            None, None, None, _reason, _reason, _reason, _reason,
+            None, None, None, _reason, _reason,
             None, 'network_recovery_required', None, None, None,
         )
 _RECOVERY_MATRIX[('hardware', 'motor')] = (
     'network_recovery_confirmation_required', 'photo_only_required', None, None, None, None,
-    'esp32_network_interlocked', 'esp32_network_interlocked', 'esp32_network_interlocked',
+    'esp32_network_interlocked',
     None, 'network_recovery_required', None, None, None,
 )
 _RECOVERY_MATRIX[('photo_only', 'motor')] = (
-    'hardware_mode_required', None, None, None, None, None, None, 'hardware_mode_required', None,
+    'hardware_mode_required', None, None, None, None, None, 'hardware_mode_required',
     None, 'network_recovery_required', None, None, None,
 )
 for (_mode, _locks), _reasons in _RECOVERY_MATRIX.items():

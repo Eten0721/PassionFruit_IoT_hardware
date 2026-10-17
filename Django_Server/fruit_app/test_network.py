@@ -98,7 +98,7 @@ class NetworkOnboardingTests(SimpleTestCase):
     def test_new_operations_are_blocked_and_cleanup_remains_available(self):
         for route in ('/api/photo_capture/', '/api/recapture/', '/api/upload_images/',
                       '/api/capture_started/', '/api/classify/', '/api/feeder/test/',
-                      '/api/feeder/calibration/confirm/', '/api/esp32_trigger/',
+                      '/api/esp32_trigger/',
                       '/api/esp32/report/', '/api/collection_options/', '/api/webrtc/offer'):
             with self.subTest(route=route):
                 self.assertEqual(self.post(route).json()['reason'], 'network_selection_required')
@@ -328,7 +328,7 @@ class NetworkOnboardingTests(SimpleTestCase):
 
     def test_cleanup_and_settings_enforce_selected_network_scope(self):
         routes = ('/api/discard/', '/api/reset_dataset/', '/api/set_counter/',
-                  '/api/capture_timing/', '/api/auto_run/')
+                  '/api/auto_run/')
         self.select()
         for route in routes:
             for remote, host, reason in (

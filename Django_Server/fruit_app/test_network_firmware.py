@@ -58,10 +58,6 @@ class FirmwareHttpTests(SimpleTestCase):
                         stage = 'calibration'
                     elif event == 'feed_cycle_completed' and stage == 'calibration':
                         self.assertEqual(response.status_code, 200, response.content)
-                        result = self.post('/api/feeder/calibration/confirm/', {
-                            'timing_revision': views.APP_STATE['capture_timing_revision'],
-                        })
-                        self.assertEqual(result.status_code, 200, result.content)
                         result = self.post('/api/auto_run/', {'enabled': True})
                         self.assertEqual(result.status_code, 200, result.content)
                         stage, instruction = 'production', 1

@@ -1,6 +1,6 @@
 # ADR-0006：Dashboard 管理與 snapshot timing
 
-- Status: Accepted
+- Status: Superseded by [ADR-0023](0023-file-based-hardware-params.md)
 - Date: 2026-07-11
 
 ## Context

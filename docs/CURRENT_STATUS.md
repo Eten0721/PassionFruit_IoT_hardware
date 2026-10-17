@@ -11,7 +11,7 @@
 - Django 中央狀態機協調上游單顆送料、HC-SR04 觸發、手機單站拍攝與 ESP32 三站閘門；每站照片原子保存成功後才放行下一閘門，首站捷徑、timeout retry、transition trace 與未分類資料鎖定可運作。
 - Capture 與 sorter 共用單一 motor command slot，command ID 跨 Django 重啟遞增；ESP32／Django 重啟或 terminal report retry 不重送實體動作，結果不確定時須於 Dashboard 確認人工安全復原。
 - 第 3 張保存後 Gate 3 保持 Home；蒐集模式人工分類先提交 Dataset 與 metadata，再以 `classify_fruit` 依序完成分類器就位、Gate 3 放行與共同歸位，硬體失敗不回滾資料。
-- 送料由 HC-SR04 回授停止，另有 ESP32 本機最大運轉時間與 sensor unavailable 安全停止；正式自動運轉要求 `feeder_v1`、`gate3_sorter_v1`、送料校正、感測區、相機與三站流程皆就緒，分類完成後才送下一顆，並支援優雅暫停。
+- 送料由 HC-SR04 回授停止，另有 ESP32 本機最大運轉時間與 sensor unavailable 安全停止；正式自動運轉要求 `feeder_v1`、`gate3_sorter_v1`、硬體參數同步、感測區、相機與三站流程皆就緒，分類完成後才送下一顆，並支援優雅暫停。
 - 純拍攝完全隔離 ESP32：一次手動觸發自動拍三張，不建立 motor command。
 - 正式 Firmware 依感測、閘門、分類器、HTTPS 與流程控制拆分模組。
 

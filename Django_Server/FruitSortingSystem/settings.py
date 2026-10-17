@@ -108,7 +108,7 @@ DETECTION_MODEL_OPTIONS = {
     'defect': {'imgsz': 1024},
 }
 
-# Dashboard 停穩時間的單一持久化設定。此檔案不屬於 dataset，避免與照片資料混在一起。
+# 維護者手動編輯的硬體參數；只在 Django 啟動時讀取。
+HARDWARE_PARAMS_PATH = BASE_DIR / 'hardware_params.toml'
 RUNTIME_CONFIG_ROOT = BASE_DIR / 'runtime_config'
-CAPTURE_TIMING_CONFIG_PATH = RUNTIME_CONFIG_ROOT / 'capture_timing.json'
 MOTOR_COMMAND_SEQUENCE_PATH = RUNTIME_CONFIG_ROOT / 'motor_command_sequence.json'

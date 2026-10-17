@@ -153,7 +153,6 @@ class SystemStatusTests(SimpleTestCase):
             esp32_feeder_state='idle', esp32_feeder_sensor_state='clear',
             capture_timing_applied_revision=1,
         )
-        views.APP_STATE['capture_timing']['feeder_calibrated'] = True
         with mock.patch.object(views.time, 'monotonic', return_value=101):
             status = views.get_system_status()
         self.assertFalse(status['network_recovery_required'])

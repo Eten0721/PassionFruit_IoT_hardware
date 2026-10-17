@@ -15,17 +15,27 @@ from . import views
 from . import local_network
 
 
+def write_hardware_params(path, **overrides):
+    values = {**views.CAPTURE_TIMING_RECOMMENDED, **overrides}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        ''.join(f'{key} = {value}\n' for key, value in values.items()),
+        encoding='utf-8',
+    )
+
+
 class DataCollectionFlowTests(SimpleTestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.dataset_base = Path(self.temp_dir.name)
         self.dataset_root = self.dataset_base / 'collection'
         self.detection_root = self.dataset_base / 'detection' / 'results'
-        self.capture_timing_path = self.dataset_base / 'runtime_config' / 'capture_timing.json'
+        self.hardware_params_path = self.dataset_base / 'hardware_params.toml'
+        write_hardware_params(self.hardware_params_path)
         self.motor_command_sequence_path = self.dataset_base / 'runtime_config' / 'motor_command_sequence.json'
         self.settings_override = override_settings(
             DATASET_ROOT=self.dataset_base,
-            CAPTURE_TIMING_CONFIG_PATH=self.capture_timing_path,
+            HARDWARE_PARAMS_PATH=self.hardware_params_path,
             MOTOR_COMMAND_SEQUENCE_PATH=self.motor_command_sequence_path,
         )
         self.settings_override.enable()
@@ -405,7 +415,6 @@ class DataCollectionFlowTests(SimpleTestCase):
         views._ensure_dataset_structure()
         self.assertTrue(views.APP_STATE['sorter_recovery_required'])
         self._mark_esp32_online()
-        views.APP_STATE['capture_timing']['feeder_calibrated'] = True
         views.APP_STATE['capture_timing_applied_revision'] = views.APP_STATE['capture_timing_revision']
         views.APP_STATE['camera_last_live_frame_monotonic'] = views.time.monotonic()
 
@@ -1115,277 +1124,104 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertNotIn('can_manual_capture', response.json())
         self.assertEqual(dataset_store.read_discard_state(self.dataset_root)['pending_paths'], [])
 
-    def test_capture_timing_defaults_persist_and_are_acknowledged_by_esp32(self):
-        initial = self.client.get('/api/state/').json()
-        self.assertEqual(initial['capture_timing'], views.CAPTURE_TIMING_RECOMMENDED)
-        self.assertEqual(initial['capture_timing_revision'], 1)
+    def test_hardware_params_load_from_file_and_are_acknowledged_by_esp32(self):
+        write_hardware_params(
+            self.hardware_params_path,
+            first_station_settle_ms=350,
+            fruit_settle_ms=450,
+            idle_command_poll_interval_ms=400,
+            feeder_drive_us=1310,
+        )
+        views.reset_runtime_state_for_tests()
+        views._ensure_dataset_structure()
 
-        configured = self._post_json('/api/capture_timing/', {
-            'first_station_settle_ms': 350,
-            'servo_settle_ms': 400,
-            'fruit_settle_ms': 450,
-            'final_gate_return_delay_ms': 300,
-            'idle_command_poll_interval_ms': 400,
-        })
-        self.assertEqual(configured.status_code, 200)
-        payload = configured.json()
-        self.assertEqual(payload['capture_timing_revision'], 2)
-        self.assertEqual(payload['capture_timing']['fruit_settle_ms'], 450)
-        self.assertEqual(payload['capture_timing_status'], 'waiting_esp32')
-
-        with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
-            saved = json.load(timing_file)
-        self.assertEqual(saved['revision'], 2)
-        self.assertEqual(saved['capture_timing']['servo_settle_ms'], 400)
-        self.assertEqual(saved['capture_timing']['idle_command_poll_interval_ms'], 400)
+        state = self.client.get('/api/state/').json()
+        revision = state['capture_timing_revision']
+        self.assertEqual(state['capture_timing']['fruit_settle_ms'], 450)
+        self.assertEqual(state['capture_timing_status'], 'waiting_esp32')
+        self.assertNotIn('feeder_calibrated', state['capture_timing'])
 
         command = self._esp32_command_text()
-        self.assertEqual(command['timing_revision'], '2')
+        self.assertEqual(command['timing_revision'], str(revision))
         self.assertEqual(command['first_station_settle_ms'], '350')
-        self.assertEqual(command['servo_settle_ms'], '400')
-        self.assertEqual(command['fruit_settle_ms'], '450')
-        self.assertEqual(command['final_gate_return_delay_ms'], '300')
         self.assertEqual(command['idle_command_poll_interval_ms'], '400')
 
-        acknowledged = self._report('timing_config_applied', timing_revision=2)
+        acknowledged = self._report('timing_config_applied', timing_revision=revision)
         self.assertEqual(acknowledged.status_code, 200)
-        acknowledged_payload = acknowledged.json()
-        self.assertEqual(acknowledged_payload['capture_timing_status'], 'applied')
-        self.assertEqual(acknowledged_payload['capture_timing_applied_revision'], 2)
+        self.assertEqual(acknowledged.json()['capture_timing_status'], 'applied')
 
         views.reset_runtime_state_for_tests()
         views._ensure_dataset_structure()
-        reloaded = self.client.get('/api/state/').json()
-        self.assertEqual(reloaded['capture_timing_revision'], 2)
-        self.assertEqual(reloaded['capture_timing']['servo_settle_ms'], 400)
+        self.assertEqual(views.APP_STATE['capture_timing_revision'], revision)
 
-    def test_capture_timing_migrates_legacy_dataset_file_to_single_runtime_path(self):
-        self.capture_timing_path.unlink()
-        legacy_path = self.dataset_base / 'capture_timing.json'
-        legacy_payload = {
-            'revision': 10,
-            'capture_timing': {
-                'first_station_settle_ms': 200,
-                'servo_settle_ms': 250,
-                'fruit_settle_ms': 300,
-                'final_gate_return_delay_ms': 350,
-            },
-        }
-        legacy_path.write_text(json.dumps(legacy_payload), encoding='utf-8')
+        write_hardware_params(self.hardware_params_path, fruit_settle_ms=500)
         views.reset_runtime_state_for_tests()
-
         views._ensure_dataset_structure()
+        self.assertNotEqual(views.APP_STATE['capture_timing_revision'], revision)
+        self.assertEqual(views.APP_STATE['capture_timing']['fruit_settle_ms'], 500)
 
-        self.assertFalse(legacy_path.exists())
-        self.assertTrue(self.capture_timing_path.exists())
-        with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
-            migrated = json.load(timing_file)
-        self.assertEqual(migrated['revision'], 11)
-        self.assertEqual(migrated['capture_timing'], {
-            **legacy_payload['capture_timing'],
-            'idle_command_poll_interval_ms': 250,
-            'feeder_stop_us': 1500,
-            'feeder_drive_us': 1300,
-            'feeder_max_run_ms': 5000,
-            'feeder_calibrated': False,
-        })
-        self.assertEqual(views.APP_STATE['capture_timing_revision'], 11)
-
-    def test_capture_timing_upgrades_existing_four_field_runtime_file(self):
-        legacy_runtime_timing = {
-            'first_station_settle_ms': 450,
-            'servo_settle_ms': 500,
-            'fruit_settle_ms': 550,
-            'final_gate_return_delay_ms': 600,
+    def test_invalid_hardware_params_refuse_to_load(self):
+        invalid_files = {
+            'feeder_drive_matches_stop': {'feeder_drive_us': 1500},
+            'capture_timing_invalid_step': {'feeder_max_run_ms': 5250},
+            'capture_timing_out_of_range': {'idle_command_poll_interval_ms': 50},
+            'capture_timing_invalid_value': {'servo_settle_ms': '"fast"'},
         }
-        self.capture_timing_path.write_text(json.dumps({
-            'revision': 7,
-            'capture_timing': legacy_runtime_timing,
-        }), encoding='utf-8')
-        views.reset_runtime_state_for_tests()
+        for reason, overrides in invalid_files.items():
+            with self.subTest(reason=reason):
+                write_hardware_params(self.hardware_params_path, **overrides)
+                views.reset_runtime_state_for_tests()
+                with self.assertRaisesRegex(views.ImproperlyConfigured, reason):
+                    views._ensure_capture_timing_config()
 
-        state = self.client.get('/api/state/').json()
-
-        self.assertEqual(state['capture_timing_revision'], 8)
-        self.assertEqual(state['capture_timing'], {
-            **legacy_runtime_timing,
-            'idle_command_poll_interval_ms': 250,
-            'feeder_stop_us': 1500,
-            'feeder_drive_us': 1300,
-            'feeder_max_run_ms': 5000,
-            'feeder_calibrated': False,
-        })
-        with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
-            saved = json.load(timing_file)
-        self.assertEqual(saved['revision'], 8)
-        self.assertEqual(saved['capture_timing'], state['capture_timing'])
-
-    def test_capture_timing_migrates_old_feeder_fields_without_reusing_old_run_time(self):
-        self.capture_timing_path.write_text(json.dumps({
-            'revision': 12,
-            'capture_timing': {
-                **views.CAPTURE_TIMING_RECOMMENDED,
-                'feeder_stop_us': 1520,
-                'feeder_drive_us': 1250,
-                'feeder_run_ms': 320,
-                'fruit_arrival_warning_ms': 9000,
-                'feeder_calibrated': True,
-            },
-        }), encoding='utf-8')
-        views.reset_runtime_state_for_tests()
-
-        state = self.client.get('/api/state/').json()
-
-        self.assertEqual(state['capture_timing_revision'], 13)
-        self.assertEqual(state['capture_timing']['feeder_stop_us'], 1520)
-        self.assertEqual(state['capture_timing']['feeder_drive_us'], 1250)
-        self.assertEqual(state['capture_timing']['feeder_max_run_ms'], 5000)
-        self.assertFalse(state['capture_timing']['feeder_calibrated'])
-        self.assertNotIn('feeder_run_ms', state['capture_timing'])
-        self.assertNotIn('fruit_arrival_warning_ms', state['capture_timing'])
-        with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
-            saved = json.load(timing_file)
-        self.assertEqual(saved['capture_timing'], state['capture_timing'])
-
-    def test_corrupt_runtime_profile_falls_back_with_explicit_warning(self):
-        self.capture_timing_path.write_text('{broken', encoding='utf-8')
-        views.reset_runtime_state_for_tests()
-
-        state = self.client.get('/api/state/').json()
-
-        self.assertEqual(state['capture_timing'], views.CAPTURE_TIMING_RECOMMENDED)
-        self.assertIn('損壞或驗證失敗', state['capture_timing_warning'])
-        self.assertFalse(state['capture_timing']['feeder_calibrated'])
-
-    def test_existing_short_feeder_timeout_is_upgraded_and_uncalibrated(self):
-        self.capture_timing_path.write_text(json.dumps({
-            'revision': 21,
-            'capture_timing': {
-                **views.CAPTURE_TIMING_RECOMMENDED,
-                'feeder_stop_us': 1520,
-                'feeder_drive_us': 1250,
-                'feeder_max_run_ms': 150,
-                'feeder_calibrated': True,
-            },
-        }), encoding='utf-8')
-        views.reset_runtime_state_for_tests()
-
-        state = self.client.get('/api/state/').json()
-
-        self.assertEqual(state['capture_timing_revision'], 22)
-        self.assertEqual(state['capture_timing']['feeder_stop_us'], 1520)
-        self.assertEqual(state['capture_timing']['feeder_drive_us'], 1250)
-        self.assertEqual(state['capture_timing']['feeder_max_run_ms'], 5000)
-        self.assertFalse(state['capture_timing']['feeder_calibrated'])
-
-    def test_idle_command_poll_interval_validates_range_and_step(self):
-        base_timing = {
-            'first_station_settle_ms': 300,
-            'servo_settle_ms': 200,
-            'fruit_settle_ms': 350,
-            'final_gate_return_delay_ms': 300,
+        raw_cases = {
+            'hardware_params_unknown_field': 'feeder_run_ms = 300\n',
+            'hardware_params_invalid_toml': 'servo_settle_ms = \n',
         }
-        for invalid_value in (50, 125, 5050):
-            response = self._post_json('/api/capture_timing/', {
-                **base_timing,
-                'idle_command_poll_interval_ms': invalid_value,
-            })
-            self.assertEqual(response.status_code, 400)
-        valid = self._post_json('/api/capture_timing/', {
-            **base_timing,
-            'idle_command_poll_interval_ms': 5000,
-        })
-        self.assertEqual(valid.status_code, 200)
-        self.assertEqual(valid.json()['capture_timing']['idle_command_poll_interval_ms'], 5000)
+        for reason, extra in raw_cases.items():
+            with self.subTest(reason=reason):
+                write_hardware_params(self.hardware_params_path)
+                with self.hardware_params_path.open('a', encoding='utf-8') as params_file:
+                    params_file.write(extra)
+                views.reset_runtime_state_for_tests()
+                with self.assertRaisesRegex(views.ImproperlyConfigured, reason):
+                    views._ensure_capture_timing_config()
 
-    def test_capture_timing_reuses_one_runtime_file_for_multiple_updates(self):
-        first = self._post_json('/api/capture_timing/', {
-            'first_station_settle_ms': 250,
-            'servo_settle_ms': 250,
-            'fruit_settle_ms': 250,
-            'final_gate_return_delay_ms': 250,
-        })
-        self.assertEqual(first.status_code, 200)
+        self.hardware_params_path.write_text('servo_settle_ms = 200\n', encoding='utf-8')
+        views.reset_runtime_state_for_tests()
+        with self.assertRaisesRegex(views.ImproperlyConfigured, 'capture_timing_field_missing'):
+            views._ensure_capture_timing_config()
 
-        second = self._post_json('/api/capture_timing/', {
-            'first_station_settle_ms': 300,
-            'servo_settle_ms': 350,
-            'fruit_settle_ms': 400,
-            'final_gate_return_delay_ms': 450,
-        })
-        self.assertEqual(second.status_code, 200)
-        self.assertEqual(second.json()['capture_timing_revision'], 3)
-        self.assertFalse((self.dataset_root / 'capture_timing.json').exists())
-        self.assertEqual(
-            sorted(path.name for path in self.capture_timing_path.parent.iterdir()),
-            ['capture_timing.json'],
+        self.hardware_params_path.unlink()
+        views.reset_runtime_state_for_tests()
+        with self.assertRaisesRegex(views.ImproperlyConfigured, 'hardware_params_missing'):
+            views._ensure_capture_timing_config()
+        write_hardware_params(self.hardware_params_path)
+
+    def test_test_feed_runs_once_without_a_calibration_gate(self):
+        write_hardware_params(
+            self.hardware_params_path,
+            feeder_stop_us=1510,
+            feeder_drive_us=1310,
+            feeder_max_run_ms=20000,
         )
-        with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
-            saved = json.load(timing_file)
-        self.assertEqual(saved['capture_timing']['final_gate_return_delay_ms'], 450)
-
-    def test_capture_timing_rejects_invalid_step_and_active_session_update(self):
-        invalid = self._post_json('/api/capture_timing/', {
-            'first_station_settle_ms': 325,
-            'servo_settle_ms': 300,
-            'fruit_settle_ms': 300,
-            'final_gate_return_delay_ms': 300,
+        views.reset_runtime_state_for_tests()
+        views._ensure_dataset_structure()
+        revision = views.APP_STATE['capture_timing_revision']
+        self.client.get('/api/esp32/command/', {
+            'boot_id': 'boot-a',
+            'capability': 'feeder_v1',
+            'feeder_state': 'idle',
+            'feeder_sensor_state': 'clear',
+            'last_feed_command_id': '0',
         })
-        self.assertEqual(invalid.status_code, 400)
-        self.assertEqual(invalid.json()['reason'], 'capture_timing_invalid_step')
-
-        self._report('hcsr04_trigger')
-        blocked = self._post_json('/api/capture_timing/', {
-            'first_station_settle_ms': 350,
-            'servo_settle_ms': 350,
-            'fruit_settle_ms': 350,
-            'final_gate_return_delay_ms': 350,
-        })
-        self.assertEqual(blocked.status_code, 409)
-        self.assertEqual(blocked.json()['reason'], 'capture_timing_update_requires_idle')
-
-    def test_operator_can_save_ack_and_run_one_calibration_feed(self):
-        timing = {
-            **views.CAPTURE_TIMING_RECOMMENDED,
-            'feeder_stop_us': 1510,
-            'feeder_drive_us': 1310,
-            'feeder_max_run_ms': 20000,
-            'feeder_calibrated': False,
-        }
-        configured = self._post_json('/api/capture_timing/', timing)
-        self.assertEqual(configured.status_code, 200)
-        self.assertEqual(configured.json()['capture_timing_revision'], 2)
-
-        command_response = self.client.get(
-            '/api/esp32/command/',
-            {
-                'format': 'text',
-                'boot_id': 'boot-a',
-                'capability': 'feeder_v1',
-                'feeder_state': 'idle',
-                'feeder_sensor_state': 'clear',
-                'last_feed_command_id': '0',
-            },
-        )
-        self.assertEqual(command_response.status_code, 200)
-        command_text = dict(
-            line.split('=', 1)
-            for line in command_response.content.decode('utf-8').splitlines()
-            if '=' in line
-        )
-        self.assertEqual(command_text['feeder_stop_us'], '1510')
-        self.assertEqual(command_text['feeder_drive_us'], '1310')
-        self.assertEqual(command_text['feeder_max_run_ms'], '20000')
-
-        acknowledged = self._report('timing_config_applied', timing_revision=2)
-        self.assertEqual(acknowledged.status_code, 200)
+        acknowledged = self._report('timing_config_applied', timing_revision=revision)
         self.assertTrue(acknowledged.json()['can_test_feeder'])
 
         started = self._post_json('/api/feeder/test/')
         self.assertEqual(started.status_code, 200)
         payload = started.json()
         self.assertIsNone(payload['active_fruit_id'])
-        self.assertEqual(payload['motor_command']['command'], 'feed_one')
         self.assertEqual(payload['motor_command']['feed_context'], 'calibration')
         self.assertEqual(payload['motor_command']['feeder_max_run_ms'], 20000)
 
@@ -1398,100 +1234,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         )
         self.assertEqual(completed.status_code, 200)
         self.assertEqual(completed.json()['status'], 'idle')
-        self.assertIsNone(views.APP_STATE['motor_command'])
-        self.assertIsNone(views.APP_STATE['active_fruit_id'])
         self.assertEqual(completed.json()['feeder_test_result']['elapsed_ms'], 84)
-        self.assertTrue(completed.json()['can_confirm_feeder_calibration'])
-
-        command_sequence = views.APP_STATE['motor_command_id']
-        confirmed = self._post_json('/api/feeder/calibration/confirm/', {
-            'timing_revision': 2,
-        })
-        self.assertEqual(confirmed.status_code, 200)
-        self.assertEqual(confirmed.json()['capture_timing_revision'], 2)
-        self.assertTrue(confirmed.json()['capture_timing']['feeder_calibrated'])
-        self.assertEqual(views.APP_STATE['motor_command_id'], command_sequence)
-        self.assertEqual(confirmed.json()['motor_command']['command'], 'none')
-
-        views.reset_runtime_state_for_tests()
-        reloaded_confirmation = self.client.get('/api/state/').json()
-        self.assertEqual(reloaded_confirmation['capture_timing_revision'], 2)
-        self.assertTrue(reloaded_confirmation['capture_timing']['feeder_calibrated'])
-
-        changed = self._post_json('/api/capture_timing/', {
-            **timing,
-            'feeder_max_run_ms': 19500,
-            'feeder_calibrated': True,
-        })
-        self.assertEqual(changed.status_code, 200)
-        self.assertFalse(changed.json()['capture_timing']['feeder_calibrated'])
-        self.assertFalse(changed.json()['can_confirm_feeder_calibration'])
-
-        views.reset_runtime_state_for_tests()
-        reloaded = self.client.get('/api/state/').json()
-        self.assertEqual(reloaded['capture_timing']['feeder_stop_us'], 1510)
-        self.assertFalse(reloaded['capture_timing']['feeder_calibrated'])
-
-    def test_feeder_profile_validation_and_confirmation_rules(self):
-        profile = {
-            **views.CAPTURE_TIMING_RECOMMENDED,
-            'feeder_stop_us': 1510,
-            'feeder_drive_us': 1310,
-            'feeder_max_run_ms': 5000,
-            'feeder_calibrated': False,
-        }
-        mechanical_change = self._post_json('/api/capture_timing/', profile)
-        self.assertEqual(mechanical_change.status_code, 200)
-        self.assertFalse(mechanical_change.json()['capture_timing']['feeder_calibrated'])
-
-        ignored_confirmation = self._post_json('/api/capture_timing/', {
-            **profile,
-            'feeder_calibrated': True,
-        })
-        self.assertEqual(ignored_confirmation.status_code, 200)
-        self.assertFalse(ignored_confirmation.json()['capture_timing']['feeder_calibrated'])
-
-        too_close = self._post_json('/api/capture_timing/', {
-            **profile,
-            'feeder_stop_us': 1510,
-            'feeder_drive_us': 1510,
-        })
-        self.assertEqual(too_close.status_code, 400)
-        self.assertEqual(too_close.json()['reason'], 'feeder_drive_matches_stop')
-
-        reverse_direction = self._post_json('/api/capture_timing/', {
-            **profile,
-            'feeder_drive_us': 1520,
-        })
-        self.assertEqual(reverse_direction.status_code, 200)
-
-        invalid_step = self._post_json('/api/capture_timing/', {
-            **profile,
-            'feeder_max_run_ms': 5250,
-        })
-        self.assertEqual(invalid_step.status_code, 400)
-        self.assertEqual(invalid_step.json()['reason'], 'capture_timing_invalid_step')
-
-        fractional = self._post_json('/api/capture_timing/', {
-            **profile,
-            'feeder_max_run_ms': 1000.9,
-        })
-        self.assertEqual(fractional.status_code, 400)
-        self.assertEqual(fractional.json()['reason'], 'capture_timing_invalid_value')
-
-        for valid_max_run_ms in (1000, 20000):
-            response = self._post_json('/api/capture_timing/', {
-                **profile,
-                'feeder_max_run_ms': valid_max_run_ms,
-            })
-            self.assertEqual(response.status_code, 200)
-
-        for invalid_max_run_ms in (500, 1250, 20500):
-            response = self._post_json('/api/capture_timing/', {
-                **profile,
-                'feeder_max_run_ms': invalid_max_run_ms,
-            })
-            self.assertEqual(response.status_code, 400)
+        self.assertNotIn('can_confirm_feeder_calibration', completed.json())
 
     def test_feeder_test_requires_capability_latest_ack_and_safe_idle(self):
         self.client.get('/api/esp32/command/', {
@@ -1537,7 +1281,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(waiting_ack.status_code, 409)
         self.assertEqual(waiting_ack.json()['reason'], 'feeder_timing_not_applied')
 
-        self._report('timing_config_applied', timing_revision=1)
+        self._report('timing_config_applied', timing_revision=views.APP_STATE['capture_timing_revision'])
         active_dir = self.dataset_root / 'temp' / 'fruit_001'
         active_dir.mkdir(parents=True)
         (active_dir / 'img_01.jpg').write_bytes(b'partial-image')
@@ -1559,144 +1303,6 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(auto_run_active.status_code, 409)
         self.assertEqual(auto_run_active.json()['reason'], 'auto_run_must_be_stopped')
 
-    def test_feeder_calibration_confirmation_rejects_unready_and_failed_tests(self):
-        waiting_ack = self._post_json('/api/feeder/calibration/confirm/', {
-            'timing_revision': 1,
-        })
-        self.assertEqual(waiting_ack.status_code, 409)
-        self.assertEqual(waiting_ack.json()['reason'], 'feeder_timing_not_applied')
-
-        self.client.get('/api/esp32/command/', {
-            'boot_id': 'boot-confirm',
-            'capability': 'feeder_v1',
-            'feeder_state': 'idle',
-            'feeder_sensor_state': 'clear',
-            'last_feed_command_id': '0',
-        })
-        self._report('timing_config_applied', timing_revision=1)
-
-        untested = self._post_json('/api/feeder/calibration/confirm/', {
-            'timing_revision': 1,
-        })
-        self.assertEqual(untested.status_code, 409)
-        self.assertEqual(untested.json()['reason'], 'feeder_test_required')
-
-        stale = self._post_json('/api/feeder/calibration/confirm/', {
-            'timing_revision': 2,
-        })
-        self.assertEqual(stale.status_code, 409)
-        self.assertEqual(stale.json()['reason'], 'stale_timing_revision')
-
-        timeout_started = self._post_json('/api/feeder/test/').json()['motor_command']
-        self._report(
-            'feeder_max_run_timeout',
-            command_id=timeout_started['command_id'],
-            feeder_elapsed_ms=5000,
-            feeder_max_run_ms=5000,
-            feeder_stop_reason='max_run_timeout',
-        )
-        timeout = self._post_json('/api/feeder/calibration/confirm/', {
-            'timing_revision': 1,
-        })
-        self.assertEqual(timeout.status_code, 409)
-        self.assertEqual(timeout.json()['reason'], 'feeder_test_required')
-
-        failed_started = self._post_json('/api/feeder/test/').json()['motor_command']
-        self._report(
-            'feeder_sensor_unavailable',
-            command_id=failed_started['command_id'],
-            feeder_elapsed_ms=39,
-            feeder_max_run_ms=5000,
-            feeder_stop_reason='feeder_sensor_unavailable',
-        )
-        failed = self._post_json('/api/feeder/calibration/confirm/', {
-            'timing_revision': 1,
-        })
-        self.assertEqual(failed.status_code, 409)
-        self.assertEqual(failed.json()['reason'], 'feeder_test_required')
-
-    def test_feeder_calibration_confirmation_rolls_back_on_persist_failure(self):
-        self.client.get('/api/esp32/command/', {
-            'boot_id': 'boot-confirm',
-            'capability': 'feeder_v1',
-            'feeder_state': 'idle',
-            'feeder_sensor_state': 'clear',
-            'last_feed_command_id': '0',
-        })
-        self._report('timing_config_applied', timing_revision=1)
-        started = self._post_json('/api/feeder/test/').json()['motor_command']
-        completed = self._report(
-            'feed_cycle_completed',
-            command_id=started['command_id'],
-            feeder_elapsed_ms=84,
-            feeder_max_run_ms=5000,
-            feeder_stop_reason='hcsr04',
-        )
-        self.assertTrue(completed.json()['can_confirm_feeder_calibration'])
-
-        with mock.patch.object(views.capture_timing, 'write', side_effect=OSError('disk full')):
-            response = self._post_json('/api/feeder/calibration/confirm/', {
-                'timing_revision': 1,
-            })
-
-        self.assertEqual(response.status_code, 500)
-        self.assertEqual(response.json()['reason'], 'capture_timing_persist_failed')
-        self.assertFalse(views.APP_STATE['capture_timing']['feeder_calibrated'])
-        self.assertTrue(response.json()['state']['can_confirm_feeder_calibration'])
-        with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
-            self.assertFalse(json.load(timing_file)['capture_timing']['feeder_calibrated'])
-
-    def test_starting_another_feeder_test_revokes_saved_confirmation(self):
-        self._prepare_auto_run()
-        self.assertTrue(views.APP_STATE['capture_timing']['feeder_calibrated'])
-
-        started = self._post_json('/api/feeder/test/')
-
-        self.assertEqual(started.status_code, 200)
-        self.assertFalse(started.json()['capture_timing']['feeder_calibrated'])
-        self.assertIsNone(started.json()['feeder_test_passed_revision'])
-        with self.capture_timing_path.open('r', encoding='utf-8') as timing_file:
-            saved = json.load(timing_file)
-        self.assertFalse(saved['capture_timing']['feeder_calibrated'])
-        self.assertEqual(saved['revision'], started.json()['capture_timing_revision'])
-
-    def test_saved_feeder_confirmation_survives_reload_and_allows_start(self):
-        self._prepare_auto_run(camera_ready=True)
-        revision = views.APP_STATE['capture_timing_revision']
-        views.reset_runtime_state_for_tests()
-
-        reloaded = self.client.get('/api/state/').json()
-        self.assertTrue(reloaded['capture_timing']['feeder_calibrated'])
-        self.client.get('/api/esp32/command/', {
-            'boot_id': 'boot-after-reload',
-            'capability': 'feeder_v1',
-            'sorter_capability': 'gate3_sorter_v1',
-            'feeder_state': 'idle',
-            'feeder_sensor_state': 'clear',
-            'last_feed_command_id': '0',
-        })
-        self._report('timing_config_applied', timing_revision=revision)
-        self.client.get('/api/camera/state/', {'camera_ready': '1'})
-
-        started = self._post_json('/api/auto_run/', {'enabled': True})
-
-        self.assertEqual(started.status_code, 200)
-        self.assertTrue(started.json()['auto_run_enabled'])
-        self.assertEqual(started.json()['motor_command']['command'], 'feed_one')
-        self.assertEqual(started.json()['motor_command']['feed_context'], 'production')
-
-    def test_feeder_profile_update_requires_stopped_auto_run_and_idle_sorter(self):
-        views.APP_STATE['auto_run_enabled'] = True
-        auto_run_active = self._post_json('/api/capture_timing/', views.CAPTURE_TIMING_RECOMMENDED)
-        self.assertEqual(auto_run_active.status_code, 409)
-        self.assertEqual(auto_run_active.json()['reason'], 'capture_timing_update_requires_idle')
-
-        views.APP_STATE['auto_run_enabled'] = False
-        views.APP_STATE['sorter_status'] = 'pending'
-        sorter_busy = self._post_json('/api/capture_timing/', views.CAPTURE_TIMING_RECOMMENDED)
-        self.assertEqual(sorter_busy.status_code, 409)
-        self.assertEqual(sorter_busy.json()['reason'], 'capture_timing_update_requires_idle')
-
     def test_feeder_timeout_stops_test_without_creating_capture_session(self):
         self.client.get('/api/esp32/command/', {
             'boot_id': 'boot-test',
@@ -1705,7 +1311,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             'feeder_sensor_state': 'clear',
             'last_feed_command_id': '0',
         })
-        self._report('timing_config_applied', timing_revision=1)
+        self._report('timing_config_applied', timing_revision=views.APP_STATE['capture_timing_revision'])
         started = self._post_json('/api/feeder/test/').json()
         result = self._report(
             'feeder_max_run_timeout',
@@ -1913,12 +1519,9 @@ class DataCollectionFlowTests(SimpleTestCase):
 
     def test_auto_run_requires_latest_timing_revision_ack(self):
         self._prepare_auto_run(camera_ready=True)
-        updated = self._post_json('/api/capture_timing/', {
-            **views.CAPTURE_TIMING_RECOMMENDED,
-            'first_station_settle_ms': 350,
-        })
-        self.assertEqual(updated.status_code, 200)
-        self.assertTrue(updated.json()['capture_timing']['feeder_calibrated'])
+        write_hardware_params(self.hardware_params_path, first_station_settle_ms=350)
+        views.APP_STATE['capture_timing_loaded_path'] = None
+        views._ensure_capture_timing_config()
 
         response = self._post_json('/api/auto_run/', {'enabled': True})
 
@@ -1927,27 +1530,11 @@ class DataCollectionFlowTests(SimpleTestCase):
 
         self._report(
             'timing_config_applied',
-            timing_revision=updated.json()['capture_timing_revision'],
+            timing_revision=views.APP_STATE['capture_timing_revision'],
         )
         started = self._post_json('/api/auto_run/', {'enabled': True})
         self.assertEqual(started.status_code, 200)
         self.assertEqual(started.json()['motor_command']['feed_context'], 'production')
-
-    def test_auto_run_requires_current_feeder_calibration(self):
-        self._prepare_auto_run(camera_ready=True)
-        retest = self._post_json('/api/feeder/test/').json()['motor_command']
-        self._report(
-            'feed_cycle_completed',
-            command_id=retest['command_id'],
-            feeder_elapsed_ms=84,
-            feeder_max_run_ms=retest['feeder_max_run_ms'],
-            feeder_stop_reason='hcsr04',
-        )
-
-        response = self._post_json('/api/auto_run/', {'enabled': True})
-
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()['reason'], 'feeder_calibration_required')
 
     def test_auto_run_requires_capture_and_sorter_idle(self):
         self._prepare_auto_run(camera_ready=True)
@@ -2415,18 +2002,16 @@ class DataCollectionFlowTests(SimpleTestCase):
         css = (Path(__file__).parent / 'static/fruit_app/css/dashboard.css').read_text(encoding='utf-8')
         self.assertIn('.global-message:empty {\n    display: none;\n}', css)
 
-    def test_dashboard_renders_calibrated_timing_defaults(self):
+    def test_dashboard_shows_hardware_params_read_only_and_hidden(self):
         response = self.client.get('/dashboard/')
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'id="timing-first-station" type="number" min="50" max="3000" step="50" inputmode="numeric" value="300"')
-        self.assertContains(response, 'id="timing-servo" type="number" min="50" max="3000" step="50" inputmode="numeric" value="200"')
-        self.assertContains(response, 'id="timing-fruit" type="number" min="50" max="3000" step="50" inputmode="numeric" value="350"')
-        self.assertContains(response, 'id="timing-final-return" type="number" min="0" max="3000" step="50" inputmode="numeric" value="300"')
-        self.assertContains(response, 'id="timing-idle-command-poll" type="number" min="100" max="5000" step="50" inputmode="numeric" value="250"')
-        self.assertContains(response, '推薦：300 ms', count=2)
-        self.assertContains(response, '推薦：200 ms', count=1)
-        self.assertContains(response, '推薦：350 ms', count=1)
+        self.assertContains(response, '<details id="capture-settings" class="disclosure-panel" hidden>')
+        self.assertContains(response, 'id="timing-first-station" type="number" readonly')
+        self.assertContains(response, 'id="btn-test-feeder"')
+        self.assertNotContains(response, 'id="btn-apply-timing"')
+        self.assertNotContains(response, 'id="feeder-calibrated"')
+        self.assertNotContains(response, 'readiness-calibration')
 
     def test_fast_station_one_report_opens_camera_without_start_sequence(self):
         response = self._report(
@@ -2842,45 +2427,19 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn('alert.feeder_elapsed_ms', dashboard_js)
         self.assertIn('alert.feeder_max_run_ms', dashboard_js)
         self.assertIn('alert.feeder_stop_reason', dashboard_js)
-        self.assertIn('feeder_max_run_ms: 5000', dashboard_js)
-        self.assertIn("1000,\n                20000,\n                500,", dashboard_js)
-        self.assertIn(
-            'id="timing-feeder-max-run" type="number" min="1000" max="20000" step="500"',
-            dashboard_html,
-        )
+        self.assertIn('id="timing-feeder-max-run" type="number" readonly', dashboard_html)
         self.assertIn('推薦：5000 ms', dashboard_html)
         self.assertIn('警告 : 若設定過長將導致連續送料之情形發生', dashboard_html)
         self.assertIn('送料結果', dashboard_html)
-        self.assertIn('我已目視確認本次測試恰好送出一顆', dashboard_html)
         self.assertNotIn('待實機驗證', dashboard_js)
         self.assertNotIn('待實機驗證', dashboard_html)
         self.assertNotIn('順時針且單次約 90°', dashboard_html)
 
-    def test_dashboard_saves_feeder_confirmation_once_and_preserves_video_ratio(self):
+    def test_dashboard_preserves_video_ratio(self):
         project_root = Path(__file__).resolve().parents[2]
         static_root = project_root / 'Django_Server' / 'fruit_app' / 'static' / 'fruit_app'
-        dashboard_js = (static_root / 'js' / 'dashboard.js').read_text(encoding='utf-8')
         dashboard_css = (static_root / 'css' / 'dashboard.css').read_text(encoding='utf-8')
-        dashboard_html = (
-            project_root / 'Django_Server' / 'fruit_app' / 'templates' / 'dashboard.html'
-        ).read_text(encoding='utf-8')
 
-        confirmation_handler = dashboard_js[
-            dashboard_js.index('async function confirmFeederCalibration()'):
-            dashboard_js.index('function transitionTraceFromState')
-        ]
-        timing_payload = dashboard_js[
-            dashboard_js.index('function captureTimingPayloadFromInputs()'):
-            dashboard_js.index('function restoreRecommendedTiming()')
-        ]
-        self.assertIn("postJson('/api/feeder/calibration/confirm/'", confirmation_handler)
-        self.assertNotIn("postJson('/api/feeder/test/'", confirmation_handler)
-        self.assertNotIn('feeder_calibrated:', timing_payload)
-        self.assertIn("feederCalibratedInput.addEventListener('change'", dashboard_js)
-        self.assertIn('id="feeder-help-button"', dashboard_html)
-        self.assertIn('id="feeder-calibration-status"', dashboard_html)
-        self.assertIn('勾選會立即保存，不用再次測試或再次套用', dashboard_html)
-        self.assertIn('我已目視確認本次測試恰好送出一顆', dashboard_html)
         self.assertNotIn('aspect-ratio: 16 / 9', dashboard_css)
         self.assertIn('align-items: start;', dashboard_css)
         self.assertIn('align-content: start;', dashboard_css)
@@ -3046,13 +2605,7 @@ class DataCollectionFlowTests(SimpleTestCase):
 
     def _prepare_auto_run(self, *, camera_ready=False):
         views.APP_STATE['camera_last_live_frame_monotonic'] = None
-        profile = {
-            **views.CAPTURE_TIMING_RECOMMENDED,
-            'feeder_calibrated': False,
-        }
-        configured = self._post_json('/api/capture_timing/', profile)
-        self.assertEqual(configured.status_code, 200)
-        revision = configured.json()['capture_timing_revision']
+        revision = views.APP_STATE['capture_timing_revision']
         response = self.client.get('/api/esp32/command/', {
             'boot_id': 'boot-auto',
             'capability': 'feeder_v1',
@@ -3077,10 +2630,6 @@ class DataCollectionFlowTests(SimpleTestCase):
             feeder_stop_reason='hcsr04',
         )
         self.assertEqual(completed.status_code, 200)
-        confirmed = self._post_json('/api/feeder/calibration/confirm/', {
-            'timing_revision': revision,
-        })
-        self.assertEqual(confirmed.status_code, 200)
         if camera_ready:
             self.client.get('/api/camera/state/', {'camera_ready': '1'})
 

@@ -72,7 +72,7 @@ Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS clie
 
 - Django 中央狀態機可協調 HC-SR04、手機單站拍攝與 ESP32 三站閘門。
 - 每顆果實可保存三張站點照片，照片原子保存成功後才推進流程。
-- Dashboard 可管理拍攝 timing、送料校正、照片檢查、人工分類與刪除。
+- Dashboard 可照片檢查、人工分類與刪除；拍攝 timing 與送料參數由 `Django_Server/hardware_params.toml` 設定。
 - Capture、送料與 sorter 共用單一 motor command slot，command ID 與 retry 具備冪等保護。
 - HC-SR04 正式送料與測試送料共用回授停止、最大運轉時間與感測器 unavailable 安全停止。
 - Gate 3 等待人工分類、分類器先轉向再開閘、四顆馬達共同歸位與跨重啟復原鎖已接入。

@@ -107,7 +107,6 @@
                         <li id="readiness-camera" data-state="pending"><span class="readiness-mark" aria-hidden="true"></span><span>手機拍攝端</span><strong>檢查中</strong></li>
                         <li id="readiness-sensor" data-state="pending"><span class="readiness-mark" aria-hidden="true"></span><span>HC-SR04 感測區</span><strong>檢查中</strong></li>
                         <li id="readiness-timing" data-state="pending"><span class="readiness-mark" aria-hidden="true"></span><span>設定同步</span><strong>檢查中</strong></li>
-                        <li id="readiness-calibration" data-state="pending"><span class="readiness-mark" aria-hidden="true"></span><span>送料校正</span><strong>檢查中</strong></li>
                     </ul>
                 </div>
 
@@ -300,80 +299,59 @@
             </div>
         </details>
 
-        <details id="capture-settings" class="disclosure-panel">
+        <details id="capture-settings" class="disclosure-panel" hidden>
             <summary>
-                <span><strong>停穩設定與送料校正</strong><small>調整三站 timing、同步 ESP32 並完成單顆送料確認。</small></span>
+                <span><strong>停穩設定與送料校正</strong><small>參數來自 Django_Server/hardware_params.toml，修改後重新啟動 Django 才生效。</small></span>
                 <span class="summary-statuses">
+                    <button id="btn-test-feeder" type="button" class="button warning summary-action">測試送料一顆</button>
                     <span id="timing-summary-status" class="summary-badge" data-state="pending">待同步</span>
-                    <span id="calibration-summary-status" class="summary-badge" data-state="pending">未校正</span>
                 </span>
             </summary>
             <div class="disclosure-content settings-content">
                 <div class="timing-config-grid">
                     <label class="timing-config-field" for="timing-first-station">
                         <span>第 1 站停穩時間（ms）</span>
-                        <input id="timing-first-station" type="number" min="50" max="3000" step="50" inputmode="numeric" value="300">
+                        <input id="timing-first-station" type="number" readonly tabindex="-1">
                         <small>推薦：300 ms</small>
                     </label>
                     <label class="timing-config-field" for="timing-servo">
                         <span>伺服放行後穩定時間（ms）</span>
-                        <input id="timing-servo" type="number" min="50" max="3000" step="50" inputmode="numeric" value="200">
+                        <input id="timing-servo" type="number" readonly tabindex="-1">
                         <small>推薦：200 ms</small>
                     </label>
                     <label class="timing-config-field" for="timing-fruit">
                         <span>到下一站停穩時間（ms）</span>
-                        <input id="timing-fruit" type="number" min="50" max="3000" step="50" inputmode="numeric" value="350">
+                        <input id="timing-fruit" type="number" readonly tabindex="-1">
                         <small>推薦：350 ms</small>
                     </label>
                     <label class="timing-config-field" for="timing-final-return">
                         <span>第 3 站放行後歸位延遲（ms）</span>
-                        <input id="timing-final-return" type="number" min="0" max="3000" step="50" inputmode="numeric" value="300">
+                        <input id="timing-final-return" type="number" readonly tabindex="-1">
                         <small>推薦：300 ms</small>
                     </label>
                     <label class="timing-config-field" for="timing-idle-command-poll">
                         <span>ESP32 閒置命令輪詢間隔（ms）</span>
-                        <input id="timing-idle-command-poll" type="number" min="100" max="5000" step="50" inputmode="numeric" value="250">
+                        <input id="timing-idle-command-poll" type="number" readonly tabindex="-1">
                         <small>推薦：250 ms；數值越小，分類按鈕反應越快，但 HTTPS 請求越頻繁。</small>
                     </label>
                     <label class="timing-config-field" for="timing-feeder-stop">
                         <span>送料停止脈波（us）</span>
-                        <input id="timing-feeder-stop" type="number" min="1400" max="1600" step="5" inputmode="numeric" value="1500">
+                        <input id="timing-feeder-stop" type="number" readonly tabindex="-1">
                         <small>推薦：1500 us</small>
                     </label>
                     <label class="timing-config-field" for="timing-feeder-drive">
                         <span>送料驅動脈波（us）</span>
-                        <input id="timing-feeder-drive" type="number" min="1000" max="2000" step="10" inputmode="numeric" value="1300">
+                        <input id="timing-feeder-drive" type="number" readonly tabindex="-1">
                         <small>不得與停止脈波相同；推薦：1300 us</small>
                     </label>
                     <label class="timing-config-field" for="timing-feeder-max-run">
                         <span>送料最長運轉時間（ms）</span>
-                        <input id="timing-feeder-max-run" type="number" min="1000" max="20000" step="500" inputmode="numeric" value="5000">
+                        <input id="timing-feeder-max-run" type="number" readonly tabindex="-1">
                         <small>推薦：5000 ms</small>
                     </label>
                 </div>
                 <div class="static-warning" role="alert">警告 : 若設定過長將導致連續送料之情形發生</div>
-                <div id="capture-timing-warning" class="inline-warning" role="alert"></div>
-
-                <div class="calibration-panel">
-                    <div class="feeder-calibration-heading">
-                        <div><span class="section-kicker">CALIBRATION</span><strong>送料校正</strong></div>
-                        <span class="feeder-help" id="feeder-help">
-                            <button id="feeder-help-button" class="feeder-help-button" type="button" aria-label="送料校正操作說明" aria-controls="feeder-help-panel" aria-describedby="feeder-help-panel" aria-expanded="false">?</button>
-                            <span id="feeder-help-panel" class="feeder-help-panel" role="tooltip">先套用設定並等待 ESP32 ACK，再測試送料一次。HC-SR04 正常停止後，目視確認恰好送出一顆並勾選；勾選會立即保存，不用再次測試或再次套用。</span>
-                        </span>
-                    </div>
-                    <div id="feeder-calibration-status" class="feeder-calibration-status" aria-live="polite">步驟 1／3：等待設定與 ESP32 同步。</div>
-                    <label class="feeder-confirmation" for="feeder-calibrated">
-                        <input id="feeder-calibrated" type="checkbox">
-                        <span>我已目視確認本次測試恰好送出一顆，且 HC-SR04 正常停止馬達</span>
-                    </label>
-                    <div id="timing-config-status" class="timing-config-status">等待 Django 載入拍攝停穩設定。</div>
-                    <div class="timing-config-actions">
-                        <button id="btn-reset-timing" type="button" class="button secondary">恢復校正預設</button>
-                        <button id="btn-apply-timing" type="button" class="button">套用停穩設定</button>
-                        <button id="btn-test-feeder" type="button" class="button warning">測試送料一次</button>
-                    </div>
-                </div>
+                <p id="timing-config-status" class="timing-config-status">等待 Django 載入硬體參數。</p>
             </div>
         </details>
 

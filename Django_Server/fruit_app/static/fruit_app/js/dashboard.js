@@ -76,7 +76,6 @@ const remoteVideo = document.getElementById('remote-video');
         camera: document.getElementById('readiness-camera'),
         sensor: document.getElementById('readiness-sensor'),
         timing: document.getElementById('readiness-timing'),
-        calibration: document.getElementById('readiness-calibration'),
     };
     const timingCommandDelay = document.getElementById('timing-command-delay');
     const timingWaitStarted = document.getElementById('timing-wait-started');
@@ -90,26 +89,8 @@ const remoteVideo = document.getElementById('remote-video');
     const timingFeederStopInput = document.getElementById('timing-feeder-stop');
     const timingFeederDriveInput = document.getElementById('timing-feeder-drive');
     const timingFeederMaxRunInput = document.getElementById('timing-feeder-max-run');
-    const feederCalibratedInput = document.getElementById('feeder-calibrated');
-    const feederCalibrationStatus = document.getElementById('feeder-calibration-status');
-    const feederHelp = document.getElementById('feeder-help');
-    const feederHelpButton = document.getElementById('feeder-help-button');
-    const captureTimingWarning = document.getElementById('capture-timing-warning');
     const timingSummaryStatus = document.getElementById('timing-summary-status');
-    const calibrationSummaryStatus = document.getElementById('calibration-summary-status');
-    const timingInputs = [
-        timingFirstStationInput,
-        timingServoInput,
-        timingFruitInput,
-        timingFinalReturnInput,
-        timingIdleCommandPollInput,
-        timingFeederStopInput,
-        timingFeederDriveInput,
-        timingFeederMaxRunInput,
-    ];
     const timingConfigStatus = document.getElementById('timing-config-status');
-    const applyTimingButton = document.getElementById('btn-apply-timing');
-    const resetTimingButton = document.getElementById('btn-reset-timing');
     const testFeederButton = document.getElementById('btn-test-feeder');
     const imageDialog = document.getElementById('image-dialog');
     const imageDialogImage = document.getElementById('image-dialog-image');
@@ -127,10 +108,6 @@ const remoteVideo = document.getElementById('remote-video');
     let lastBoardManifest = '';
     let lastChipFingerprint = '';
     let lastActionGuidance = '';
-    let timingInputsDirty = false;
-    let feederSettingsDirty = false;
-    let timingUpdateInFlight = false;
-    let feederConfirmationInFlight = false;
     let classificationInFlight = false;
     let controlActionInFlight = null;
     let lastTraceFingerprint = '';
@@ -260,22 +237,30 @@ const remoteVideo = document.getElementById('remote-video');
         }
     }
 
-    const diagnostics = document.getElementById('diagnostics');
+    // Maintainer-only panels; double-clicking the title shows or hides them together.
+    const maintenancePanels = [
+        document.getElementById('capture-settings'),
+        document.getElementById('diagnostics'),
+    ];
     const diagnosticsStorageKey = 'pf-dashboard-diagnostics-visible';
+    function setMaintenanceVisible(visible) {
+        maintenancePanels.forEach((panel) => { panel.hidden = !visible; });
+    }
     try {
-        diagnostics.hidden = window.localStorage.getItem(diagnosticsStorageKey) !== 'true';
+        setMaintenanceVisible(window.localStorage.getItem(diagnosticsStorageKey) === 'true');
     } catch {
-        diagnostics.hidden = true;
+        setMaintenanceVisible(false);
     }
     document.getElementById('dashboard-title').addEventListener('dblclick', () => {
         window.getSelection()?.removeAllRanges();
-        diagnostics.hidden = !diagnostics.hidden;
+        const visible = maintenancePanels[0].hidden;
+        setMaintenanceVisible(visible);
         try {
-            window.localStorage.setItem(diagnosticsStorageKey, String(!diagnostics.hidden));
+            window.localStorage.setItem(diagnosticsStorageKey, String(visible));
         } catch {
             // Storage may be blocked; the toggle still works for this page.
         }
-        setMessage(diagnostics.hidden ? '已隱藏診斷資訊' : '已顯示診斷資訊');
+        setMessage(visible ? '已顯示維護資訊' : '已隱藏維護資訊');
     });
 
     function setStreamStatus(message) {
@@ -625,8 +610,7 @@ const remoteVideo = document.getElementById('remote-video');
             setTextIfChanged(autoRunButton, '開始拍攝');
             autoRunButton.dataset.mode = 'start';
             autoRunButton.disabled = Boolean(controlActionInFlight)
-                || !data.can_start_auto_run
-                || timingInputsDirty;
+                || !data.can_start_auto_run;
         }
         recaptureButton.disabled = Boolean(controlActionInFlight)
             || data.sorter_busy
@@ -692,10 +676,9 @@ const remoteVideo = document.getElementById('remote-video');
 
     function renderReadiness(data) {
         const photoOnly = data.hardware_mode === 'photo_only';
-        ['esp32', 'sensor', 'timing', 'calibration'].forEach((key) => {
+        ['esp32', 'sensor', 'timing'].forEach((key) => {
             readinessItems[key].hidden = photoOnly;
         });
-        const timing = data.capture_timing || {};
         const missingEsp32Capability = !data.esp32_feeder_capable
             ? '缺少 feeder_v1'
             : '缺少 gate3_sorter_v1';
@@ -722,12 +705,6 @@ const remoteVideo = document.getElementById('remote-video');
             data.capture_timing_status === 'applied',
             '已同步',
             timingStatusLabel(data.capture_timing_status),
-        );
-        setReadinessState(
-            readinessItems.calibration,
-            Boolean(timing.feeder_calibrated),
-            '已確認單顆送料',
-            '尚未完成校正',
         );
     }
 
@@ -762,9 +739,6 @@ const remoteVideo = document.getElementById('remote-video');
         }
         if (data.auto_run_finishing) {
             return '正在完成目前果實，完成後不會送入下一顆。';
-        }
-        if (timingInputsDirty) {
-            return '停穩設定尚未套用，請先在進階設定保存數值。';
         }
         const reason = data.auto_run_disabled_reason;
         return reason
@@ -1560,219 +1534,43 @@ const remoteVideo = document.getElementById('remote-video');
         setTextIfChanged(timingUploadReceived, timing.upload_received_at || '尚無資料');
     }
 
-    function recommendedCaptureTiming(data = lastState || {}) {
-        return data.capture_timing_recommended || {
-            first_station_settle_ms: 300,
-            servo_settle_ms: 200,
-            fruit_settle_ms: 350,
-            final_gate_return_delay_ms: 300,
-            idle_command_poll_interval_ms: 250,
-            feeder_stop_us: 1500,
-            feeder_drive_us: 1300,
-            feeder_max_run_ms: 5000,
-            feeder_calibrated: false,
-        };
-    }
-
-    function setTimingInputs(timing) {
-        timingFirstStationInput.value = timing.first_station_settle_ms ?? 300;
-        timingServoInput.value = timing.servo_settle_ms ?? 200;
-        timingFruitInput.value = timing.fruit_settle_ms ?? 350;
-        timingFinalReturnInput.value = timing.final_gate_return_delay_ms ?? 300;
-        timingIdleCommandPollInput.value = timing.idle_command_poll_interval_ms ?? 250;
-        timingFeederStopInput.value = timing.feeder_stop_us ?? 1500;
-        timingFeederDriveInput.value = timing.feeder_drive_us ?? 1300;
-        timingFeederMaxRunInput.value = timing.feeder_max_run_ms ?? 5000;
-    }
-
     function timingStatusText(data) {
         const revision = data.capture_timing_revision ?? 0;
-        const appliedRevision = data.capture_timing_applied_revision ?? 0;
         switch (data.capture_timing_status) {
             case 'applied':
-                return `ESP32 已套用 revision ${revision}。`;
+                return `ESP32 已套用參數 revision ${revision}。`;
             case 'pending_esp32_apply':
-                return `設定 revision ${revision} 已儲存，等待 ESP32 在閒置時套用（目前已套用 ${appliedRevision}）。`;
+                return `參數 revision ${revision} 等待 ESP32 在閒置時自動套用。`;
             case 'waiting_esp32':
-                return `設定 revision ${revision} 已儲存，等待 ESP32 連線並套用。`;
+                return `參數 revision ${revision} 等待 ESP32 連線後自動套用。`;
             default:
-                return '等待 Django 與 ESP32 同步拍攝停穩設定。';
+                return '等待 Django 與 ESP32 同步硬體參數。';
         }
     }
 
     function renderCaptureTiming(data) {
-        const timing = data.capture_timing || recommendedCaptureTiming(data);
-        if (!timingInputsDirty && !timingUpdateInFlight) {
-            setTimingInputs(timing);
-        }
-        if (!feederConfirmationInFlight) {
-            feederCalibratedInput.checked = Boolean(
-                timing.feeder_calibrated && !feederSettingsDirty,
-            );
-        }
-        const motorCommand = data.motor_command || {};
-        const hasPendingMotorCommand = motorCommand.command && motorCommand.command !== 'none';
-        const editable = (
-            data.status === 'idle'
-            && !data.active_fruit_id
-            && !data.sorter_busy
-            && !data.auto_run_enabled
-            && !hasPendingMotorCommand
-        );
-        timingInputs.forEach((input) => {
-            input.disabled = !editable || timingUpdateInFlight;
-        });
-        applyTimingButton.disabled = !editable || timingUpdateInFlight;
-        resetTimingButton.disabled = !editable || timingUpdateInFlight;
-        testFeederButton.disabled = (
-            !data.can_test_feeder
-            || timingInputsDirty
-            || timingUpdateInFlight
-            || feederConfirmationInFlight
-        );
-        feederCalibratedInput.disabled = (
-            !editable
-            || timingUpdateInFlight
-            || feederConfirmationInFlight
-            || timingInputsDirty
-            || timing.feeder_calibrated
-            || !data.can_confirm_feeder_calibration
-        );
-        setTextIfChanged(captureTimingWarning, data.capture_timing_warning || '');
+        const timing = data.capture_timing || {};
+        timingFirstStationInput.value = timing.first_station_settle_ms ?? '';
+        timingServoInput.value = timing.servo_settle_ms ?? '';
+        timingFruitInput.value = timing.fruit_settle_ms ?? '';
+        timingFinalReturnInput.value = timing.final_gate_return_delay_ms ?? '';
+        timingIdleCommandPollInput.value = timing.idle_command_poll_interval_ms ?? '';
+        timingFeederStopInput.value = timing.feeder_stop_us ?? '';
+        timingFeederDriveInput.value = timing.feeder_drive_us ?? '';
+        timingFeederMaxRunInput.value = timing.feeder_max_run_ms ?? '';
+        testFeederButton.disabled = Boolean(controlActionInFlight) || !data.can_test_feeder;
+        testFeederButton.title = data.can_test_feeder
+            ? ''
+            : `目前無法測試送料：${reasonText(data.feeder_test_disabled_reason || 'system_not_idle')}`;
         setTextIfChanged(timingConfigStatus, timingStatusText(data));
-        setTextIfChanged(feederCalibrationStatus, feederCalibrationStatusText(data, timing));
-        const timingApplied = data.capture_timing_status === 'applied' && !timingInputsDirty;
+        const timingApplied = data.capture_timing_status === 'applied';
         timingSummaryStatus.dataset.state = timingApplied ? 'ready' : 'pending';
         setTextIfChanged(timingSummaryStatus, timingApplied ? '已同步' : '待同步');
-        const calibrated = Boolean(timing.feeder_calibrated && !feederSettingsDirty);
-        calibrationSummaryStatus.dataset.state = calibrated ? 'ready' : 'pending';
-        setTextIfChanged(calibrationSummaryStatus, calibrated ? '已校正' : '未校正');
     }
 
-    function feederCalibrationStatusText(data, timing) {
-        const revision = data.capture_timing_revision ?? 0;
-        if (timingInputsDirty) {
-            if (timing.feeder_calibrated && !feederSettingsDirty) {
-                return '送料校正仍有效；目前修改尚未套用，請先保存數值。';
-            }
-            return '步驟 1／3：設定尚未套用；請先保存數值。';
-        }
-        if (timing.feeder_calibrated) {
-            return `已完成：revision ${revision} 的送料確認已保存，可以直接開始拍攝。`;
-        }
-        if (data.capture_timing_status !== 'applied') {
-            return `步驟 1／3：等待 ESP32 套用 revision ${revision}。`;
-        }
-        if (data.status === 'waiting_feeder') {
-            return '步驟 2／3：送料測試進行中，等待 HC-SR04 停止馬達。';
-        }
-        if (data.can_confirm_feeder_calibration) {
-            return '步驟 3／3：測試已通過；目視確認恰好送出一顆後勾選。';
-        }
-        const result = data.feeder_test_result || {};
-        if (result.event && !result.ok) {
-            return `測試未通過（${result.stop_reason || result.event}）；排除原因後請重新測試。`;
-        }
-        if (data.can_test_feeder) {
-            return '步驟 2／3：設定已套用，請執行一次送料測試。';
-        }
-        return `暫時無法測試送料（${data.feeder_test_disabled_reason || '系統尚未就緒'}）。`;
-    }
-
-    function readTimingInput(input, key, minimum, maximum = 3000) {
-        const value = Number(input.value);
-        if (!Number.isInteger(value) || value < minimum || value > maximum || value % 50 !== 0) {
-            throw new Error(`${key} 必須介於 ${minimum} 到 ${maximum} ms，且以 50 ms 為間距。`);
-        }
-        return value;
-    }
-
-    function readSteppedInput(input, key, minimum, maximum, step, unit) {
-        const value = Number(input.value);
-        if (!Number.isInteger(value) || value < minimum || value > maximum || value % step !== 0) {
-            throw new Error(`${key} 必須介於 ${minimum} 到 ${maximum} ${unit}，且以 ${step} ${unit} 為間距。`);
-        }
-        return value;
-    }
-
-    function captureTimingPayloadFromInputs() {
-        const payload = {
-            first_station_settle_ms: readTimingInput(timingFirstStationInput, '第 1 站停穩時間', 50),
-            servo_settle_ms: readTimingInput(timingServoInput, '伺服穩定時間', 50),
-            fruit_settle_ms: readTimingInput(timingFruitInput, '到站停穩時間', 50),
-            final_gate_return_delay_ms: readTimingInput(timingFinalReturnInput, '最終歸位延遲', 0),
-            idle_command_poll_interval_ms: readTimingInput(
-                timingIdleCommandPollInput,
-                'ESP32 閒置命令輪詢間隔',
-                100,
-                5000,
-            ),
-            feeder_stop_us: readSteppedInput(timingFeederStopInput, '送料停止脈波', 1400, 1600, 5, 'us'),
-            feeder_drive_us: readSteppedInput(timingFeederDriveInput, '送料驅動脈波', 1000, 2000, 10, 'us'),
-            feeder_max_run_ms: readSteppedInput(
-                timingFeederMaxRunInput,
-                '送料最長運轉時間',
-                1000,
-                20000,
-                500,
-                'ms',
-            ),
-        };
-        if (payload.feeder_drive_us === payload.feeder_stop_us) {
-            throw new Error('送料驅動脈波不得與停止脈波相同。');
-        }
-        return payload;
-    }
-
-    function restoreRecommendedTiming() {
-        setTimingInputs(recommendedCaptureTiming());
-        timingInputsDirty = true;
-        feederSettingsDirty = true;
-        feederCalibratedInput.checked = false;
-        setMessage('已填入校正預設 300／200／350／300／250 ms，按下「套用停穩設定」後才會儲存。');
-        if (lastState) {
-            renderCaptureTiming(lastState);
-        }
-    }
-
-    async function applyCaptureTiming() {
-        let timing;
-        try {
-            timing = captureTimingPayloadFromInputs();
-        } catch (error) {
-            setMessage(`停穩設定無效：${error.message}`);
-            return;
-        }
-        if (!beginControlAction('capture-timing', applyTimingButton)) {
-            return;
-        }
-
-        timingUpdateInFlight = true;
-        if (lastState) {
-            renderCaptureTiming(lastState);
-        }
-        try {
-            const payload = await postJson('/api/capture_timing/', timing);
-            timingInputsDirty = false;
-            feederSettingsDirty = false;
-            lastState = payload;
-            renderState(payload);
-            setMessage(payload.capture_timing_unchanged
-                ? '停穩設定沒有變更。'
-                : '停穩設定已儲存，等待 ESP32 閒置時套用。');
-        } catch (error) {
-            if (error.payload) {
-                lastState = error.payload;
-                renderState(error.payload);
-            }
-            setMessage(`套用停穩設定失敗：${error.message}`);
-        } finally {
-            timingUpdateInFlight = false;
-            endControlAction(applyTimingButton);
-        }
-    }
-
-    async function testFeederOnce() {
+    async function testFeederOnce(event) {
+        // The button sits inside <summary>; clicking it must not fold the panel.
+        event.preventDefault();
         if (!confirm('請確認 HC-SR04 區域淨空，並在送料入口放置一顆百香果，再執行測試送料。')) {
             return;
         }
@@ -1792,38 +1590,6 @@ const remoteVideo = document.getElementById('remote-video');
             setMessage(`送料測試失敗：${error.message}`);
         } finally {
             endControlAction(testFeederButton);
-        }
-    }
-
-    async function confirmFeederCalibration() {
-        if (!feederCalibratedInput.checked || !lastState || feederConfirmationInFlight) {
-            return;
-        }
-        if (!beginControlAction('feeder-confirmation', feederCalibratedInput)) {
-            return;
-        }
-        feederConfirmationInFlight = true;
-        renderCaptureTiming(lastState);
-        try {
-            const payload = await postJson('/api/feeder/calibration/confirm/', {
-                timing_revision: Number(lastState.capture_timing_revision),
-            });
-            lastState = payload;
-            renderState(payload);
-            setMessage('送料校正確認已保存，不用再次測試或套用設定。');
-        } catch (error) {
-            feederCalibratedInput.checked = false;
-            if (error.payload && error.payload.state) {
-                lastState = error.payload.state;
-                renderState(error.payload.state);
-            }
-            const reason = error.payload && error.payload.reason
-                ? `（${error.payload.reason}）`
-                : '';
-            setMessage(`保存送料校正確認失敗：${error.message}${reason}`);
-        } finally {
-            feederConfirmationInFlight = false;
-            endControlAction(feederCalibratedInput);
         }
     }
 
@@ -2203,43 +1969,7 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     document.getElementById('btn-set-counter').addEventListener('click', setCounter);
-    timingInputs.forEach((input) => {
-        input.addEventListener('input', () => {
-            timingInputsDirty = true;
-            autoRunButton.disabled = true;
-            if ([
-                timingFeederStopInput,
-                timingFeederDriveInput,
-                timingFeederMaxRunInput,
-            ].includes(input)) {
-                feederSettingsDirty = true;
-                feederCalibratedInput.checked = false;
-            }
-            if (lastState) {
-                renderCaptureTiming(lastState);
-            }
-        });
-    });
-    resetTimingButton.addEventListener('click', restoreRecommendedTiming);
-    applyTimingButton.addEventListener('click', applyCaptureTiming);
     testFeederButton.addEventListener('click', testFeederOnce);
-    feederCalibratedInput.addEventListener('change', confirmFeederCalibration);
-    feederHelpButton.addEventListener('click', () => {
-        const isOpen = feederHelp.classList.toggle('is-open');
-        feederHelpButton.setAttribute('aria-expanded', String(isOpen));
-    });
-    document.addEventListener('click', (event) => {
-        if (!feederHelp.contains(event.target)) {
-            feederHelp.classList.remove('is-open');
-            feederHelpButton.setAttribute('aria-expanded', 'false');
-        }
-    });
-    document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape') {
-            feederHelp.classList.remove('is-open');
-            feederHelpButton.setAttribute('aria-expanded', 'false');
-        }
-    });
     autoRunButton.addEventListener('click', toggleAutoRun);
     operationToggle.addEventListener('click', () => {
         operationDetails.open = !operationDetails.open;
