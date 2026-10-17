@@ -1693,6 +1693,26 @@ textarea {
     border-top: 1px solid var(--border);
 }
 
+.trend-alert-advanced {
+    justify-self: stretch;
+    display: grid;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius-small);
+}
+
+.trend-alert-advanced > summary {
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.trend-alert-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
 .trend-alert-list {
     margin: 0;
     padding-left: 20px;

@@ -36,6 +36,7 @@ urlpatterns = [
     ),
     path('api/notification/', views.notification_api, name='notification_api'),
     path('api/trend_alerts/', views.trend_alerts_api, name='trend_alerts_api'),
+    path('api/trend_alerts/test/', views.trend_alert_test_api, name='trend_alert_test_api'),
     path('api/detection/stats/', views.detection_stats_api, name='detection_stats_api'),
     path('api/assistant/', views.assistant_api, name='assistant_api'),
     path('api/assistant/icon/', views.assistant_icon_api, name='assistant_icon_api'),

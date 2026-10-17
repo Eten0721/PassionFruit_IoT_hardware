@@ -338,8 +338,8 @@ class AssistantTests(SimpleTestCase):
         response = http.calls[1]['payload']['contents'][-1]['parts'][0]['functionResponse']['response']
         anthracnose = next(c for c in response['categories'] if c['name'] == '炭疽病')
         self.assertEqual((anthracnose['threshold_percent'], anthracnose['rise_points'],
-                          anthracnose['min_samples'], anthracnose['direction']),
-                         (20.0, 10.0, 20, '須注意病害防疫'))
+                          anthracnose['direction']), (20.0, 10.0, '須注意病害防疫'))
+        self.assertEqual(response['min_samples'], 20)
         self.assertTrue(response['enabled'])
         self.assertEqual(response['recent_alerts'],
                          [{'category': '炭疽病', 'created_at': '2026-10-17T09:00:00+08:00',
@@ -381,7 +381,7 @@ class AssistantTests(SimpleTestCase):
             'key': 'abrasion', 'label': '擦傷', 'reasons': ['threshold'],
             'reason_descriptions': ['比例達門檻'], 'direction': '請檢查採收與搬運作業',
             'threshold_percent': 30.0, 'rise_points': 10.0, 'min_samples': 20,
-            'spike_factor': 2.0, 'spike_min_samples': 10,
+            'spike_factor': 2.0,
             'current': {'count': 20, 'graded': 41, 'ratio_percent': 48.8},
             'previous': {'count': 0, 'graded': 0, 'ratio_percent': 0.0},
             'today': {'count': 0, 'graded': 0, 'ratio_percent': 0.0},

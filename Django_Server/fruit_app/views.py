@@ -1868,6 +1868,20 @@ def trend_alerts_api(request):
         return JsonResponse(_state_payload())
 
 
+@csrf_exempt
+@require_POST
+@network_required(cleanup=True, operation='notification')
+def trend_alert_test_api(request):
+    """Queue a test trend alert from current data; developer-mode button."""
+    try:
+        sent = trend_alert_monitor().send_test()
+    except (OSError, ValueError) as exc:
+        return _json_error(f'測試提醒無法排入 LINE 待送：{exc}', status=503,
+                           reason='trend_alert_test_failed')
+    with STATE_LOCK:
+        return JsonResponse(_state_payload(extra={'trend_alert_test': sent}))
+
+
 def get_system_status():
     """Read the assistant whitelist through Dashboard helpers, without dataset synchronization."""
     with STATE_LOCK:

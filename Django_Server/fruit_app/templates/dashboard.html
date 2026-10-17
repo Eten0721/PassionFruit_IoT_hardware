@@ -224,25 +224,44 @@
                     <label class="trend-alert-switch"><input id="trend-alert-enabled" type="checkbox"> 啟用趨勢提醒（LINE 與此處顯示）</label>
                     <div class="trend-alert-grid">
                         <label>最近幾天<input id="trend-alert-window" type="number" min="1" max="60" step="1"></label>
-                        <label>冷卻（小時）<input id="trend-alert-cooldown" type="number" min="0" max="720" step="1"></label>
-                        <label>當日突增倍數<input id="trend-alert-spike-factor" type="number" min="1.1" max="20" step="0.1"></label>
-                        <label>當日最少顆數<input id="trend-alert-spike-min" type="number" min="1" max="10000" step="1"></label>
+                        <label>最少顆數<input id="trend-alert-min-samples" type="number" min="1" max="10000" step="1"></label>
                     </div>
                     <div class="trend-alert-table-wrap">
                         <table class="trend-alert-table">
-                            <caption>各類參數（比例以檢測資料中所有已判級果實計）</caption>
-                            <thead><tr><th scope="col">類別</th><th scope="col">門檻 %</th><th scope="col">上升百分點</th><th scope="col">最少顆數</th><th scope="col">提醒方向</th></tr></thead>
+                            <caption>各類提醒門檻（設 100% 等於不提醒這類）</caption>
+                            <thead><tr><th scope="col">類別</th><th scope="col">提醒門檻 %</th></tr></thead>
                             <tbody id="trend-alert-categories"></tbody>
                         </table>
                     </div>
                     <dl class="trend-alert-help">
-                        <div><dt>門檻 %</dt><dd>最近幾天內，有這類瑕疵的果實佔已判級果實的比例，達到此值就提醒。例：門檻 20%、最近 7 天 50 顆中有 10 顆炭疽病（20%）即提醒。</dd></div>
-                        <div><dt>上升百分點</dt><dd>最近幾天的比例比再往前同樣天數高出多少就提醒，以百分點相減計算。例：從 10% 升到 25% 是上升 15 個百分點。</dd></div>
-                        <div><dt>最少顆數</dt><dd>最近幾天內至少要有這麼多顆已判級果實才判斷，避免樣本太少誤報；比較上升時，前後兩段都要達到。調低較容易觸發。</dd></div>
-                        <div><dt>最近幾天、冷卻、當日突增</dt><dd>只看最近幾天的果實；同一類提醒過後多久內不再重發；今日比例達到今日之前最近幾天的幾倍、且今日至少幾顆時，視為突增。</dd></div>
+                        <div><dt>最近幾天</dt><dd>只統計最近這幾天檢測的果實。</dd></div>
+                        <div><dt>最少顆數</dt><dd>最近幾天至少要有這麼多顆已分級果實才開始判斷，避免只驗幾顆就誤報。調低比較容易提醒。</dd></div>
+                        <div><dt>提醒門檻 %</dt><dd>最近幾天內，有這類瑕疵的果實佔已分級果實的比例，達到這個值就提醒。例：門檻 20%，最近 7 天 50 顆中有 10 顆炭疽病（20%）就會提醒。</dd></div>
                     </dl>
-                    <p class="control-guidance">同一次檢查達標的類別合併成一則 LINE 訊息；下方只列出提醒時間、類別與送出狀態。</p>
-                    <button id="btn-trend-alert-save" type="submit" class="button secondary">保存提醒設定</button>
+                    <details id="trend-alert-advanced" class="trend-alert-advanced" hidden>
+                        <summary>進階設定（開發與展示用）</summary>
+                        <div class="trend-alert-grid">
+                            <label>冷卻（小時）<input id="trend-alert-cooldown" type="number" min="0" max="720" step="1"></label>
+                            <label>當日突增倍數<input id="trend-alert-spike-factor" type="number" min="1.1" max="20" step="0.1"></label>
+                        </div>
+                        <div class="trend-alert-table-wrap">
+                            <table class="trend-alert-table">
+                                <thead><tr><th scope="col">類別</th><th scope="col">上升百分點</th><th scope="col">提醒方向</th></tr></thead>
+                                <tbody id="trend-alert-advanced-categories"></tbody>
+                            </table>
+                        </div>
+                        <dl class="trend-alert-help">
+                            <div><dt>上升百分點</dt><dd>就算還沒到門檻，只要比「再往前同樣天數」高出這麼多就提醒。百分點是兩個百分比直接相減。例：最近 7 天擦傷 25%、再前 7 天 10%，高出 15 個百分點；設 15 就會提醒。前後兩段都要達到最少顆數。</dd></div>
+                            <div><dt>當日突增倍數</dt><dd>今天的比例是「今天以前最近幾天」的幾倍，而且至少高出上升百分點，就提醒「今日明顯偏高」。例：過去 7 天蟲咬 5%，今天 15%（3 倍、高出 10 個百分點）；倍數設 2 就會提醒。今天也要達到最少顆數。</dd></div>
+                            <div><dt>冷卻（小時）</dt><dd>同一類提醒過後，這段時間內不再重複提醒；冷卻中的類別列在下方狀態。</dd></div>
+                            <div><dt>提醒方向</dt><dd>LINE 訊息「須注意」那一行給的建議。</dd></div>
+                        </dl>
+                    </details>
+                    <p class="control-guidance">同一次檢查達標的類別合併成一則 LINE 訊息，並附上統計圖；下方只列出提醒時間、類別與送出狀態。</p>
+                    <div class="trend-alert-actions">
+                        <button id="btn-trend-alert-save" type="submit" class="button secondary">保存提醒設定</button>
+                        <button id="btn-trend-alert-test" type="button" class="button secondary" hidden title="用目前資料送一則「測試」提醒到 LINE，不受開關與冷卻限制，也不影響正式提醒。">立即傳送測試提醒</button>
+                    </div>
                     <p id="trend-alert-status" class="control-guidance" aria-live="polite"></p>
                     <ol id="trend-alert-list" class="trend-alert-list"></ol>
                 </form>
