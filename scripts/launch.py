@@ -26,7 +26,7 @@ DASHBOARD_URL = 'https://127.0.0.1:8000/dashboard/'
 MODEL_FILES = ('ROI.pt', 'Color.pt', 'Wrinkle.pt', 'Defect.pt',
                'GradeStage1.json', 'GradeStage2.json')
 LINE_CREDENTIALS = DJANGO_DIR / 'runtime_config' / 'notification_credentials.json'
-FIREWALL_RULES = ('PassionFruit-Django-8000', 'PassionFruit-mDNS-5353')
+FIREWALL_RULES = ('PassionFruit Django HTTPS', 'PassionFruit mDNS')  # setup_firewall.ps1 的 DisplayName
 STAMP_FILE = Path(sys.prefix) / 'pf_launcher_stamp.json'
 LOG_FILE = ROOT / 'logs' / 'launcher.log'
 TORCH_INDEXES = {
@@ -198,30 +198,23 @@ def check_line_credentials(path=LINE_CREDENTIALS):
     return {'ok': True}
 
 
-def missing_firewall_rules(output):
-    present = {line.strip() for line in output.splitlines()}
-    return [name for name in FIREWALL_RULES if name not in present]
-
-
 def check_firewall(runner=subprocess.run, platform=os.name):
     if platform != 'nt':
         return {'ok': True}
     report('檢查 Windows 防火牆規則……')
-    command = ("Get-NetFirewallRule -Name 'PassionFruit-Django-8000',"
-               "'PassionFruit-mDNS-5353' -ErrorAction SilentlyContinue | "
-               # 規則不存在時 Get-NetFirewallRule 仍會讓 PowerShell 結束碼為 1。
-               'Select-Object -ExpandProperty Name; exit 0')
+    # 部分電腦的 Get-NetFirewallRule 需要系統管理員才看得到規則；netsh 不需要，找不到時結束碼非 0。
+    missing = []
     try:
-        result = runner(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', command],
-                        capture_output=True, text=True, timeout=10)
-        if result.returncode != 0:
-            report(f'警告：無法確認防火牆規則，請雙擊「首次設定防火牆.bat」。{result.stderr or ""}')
-            return {'ok': True}
-        missing = missing_firewall_rules(result.stdout)
-        if missing:
-            report(f'警告：缺少防火牆規則 {"、".join(missing)}；請雙擊「首次設定防火牆.bat」設定一次。')
-    except (OSError, subprocess.TimeoutExpired, UnicodeError) as error:
+        for name in FIREWALL_RULES:
+            result = runner(['netsh', 'advfirewall', 'firewall', 'show', 'rule', f'name={name}'],
+                            capture_output=True, timeout=10)
+            if result.returncode != 0:
+                missing.append(name)
+    except (OSError, subprocess.TimeoutExpired) as error:
         report(f'警告：無法確認防火牆規則，請雙擊「首次設定防火牆.bat」。{error}')
+        return {'ok': True}
+    if missing:
+        report(f'警告：缺少防火牆規則 {"、".join(missing)}；請雙擊「首次設定防火牆.bat」設定一次。')
     return {'ok': True}
 
 
