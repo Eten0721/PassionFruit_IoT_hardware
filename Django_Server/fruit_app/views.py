@@ -51,6 +51,16 @@ ESP32_SETUP_FAILURES = ('setup_ap_failed',)
 ESP32_SETUP_BLOCK_REASON_PATTERN = re.compile(r'[a-z_]{1,48}')
 ESP32_SETUP_URL = 'http://192.168.4.1/'  # Firmware WifiSetup page on the ESP32 softAP default address.
 ESP32_SETUP_REQUEST_TTL_S = 15  # The idle ESP32 polls every 250 ms; an unclaimed request must not linger.
+CAMERA_DIAGNOSTICS_ENUMS = {
+    'event': ('camera_started', 'camera_failed', 'track_ended', 'rtc_state_changed'),
+    'permission': ('granted', 'NotAllowedError', 'NotFoundError', 'NotReadableError',
+                   'OverconstrainedError', 'SecurityError', 'AbortError', 'TypeError', 'unknown'),
+    'video_track_state': ('live', 'ended', 'none'),
+    'rtc_connection_state': ('new', 'connecting', 'connected', 'disconnected', 'failed', 'closed'),
+    'rtc_ice_connection_state': ('new', 'checking', 'connected', 'completed', 'disconnected', 'failed', 'closed'),
+}
+CAMERA_DIAGNOSTICS_BOOLEANS = ('secure_context', 'get_user_media_available', 'track_muted')
+CAMERA_DIAGNOSTICS_LIMITS = {'video_width': 10000, 'video_height': 10000, 'last_live_frame_age_ms': 86400000}
 METADATA_FIELDNAMES = [
     'fruit_id',
     'label',
@@ -196,6 +206,7 @@ APP_STATE = RuntimeState({
     'auto_run_recovery_reason': None,
     'camera_last_live_frame_at': None,
     'camera_last_live_frame_monotonic': None,
+    'camera_diagnostics': None,
     'esp32_boot_id': None,
     'esp32_feeder_capable': False,
     'esp32_sorter_capable': False,
@@ -327,6 +338,7 @@ def network_api(request):
             return local_network.network_error(exc.reason)
         APP_STATE['camera_last_live_frame_at'] = None
         APP_STATE['camera_last_live_frame_monotonic'] = None
+        APP_STATE['camera_diagnostics'] = None
         APP_STATE['network_identity'] = (payload['server_run_id'], payload['network_revision'])
         APP_STATE['esp32_network_capable'] = False
         APP_STATE['last_esp32_poll_monotonic'] = None
@@ -597,6 +609,56 @@ def camera_state_api(request):
         _apply_session_timeouts()
         payload = _camera_state_payload()
     return _no_store_response(JsonResponse(payload))
+
+
+@csrf_exempt
+@require_POST
+def camera_diagnostics_api(request):
+    with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
+    try:
+        # Bound the read itself; never hold the capture lock while reading the phone body.
+        body = request.read(4097)
+        if request.content_type != 'application/json' or len(body) > 4096:
+            raise ValueError
+        data = json.loads(body)
+        if not isinstance(data, dict) or data.get('event') is None:
+            raise ValueError
+        snapshot = {}
+        for key, choices in CAMERA_DIAGNOSTICS_ENUMS.items():
+            value = data.get(key)
+            if value is not None and (not isinstance(value, str) or value not in choices):
+                raise ValueError
+            snapshot[key] = value
+        for key in CAMERA_DIAGNOSTICS_BOOLEANS:
+            value = data.get(key)
+            if value is not None and type(value) is not bool:
+                raise ValueError
+            snapshot[key] = value
+        for key, maximum in CAMERA_DIAGNOSTICS_LIMITS.items():
+            value = data.get(key)
+            if value is not None and (type(value) is not int or not 0 <= value <= maximum):
+                raise ValueError
+            snapshot[key] = value
+    except (ValueError, UnicodeError, RecursionError):
+        return _no_store_response(JsonResponse(
+            {'ok': False, 'reason': 'camera_diagnostics_invalid'}, status=400))
+    with STATE_LOCK:
+        reason = local_network.NETWORK.request_reason(request)
+        if reason:
+            return local_network.network_error(reason)
+        snapshot['received_at'] = _now_string()
+        APP_STATE['camera_diagnostics'] = snapshot
+    return _no_store_response(JsonResponse({'ok': True}))
+
+
+def get_camera_diagnostics():
+    """Return an independent snapshot containing only validated scalar values."""
+    with STATE_LOCK:
+        snapshot = APP_STATE.get('camera_diagnostics')
+        return None if snapshot is None else snapshot.copy()
 
 
 @csrf_exempt
@@ -2919,6 +2981,7 @@ def reset_runtime_state_for_tests():
             'auto_run_recovery_reason': None,
             'camera_last_live_frame_at': None,
             'camera_last_live_frame_monotonic': None,
+            'camera_diagnostics': None,
             'esp32_boot_id': None,
             'esp32_feeder_capable': False,
             'esp32_sorter_capable': False,
