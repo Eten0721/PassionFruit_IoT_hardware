@@ -10,8 +10,10 @@ outcome stays unknown past the retry-key window, the entry becomes
 ``uncertain`` and is never resent automatically.
 
 Trend alerts (``kind`` = ``trend_alert``) share the outbox and retry rules but
-carry their final text and are sent as one plain text message; their own
-switch lives in ``trend_alerts.py`` and is applied before queueing.
+carry their final text and a frozen statistics snapshot; the worker draws the
+snapshot as the Flex hero image. An alert queued without a snapshot is sent as
+plain text. Their own switch lives in ``trend_alerts.py`` and is applied
+before queueing.
 
 Credentials come only from a private JSON file next to the outbox; they never
 enter the outbox, status payloads or error text. The push and retry rules
@@ -38,7 +40,7 @@ from typing import Callable, NamedTuple
 
 from PIL import Image
 
-from . import dataset_store, grading
+from . import dataset_store, detection_report, grading
 from .notification import generate_notification
 
 
@@ -188,12 +190,14 @@ class Outbox:
         wake()
         return {'ok': True, 'queued': True, 'reason': None}
 
-    def enqueue_alert(self, alert_id: str, text: str) -> dict:
-        """Queue one trend-alert text once; never send here."""
+    def enqueue_alert(self, alert_id: str, text: str, report: dict | None = None) -> dict:
+        """Queue one trend alert once, with its ``detection_report`` snapshot; never send here."""
         if not isinstance(alert_id, str) or not alert_id.startswith('trend_'):
             raise ValueError('趨勢提醒識別必須以 trend_ 開頭。')
         if not isinstance(text, str) or not text.strip():
             raise ValueError('趨勢提醒內容不得為空。')
+        if report is not None and not isinstance(report, dict):
+            raise ValueError('趨勢提醒統計快照必須是物件。')
         with _STATE_LOCK:
             state = self._read()
             if alert_id in state['entries']:
@@ -201,8 +205,8 @@ class Outbox:
             state['entries'][alert_id] = {
                 'result_id': alert_id, 'kind': ALERT_KIND, 'hardware_mode': None,
                 'queued_at': self._now(), 'status': 'pending',
-                'retry_key': str(uuid.uuid4()), 'text': text,
-                'attempts': 0, 'next_attempt_at': self._now(), 'last_error': None,
+                'retry_key': str(uuid.uuid4()), 'text': text, 'report': report,
+                'image_url': None, 'preview_url': None, 'attempts': 0, 'next_attempt_at': self._now(), 'last_error': None,
                 'key_first_used_at': None, 'unknown_since': None,
                 'sent_at': None, 'accepted_request_id': None,
             }
@@ -301,8 +305,11 @@ class Outbox:
                 'LINE 未回覆是否收到，重送防重期限已過，無法確認是否已送達；'
                 '請到群組確認，系統不會自動重送。'))
         try:
-            if entry.get('kind') != ALERT_KIND and entry['image_url'] is None:
-                entry = self._prepare(entry, credentials)
+            if entry.get('image_url') is None:
+                if entry.get('kind') != ALERT_KIND:
+                    entry = self._prepare(entry, credentials)
+                elif entry.get('report') is not None:
+                    entry = self._prepare_alert(entry, credentials)
             return self._push(entry, credentials)
         except _Rejected as rejection:
             return self._retry_later(result_id, rejection.reason, final=rejection.final)
@@ -317,13 +324,26 @@ class Outbox:
             raise _Rejected(f'通知內容無法產生：{error}', final=True) from None
         if not preview['ok']:
             raise _Rejected(f"通知內容無法產生：{preview['reason']}", final=True)
+        return self._publish(entry, Path(preview['image_path']), preview['text'], credentials)
+
+    def _prepare_alert(self, entry, credentials):
+        image_path = self.image_dir / f"{entry['result_id']}.jpg"
         try:
-            with Image.open(preview['image_path']) as image:
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            detection_report.render(entry['report'], image_path, image_format='jpg',
+                                    font_path=self._font_path)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise _Rejected(f'趨勢提醒統計圖無法產生：{error}', final=True) from None
+        return self._publish(entry, image_path, entry['text'], credentials)
+
+    def _publish(self, entry, image_path, text, credentials):
+        try:
+            with Image.open(image_path) as image:
                 aspect_ratio = f'{image.width}:{image.height}'
         except OSError as error:
             raise _Rejected(f'通知合成圖無法讀取：{type(error).__name__}', final=False) from None
-        image_url = self._upload(Path(preview['image_path']), entry['result_id'], credentials)
-        return self._update(entry['result_id'], text=preview['text'], image_url=image_url,
+        image_url = self._upload(image_path, entry['result_id'], credentials)
+        return self._update(entry['result_id'], text=text, image_url=image_url,
                             image_aspect_ratio=aspect_ratio,
                             preview_url=image_url.replace(
                                 '/image/upload/', f'/image/upload/{PREVIEW_TRANSFORMATION}/', 1),
@@ -372,8 +392,8 @@ class Outbox:
                              key_first_used_at=entry['key_first_used_at'] or now,
                              unknown_since=entry['unknown_since'] or now)
         body = json.dumps({'to': credentials['line_group_id'],
-                           'messages': [_text_message(entry) if entry.get('kind') == ALERT_KIND
-                                        else _flex_message(entry)]},
+                           'messages': [_flex_message(entry) if entry.get('image_url')
+                                        else _text_message(entry)]},
                           ensure_ascii=False).encode('utf-8')
         try:
             response = self._http_post(PUSH_URL, body, {

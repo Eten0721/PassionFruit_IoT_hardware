@@ -54,14 +54,16 @@ const remoteVideo = document.getElementById('remote-video');
     const trendAlertList = document.getElementById('trend-alert-list');
     const trendAlertSave = document.getElementById('btn-trend-alert-save');
     const trendAlertCategories = document.getElementById('trend-alert-categories');
+    const trendAlertAdvancedCategories = document.getElementById('trend-alert-advanced-categories');
+    const trendAlertTest = document.getElementById('btn-trend-alert-test');
     const trendAlertFields = [
         ['trend-alert-window', 'window_days'],
+        ['trend-alert-min-samples', 'min_samples'],
         ['trend-alert-cooldown', 'cooldown_hours'],
         ['trend-alert-spike-factor', 'spike_factor'],
-        ['trend-alert-spike-min', 'spike_min_samples'],
     ].map(([id, key]) => ({ input: document.getElementById(id), key }));
-    // Per-category columns: setting key and the scale between the input and the API value.
-    const TREND_CATEGORY_FIELDS = [['threshold', 100], ['rise', 100], ['min_samples', 1]];
+    // Percentage inputs per category; the API stores them as 0-1.
+    const TREND_PERCENT_FIELDS = new Set(['threshold', 'rise']);
     const trendAlertEnabled = document.getElementById('trend-alert-enabled');
     const actionGuidance = document.getElementById('action-guidance');
     const operationDetails = document.getElementById('operation-details');
@@ -72,6 +74,10 @@ const remoteVideo = document.getElementById('remote-video');
     const discardButton = document.getElementById('btn-discard');
     const resetDatasetButton = document.getElementById('btn-reset-dataset');
     const setCounterButton = document.getElementById('btn-set-counter');
+    const exportZone = document.getElementById('detection-export');
+    const exportButton = document.getElementById('btn-export-detection');
+    const exportIncludeResults = document.getElementById('export-include-results');
+    let exportInFlight = false;
     const readinessItems = {
         esp32: document.getElementById('readiness-esp32'),
         camera: document.getElementById('readiness-camera'),
@@ -242,6 +248,8 @@ const remoteVideo = document.getElementById('remote-video');
     const maintenancePanels = [
         document.getElementById('capture-settings'),
         document.getElementById('diagnostics'),
+        document.getElementById('trend-alert-advanced'),
+        document.getElementById('btn-trend-alert-test'),
     ];
     const diagnosticsStorageKey = 'pf-dashboard-diagnostics-visible';
     function setMaintenanceVisible(visible) {
@@ -643,6 +651,8 @@ const remoteVideo = document.getElementById('remote-video');
         renderActionGuidance(data, photoOnly);
         resetDatasetButton.disabled = Boolean(controlActionInFlight) || !data.can_reset_dataset;
         setCounterButton.disabled = Boolean(controlActionInFlight);
+        exportZone.hidden = data.work_mode !== 'detection';
+        exportButton.disabled = exportInFlight;
     }
 
     function captureStatusText(status) {
@@ -1304,28 +1314,37 @@ const remoteVideo = document.getElementById('remote-video');
         pending: 'LINE 待送', sent: 'LINE 已送出', failed: 'LINE 失敗', uncertain: 'LINE 送達不明',
     };
 
+    function trendInputCell(key, field, label) {
+        const cell = document.createElement('td');
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.step = '0.1';
+        input.dataset.category = key;
+        input.dataset.field = field;
+        input.setAttribute('aria-label', `${label} ${field === 'threshold' ? '提醒門檻' : '上升百分點'}`);
+        cell.appendChild(input);
+        return cell;
+    }
+
     function trendCategoryRows(trend) {
         const keys = Object.keys(trend.settings.categories);
         if (trendAlertCategories.dataset.keys === keys.join(',')) return;
         trendAlertCategories.dataset.keys = keys.join(',');
-        trendAlertCategories.replaceChildren(...keys.map((key) => {
-            const label = trend.labels[key] || key;
-            const row = document.createElement('tr');
+        const header = (label) => {
             const name = document.createElement('th');
             name.scope = 'row';
             name.textContent = label;
-            row.appendChild(name);
-            TREND_CATEGORY_FIELDS.forEach(([field]) => {
-                const cell = document.createElement('td');
-                const input = document.createElement('input');
-                input.type = 'number';
-                input.step = field === 'min_samples' ? '1' : '0.1';
-                input.dataset.category = key;
-                input.dataset.field = field;
-                input.setAttribute('aria-label', `${label} ${field}`);
-                cell.appendChild(input);
-                row.appendChild(cell);
-            });
+            return name;
+        };
+        trendAlertCategories.replaceChildren(...keys.map((key) => {
+            const label = trend.labels[key] || key;
+            const row = document.createElement('tr');
+            row.append(header(label), trendInputCell(key, 'threshold', label));
+            return row;
+        }));
+        trendAlertAdvancedCategories.replaceChildren(...keys.map((key) => {
+            const label = trend.labels[key] || key;
+            const row = document.createElement('tr');
             const cell = document.createElement('td');
             const select = document.createElement('select');
             select.dataset.category = key;
@@ -1333,13 +1352,13 @@ const remoteVideo = document.getElementById('remote-video');
             select.setAttribute('aria-label', `${label} 提醒方向`);
             Object.entries(trend.directions).forEach(([value, text]) => select.add(new Option(text, value)));
             cell.appendChild(select);
-            row.appendChild(cell);
+            row.append(header(label), trendInputCell(key, 'rise', label), cell);
             return row;
         }));
     }
 
-    function trendScale(field) {
-        return (TREND_CATEGORY_FIELDS.find(([name]) => name === field) || [])[1];
+    function trendCategoryInputs() {
+        return trendAlertForm.querySelectorAll('[data-category]');
     }
 
     function renderTrendAlerts(trend) {
@@ -1354,18 +1373,22 @@ const remoteVideo = document.getElementById('remote-video');
         if (!trendAlertForm.dataset.dirty) {
             trendAlertEnabled.checked = Boolean(settings.enabled);
             trendAlertFields.forEach(({ input, key }) => { input.value = String(settings[key]); });
-            trendAlertCategories.querySelectorAll('[data-category]').forEach((input) => {
+            trendCategoryInputs().forEach((input) => {
                 const value = settings.categories[input.dataset.category][input.dataset.field];
-                const scale = trendScale(input.dataset.field);
-                input.value = scale ? String(Math.round(value * scale * 10) / 10) : value;
+                input.value = TREND_PERCENT_FIELDS.has(input.dataset.field)
+                    ? String(Math.round(value * 1000) / 10) : value;
             });
         }
         trendAlertSave.disabled = Boolean(controlActionInFlight);
+        trendAlertTest.disabled = Boolean(controlActionInFlight);
         const line = trend.line || {};
+        const cooling = Object.entries(trend.cooling || {}).map(([key, until]) =>
+            `${trend.labels[key] || key}（${until.slice(5, 16).replace('T', ' ')} 後可再提醒）`);
         setTextIfChanged(trendAlertStatus, [
             settings.enabled
-                ? `各類比例達門檻、比前 ${settings.window_days} 天上升，或今日達前期 ${settings.spike_factor} 倍時提醒；同類 ${settings.cooldown_hours} 小時內不重複。LINE 訊息只列偏高類別與注意事項，數據詳情可問奶蛋博士。`
+                ? `最近 ${settings.window_days} 天至少有 ${settings.min_samples} 顆已分級果實時，各類比例達門檻就提醒；同類 ${settings.cooldown_hours} 小時內不重複。`
                 : '已關閉：不檢查也不發送趨勢提醒。',
+            cooling.length ? `冷卻中：${cooling.join('、')}` : null,
             line.configured ? null : `LINE 尚未完成設定：${notificationConfigReasonText(line)}（提醒仍會顯示在此）`,
         ].filter(Boolean).join('\n'));
         const recent = trend.recent || [];
@@ -1394,10 +1417,10 @@ const remoteVideo = document.getElementById('remote-video');
         for (const { input, key } of trendAlertFields) {
             settings[key] = trendNumber(input);
         }
-        trendAlertCategories.querySelectorAll('[data-category]').forEach((input) => {
+        trendCategoryInputs().forEach((input) => {
             const params = (settings.categories[input.dataset.category] ||= {});
-            const scale = trendScale(input.dataset.field);
-            params[input.dataset.field] = scale ? trendNumber(input, scale) : input.value;
+            params[input.dataset.field] = TREND_PERCENT_FIELDS.has(input.dataset.field)
+                ? trendNumber(input, 100) : input.value;
         });
         const values = [...trendAlertFields.map(({ key }) => settings[key]),
             ...Object.values(settings.categories).flatMap((params) => Object.values(params))];
@@ -1418,6 +1441,23 @@ const remoteVideo = document.getElementById('remote-video');
             setMessage(`趨勢提醒設定保存失敗：${error.message}`);
         } finally {
             endControlAction(trendAlertSave);
+        }
+    }
+
+    async function sendTrendAlertTest() {
+        if (!beginControlAction('trend_alert_test', trendAlertTest)) {
+            return;
+        }
+        try {
+            const payload = await postJson('/api/trend_alerts/test/', {});
+            lastState = payload;
+            renderState(payload);
+            const labels = payload.trend_alert_test?.labels || [];
+            setMessage(`已排入 LINE 測試提醒（${labels.length ? `目前偏高：${labels.join('、')}` : '目前沒有類別達到提醒條件'}）。`);
+        } catch (error) {
+            setMessage(`測試提醒失敗：${error.message}`);
+        } finally {
+            endControlAction(trendAlertTest);
         }
     }
 
@@ -1998,7 +2038,44 @@ const remoteVideo = document.getElementById('remote-video');
         }
     }
 
+    async function exportDetection() {
+        if (!lastState?.work_mode) {
+            setMessage('尚未取得目前資料區，請稍候再匯出。');
+            return;
+        }
+        exportInFlight = true;
+        exportButton.disabled = true;
+        exportButton.textContent = '匯出中…';
+        try {
+            const params = new URLSearchParams({
+                dataset_mode: lastState.work_mode,
+                include_results: exportIncludeResults.checked ? '1' : '0',
+            });
+            const response = await fetch(`/api/export_detection/?${params}`);
+            if (!response.ok) {
+                const payload = await response.json().catch(() => ({}));
+                throw new Error(payload.message || `HTTP ${response.status}`);
+            }
+            const disposition = response.headers.get('Content-Disposition') || '';
+            const filename = /filename="?([^";]+)"?/.exec(disposition)?.[1] || 'detection_export.zip';
+            const url = URL.createObjectURL(await response.blob());
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 0);
+            setMessage(`已匯出 ${filename}。`);
+        } catch (error) {
+            setMessage(`匯出檢測報告失敗：${error.message}`);
+        } finally {
+            exportInFlight = false;
+            exportButton.disabled = false;
+            exportButton.textContent = '匯出檢測報告';
+        }
+    }
+
     document.getElementById('btn-set-counter').addEventListener('click', setCounter);
+    exportButton.addEventListener('click', exportDetection);
     testFeederButton.addEventListener('click', testFeederOnce);
     autoRunButton.addEventListener('click', toggleAutoRun);
     operationToggle.addEventListener('click', () => {
@@ -2045,6 +2122,7 @@ const remoteVideo = document.getElementById('remote-video');
     });
     notificationToggle.addEventListener('click', toggleNotification);
     trendAlertForm.addEventListener('submit', saveTrendAlerts);
+    trendAlertTest.addEventListener('click', sendTrendAlertTest);
     trendAlertForm.addEventListener('input', () => { trendAlertForm.dataset.dirty = 'true'; });
     recaptureButton.addEventListener('click', recaptureCurrent);
     document.getElementById('btn-open-folder').addEventListener('click', openDatasetFolder);

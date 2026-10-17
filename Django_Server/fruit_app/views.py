@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -26,6 +27,7 @@ from . import (
     capture_timing,
     dataset_store,
     detection,
+    detection_report,
     detection_stats,
     grading,
     motor_commands,
@@ -1866,6 +1868,20 @@ def trend_alerts_api(request):
         return JsonResponse(_state_payload())
 
 
+@csrf_exempt
+@require_POST
+@network_required(cleanup=True, operation='notification')
+def trend_alert_test_api(request):
+    """Queue a test trend alert from current data; developer-mode button."""
+    try:
+        sent = trend_alert_monitor().send_test()
+    except (OSError, ValueError) as exc:
+        return _json_error(f'測試提醒無法排入 LINE 待送：{exc}', status=503,
+                           reason='trend_alert_test_failed')
+    with STATE_LOCK:
+        return JsonResponse(_state_payload(extra={'trend_alert_test': sent}))
+
+
 def get_system_status():
     """Read the assistant whitelist through Dashboard helpers, without dataset synchronization."""
     with STATE_LOCK:
@@ -2676,6 +2692,40 @@ def open_dataset_folder_api(request):
             return JsonResponse({'status': 'success', 'path': str(dataset_root), 'opened': True})
         return JsonResponse({'status': 'success', 'path': str(dataset_root), 'opened': False})
 
+
+
+@require_GET
+def export_detection_api(request):
+    """Download the detection partition as a ZIP (statistics image + summary)."""
+    reason = local_network.NETWORK.request_reason(request, cleanup=True)
+    if reason:
+        return local_network.network_error(reason)
+    include_results = request.GET.get('include_results')
+    if include_results not in ('0', '1'):
+        return _json_error('include_results 必須是 0 或 1。', reason='export_options_invalid')
+    _ensure_dataset_structure()
+    with STATE_LOCK:
+        mode_error = _request_dataset_mode_error(request)
+        if mode_error is not None:
+            return mode_error
+        if APP_STATE['work_mode'] != 'detection':
+            return _json_error('只有自動檢測模式可匯出檢測報告。', status=409,
+                               reason='export_detection_only')
+        if APP_STATE.get('dataset_operation'):
+            return _json_error('已有 dataset 檔案操作進行中，請稍後再試。', status=409,
+                               reason='dataset_busy')
+        detection_root = _dataset_root()
+    stream = tempfile.TemporaryFile()  # Deleted when FileResponse closes it.
+    try:
+        exported = detection_report.write_export(
+            detection_root, stream, include_results=include_results == '1')
+    except (OSError, ValueError) as exc:
+        stream.close()
+        logger.warning('Detection export failed: %s', exc)
+        return _json_error(f'匯出失敗：{exc}', status=500, reason='export_failed')
+    stream.seek(0)
+    return FileResponse(stream, as_attachment=True, filename=exported['filename'],
+                        content_type='application/zip')
 
 @csrf_exempt
 @require_POST

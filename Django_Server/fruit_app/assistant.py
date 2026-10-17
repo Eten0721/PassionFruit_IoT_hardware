@@ -116,8 +116,9 @@ SEARCH_TOOL = {
 TREND_TOOL = {
     'name': 'get_trend_alert_settings',
     'description': (
-        '讀取 Dashboard「瑕疵趨勢提醒」目前的設定：是否啟用、最近幾天（window_days）、冷卻小時、當日突增倍數與最少顆數，'
-        '以及各類別（色澤異常、皺褶、擦傷、炭疽病、蟲咬、畫圖蟲、加工果）的門檻、上升百分點、最少顆數與提醒方向，'
+        '讀取 Dashboard「瑕疵趨勢提醒」目前的設定：是否啟用、最近幾天（window_days）、'
+        '最少顆數（所有規則共用的最低已判級顆數）、冷卻小時、當日突增倍數，'
+        '以及各類別（色澤異常、皺褶、擦傷、炭疽病、蟲咬、畫圖蟲、加工果）的門檻、上升百分點與提醒方向，'
         '另附最近幾則提醒的類別、時間、當時的最近幾天設定與觸發明細（四個視窗的顆數、已判級顆數、'
         '百分比 ratio_percent、當時門檻與中文觸發依據）；舊紀錄沒有明細時為 null，不得用目前設定推測。'
         '問為什麼提醒或提醒當時的數據時使用此工具。只讀取，不能修改。'
@@ -454,14 +455,13 @@ def _trend_view(status):
         'ok': True,
         'enabled': settings['enabled'],
         'window_days': settings['window_days'],
+        'min_samples': settings['min_samples'],
         'cooldown_hours': settings['cooldown_hours'],
         'spike_factor': settings['spike_factor'],
-        'spike_min_samples': settings['spike_min_samples'],
         'categories': [
             {'name': labels.get(key, key),
              'threshold_percent': round(rule['threshold'] * 100, 1),
              'rise_points': round(rule['rise'] * 100, 1),
-             'min_samples': rule['min_samples'],
              'direction': directions.get(rule['direction'], rule['direction'])}
             for key, rule in settings['categories'].items()
         ],
@@ -483,8 +483,8 @@ def _trend_detail(detail):
         'direction': trend_alerts.DIRECTIONS[detail['direction']],
         'threshold_percent': round(detail['threshold'] * 100, 1),
         'rise_points': round(detail['rise'] * 100, 1),
+        # Alerts saved before v3 also carry a separate spike_min_samples; it is not shown.
         'min_samples': detail['min_samples'], 'spike_factor': detail['spike_factor'],
-        'spike_min_samples': detail['spike_min_samples'],
         **{name: {'count': detail[name]['count'], 'graded': detail[name]['graded'],
                   'ratio_percent': round(detail[name]['ratio'] * 100, 1)}
            for name in ('current', 'previous', 'today', 'history')},

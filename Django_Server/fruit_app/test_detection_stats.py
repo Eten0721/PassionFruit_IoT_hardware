@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from django.test import RequestFactory, SimpleTestCase, override_settings
+from PIL import Image
 
 from . import detection_stats, notification_delivery, trend_alerts, views
 from .detection import SUMMARY_FIELDS
@@ -193,9 +194,11 @@ class DetectionStatsTests(SimpleTestCase):
 class FakeOutbox:
     def __init__(self):
         self.queued = []
+        self.reports = []
 
-    def enqueue_alert(self, alert_id, text):
+    def enqueue_alert(self, alert_id, text, report=None):
         self.queued.append((alert_id, text))
+        self.reports.append(report)
         return {'ok': True, 'queued': True, 'reason': None}
 
     def entry_statuses(self, ids):
@@ -236,10 +239,10 @@ class TrendAlertTests(SimpleTestCase):
     def enable(self, **changes):
         return self.monitor().update_settings({'enabled': True, **changes})
 
-    def test_disabled_by_default_and_category_minimum_samples(self):
+    def test_disabled_by_default_and_global_minimum_samples(self):
         self.add_fruits(30, days_ago=1, defects={'anthracnose': 30})
         self.assertEqual(self.monitor().check()['reason'], 'trend_alerts_disabled')
-        self.enable(categories={'anthracnose': {'min_samples': 31}})
+        self.enable(min_samples=31)
         self.assertEqual(self.monitor().check()['alerts'], [])
         self.assertEqual(self.outbox.queued, [])
 
@@ -256,6 +259,12 @@ class TrendAlertTests(SimpleTestCase):
                          '數據詳情可詢問奶蛋博士獲得更多資訊')
         self.assertNotRegex(alert['text'], trend_alerts.DIGITS)
         self.assertEqual(self.outbox.queued, [(alert['id'], alert['text'])])
+        [report] = self.outbox.reports  # the LINE image carries the numbers instead
+        self.assertEqual((report['title'], report['highlight']), ('趨勢提醒：炭疽病偏高', ['anthracnose']))
+        self.assertEqual(report['totals']['graded'], 20)
+        anthracnose = next(d for d in report['defects'] if d['key'] == 'anthracnose')
+        self.assertEqual((anthracnose['count'], anthracnose['ratio']), (8, 0.4))
+        self.assertTrue(all(d['count'] == 0 for d in report['previous_defects']))
 
         self.now += timedelta(hours=23)
         self.assertEqual(self.monitor().check()['alerts'], [])
@@ -322,6 +331,8 @@ class TrendAlertTests(SimpleTestCase):
         self.add_fruits(20, days_ago=3, defects={'anthracnose': 1})
         self.add_fruits(10, days_ago=0, defects={'anthracnose': 3})
         self.enable()
+        self.assertEqual(self.monitor().check()['alerts'], [])  # today below min_samples
+        self.enable(min_samples=10)
 
         [alert] = self.monitor().check()['alerts']
 
@@ -341,7 +352,7 @@ class TrendAlertTests(SimpleTestCase):
         self.add_fruits(20, days_ago=3, defects={'abrasion': 4})
         self.add_fruits(10, days_ago=0, defects={'abrasion': 8})
         self.enable(categories={'abrasion': {'threshold': 0.35, 'rise': 0.12}},
-                    spike_factor=2.5, spike_min_samples=8)
+                    spike_factor=2.5, min_samples=10)
         [alert] = self.monitor().check()['alerts']
         saved = json.loads(self.state_path.read_text(encoding='utf-8'))['recent'][0]
         self.assertEqual(saved, alert)
@@ -349,8 +360,8 @@ class TrendAlertTests(SimpleTestCase):
         self.assertEqual(saved['window_days'], 7)
         self.assertEqual(saved['details'], [{
             'key': 'abrasion', 'label': '擦傷', 'reasons': ['threshold', 'rise', 'spike'],
-            'direction': 'handling', 'threshold': 0.35, 'rise': 0.12, 'min_samples': 20,
-            'spike_factor': 2.5, 'spike_min_samples': 8,
+            'direction': 'handling', 'threshold': 0.35, 'rise': 0.12, 'min_samples': 10,
+            'spike_factor': 2.5,
             'current': {'count': 12, 'graded': 30, 'ratio': 0.4},
             'previous': {'count': 2, 'graded': 20, 'ratio': 0.1},
             'today': {'count': 8, 'graded': 10, 'ratio': 0.8},
@@ -382,7 +393,7 @@ class TrendAlertTests(SimpleTestCase):
     def test_threshold_and_spike_categories_have_separate_lines(self):
         self.add_fruits(20, days_ago=3, defects={'bad_color': 15, 'abrasion': 10, 'anthracnose': 1})
         self.add_fruits(10, days_ago=0, defects={'abrasion': 10, 'anthracnose': 3})
-        self.enable()
+        self.enable(min_samples=10)
         [alert] = self.monitor().check()['alerts']
         self.assertEqual([detail['reasons'] for detail in alert['details']],
                          [['threshold'], ['threshold', 'spike'], ['spike']])
@@ -417,9 +428,55 @@ class TrendAlertTests(SimpleTestCase):
                                    'created_at': alert['created_at'],
                                    'delivery': {'status': 'pending', 'reason': None}}])
 
+    def test_version_2_settings_migrate_to_one_loosest_minimum(self):
+        categories = {key: {**params, 'min_samples': 20}
+                      for key, params in trend_alerts.DEFAULT_CATEGORIES.items()}
+        categories['bad_color']['min_samples'] = 1
+        self.state_path.write_text(json.dumps({
+            'version': 2, 'last_alerted': {}, 'recent': [],
+            'settings': {'enabled': True, 'window_days': 7, 'cooldown_hours': 24,
+                         'spike_factor': 10.0, 'spike_min_samples': 10, 'categories': categories},
+        }), encoding='utf-8')
+        settings = self.monitor().status()['settings']
+        self.assertEqual((settings['min_samples'], settings['spike_factor']), (1, 10.0))
+        self.assertNotIn('spike_min_samples', settings)
+        self.assertNotIn('min_samples', settings['categories']['bad_color'])
+        self.monitor().update_settings({'enabled': False})
+        self.assertEqual(json.loads(self.state_path.read_text(encoding='utf-8'))['version'], 3)
+
+    def test_status_lists_categories_still_cooling(self):
+        self.add_fruits(20, days_ago=1, defects={'abrasion': 8})
+        self.enable()
+        self.monitor().check()
+        self.assertEqual(self.monitor().status()['cooling'], {'abrasion': '2026-10-16T12:00:00'})
+        self.now += timedelta(hours=24)
+        self.assertEqual(self.monitor().status()['cooling'], {})
+
+    def test_test_alert_ignores_switch_and_cooldown_and_saves_nothing(self):
+        self.add_fruits(20, days_ago=1, defects={'abrasion': 8})
+        sent = self.monitor().send_test()  # switch still off
+        self.assertEqual((sent['queued'], sent['labels']), (True, ['擦傷']))
+        [(alert_id, text)] = self.outbox.queued
+        self.assertTrue(alert_id.startswith('trend_test_'))
+        self.assertTrue(text.startswith('測試 |趨勢提醒|\n近來偏高：擦傷'))
+        self.assertEqual((self.outbox.reports[0]['title'], self.outbox.reports[0]['highlight']),
+                         ('測試 趨勢提醒：擦傷偏高', ['abrasion']))
+        self.assertFalse(self.state_path.exists())
+
+        self.enable()
+        self.monitor().check()
+        self.monitor().send_test()  # abrasion is cooling, the test still lists it
+        self.assertEqual(len(self.outbox.queued), 3)
+        self.assertEqual(len(json.loads(self.state_path.read_text(encoding='utf-8'))['recent']), 1)
+
+        empty = trend_alerts.render_text([], test=True)
+        self.assertEqual(empty.split('\n')[:2], ['測試 |趨勢提醒|', '目前沒有類別達到提醒條件'])
+
     def test_settings_are_validated(self):
         for changes in ({}, {'enabled': 'yes'}, {'window_days': 0}, {'window_days': 1.5},
                         {'spike_factor': 1}, {'cooldown_hours': True}, {'unknown': 1},
+                        {'min_samples': 0}, {'spike_min_samples': 10},
+                        {'categories': {'anthracnose': {'min_samples': 5}}},
                         {'categories': {'mold': {}}},
                         {'categories': {'anthracnose': {'threshold': 2}}},
                         {'categories': {'anthracnose': {'direction': 'magic'}}},
@@ -431,7 +488,7 @@ class TrendAlertTests(SimpleTestCase):
         self.assertEqual(saved['window_days'], 14)
         self.assertFalse(saved['enabled'])
         self.assertEqual(saved['categories']['abrasion'],
-                         {'threshold': 0.25, 'rise': 0.1, 'min_samples': 20, 'direction': 'quality'})
+                         {'threshold': 0.25, 'rise': 0.1, 'direction': 'quality'})
         self.assertEqual(saved['categories']['anthracnose'],
                          trend_alerts.DEFAULT_CATEGORIES['anthracnose'])
 
@@ -467,6 +524,51 @@ class TrendAlertOutboxTests(SimpleTestCase):
             self.assertEqual(outbox.status('hardware')['counts']['sent'], 0)
 
 
+    def test_alert_with_report_is_sent_as_flex_with_statistics_image(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'credentials.json').write_text(json.dumps(
+                dict.fromkeys(notification_delivery.CREDENTIAL_FIELDS, 'x')), encoding='utf-8')
+            calls = []
+            image_url = 'https://res.cloudinary.com/x/image/upload/v1/passionfruit_notifications/trend_1.jpg'
+
+            def post(url, body, headers, timeout):
+                if 'cloudinary' in url:
+                    calls.append(url)
+                    return notification_delivery.HttpResponse(
+                        200, {}, json.dumps({'secure_url': image_url}).encode())
+                calls.append(json.loads(body))
+                return notification_delivery.HttpResponse(200, {}, b'{}')
+
+            def draw(report, target, *, image_format, font_path):
+                self.assertEqual((report, image_format), ({'title': 't'}, 'jpg'))
+                Image.new('RGB', (40, 50), 'white').save(target, 'JPEG')
+
+            outbox = notification_delivery.Outbox(root / 'outbox.json', root / 'credentials.json',
+                                                  http_post=post, now=lambda: 1000.0)
+            with self.assertRaises(ValueError):
+                outbox.enqueue_alert('trend_1', 'text', report=['not', 'a', 'dict'])
+            outbox.enqueue_alert('trend_1', '|趨勢提醒|\n近來偏高：擦傷', report={'title': 't'})
+            with mock.patch.object(notification_delivery.detection_report, 'render', side_effect=draw):
+                outbox.deliver_pending()
+
+            self.assertEqual(calls[0], notification_delivery.UPLOAD_URL.format(cloud='x'))
+            [message] = calls[1]['messages']
+            self.assertEqual(message['type'], 'flex')
+            hero = message['contents']['hero']
+            self.assertEqual((hero['aspectRatio'], hero['action']['uri']), ('40:50', image_url))
+            self.assertEqual(message['contents']['body']['contents'][0]['text'], '|趨勢提醒|')
+            self.assertEqual(outbox.entry_statuses(['trend_1'])['trend_1']['status'], 'sent')
+
+            outbox.enqueue_alert('trend_2', 'text', report={'title': 't'})
+            with mock.patch.object(notification_delivery.detection_report, 'render',
+                                   side_effect=FileNotFoundError('找不到中文字型')):
+                outbox.deliver_pending()
+            status = outbox.entry_statuses(['trend_2'])['trend_2']
+            self.assertEqual(status['status'], 'failed')
+            self.assertIn('統計圖無法產生', status['reason'])
+
+
 class TrendAlertViewTests(SimpleTestCase):
     def test_check_starts_in_background_for_any_saved_graded_result(self):
         saved = {'hardware_mode': 'hardware', 'storage': {'status': 'saved'},
@@ -499,6 +601,21 @@ class TrendAlertViewTests(SimpleTestCase):
             response = inspect.unwrap(views.trend_alerts_api)(request)
         self.assertEqual(response.status_code, 200)
         monitor.update_settings.assert_called_once_with({'enabled': True})
+
+    def test_test_alert_api_reports_labels_or_queue_failure(self):
+        monitor = mock.Mock()
+        monitor.send_test.return_value = {'ok': True, 'queued': True, 'labels': ['擦傷']}
+        request = RequestFactory().post('/api/trend_alerts/test/', data='{}',
+                                        content_type='application/json')
+        test_api = inspect.unwrap(views.trend_alert_test_api)
+        with mock.patch.object(views, 'trend_alert_monitor', return_value=monitor), \
+                mock.patch.object(views, '_state_payload', side_effect=lambda extra: extra):
+            self.assertEqual(json.loads(test_api(request).content),
+                             {'trend_alert_test': monitor.send_test.return_value})
+            monitor.send_test.side_effect = OSError('disk full')
+            failed = test_api(request)
+        self.assertEqual((failed.status_code, json.loads(failed.content)['reason']),
+                         (503, 'trend_alert_test_failed'))
 
     def test_stats_api_rejects_bad_parameters(self):
         with tempfile.TemporaryDirectory() as temp, override_settings(DATASET_ROOT=Path(temp)):
