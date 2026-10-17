@@ -16,6 +16,7 @@ const remoteVideo = document.getElementById('remote-video');
     const feederSensorStateEl = document.getElementById('feeder-sensor-state');
     const feederSensorIndicator = document.getElementById('feeder-sensor-indicator');
     const feederTestResultEl = document.getElementById('feeder-test-result');
+    const reasonCodesEl = document.getElementById('reason-codes');
     const motorCommandEl = document.getElementById('motor-command');
     const sorterStatusEl = document.getElementById('sorter-status');
     const sorterFruitEl = document.getElementById('sorter-fruit');
@@ -149,19 +150,19 @@ const remoteVideo = document.getElementById('remote-video');
         selectNetworkButton.disabled = networkSelectionInFlight || !network.selection_allowed || !interfaces.length;
         setTextIfChanged(document.getElementById('network-status'), selected
             ? `網路已選擇：${network.selection.name}，${network.selection.ipv4}`
-            : `尚未確認網路：${network.reason || 'network_selection_required'}`);
+            : `尚未確認網路：${reasonText(network.reason || 'network_selection_required')}`);
         setTextIfChanged(document.getElementById('server-url'), network.server_url || '尚未確認');
         setTextIfChanged(document.getElementById('camera-url'), network.camera_url || '確認網路後顯示');
         setTextIfChanged(document.getElementById('network-discovery-status'),
-            `裝置探索：${network.discovery?.status || 'unknown'}${network.discovery?.reason ? `，${network.discovery.reason}` : ''}。正式硬體運轉維持停用。`);
+            `裝置探索：${statusText(network.discovery?.status)}${network.discovery?.reason ? `，${reasonText(network.discovery.reason)}` : ''}。正式硬體運轉維持停用。`);
         const device = network.esp32 || {};
         setTextIfChanged(document.getElementById('network-device-status'), device.online
-            ? `ESP32 診斷往返已完成，來源：${device.source}${device.reason ? `，探索原因：${device.reason}` : ''}。`
-            : `ESP32 診斷尚未連線：${device.reason || device.status || 'waiting_for_report'}。${device.reason === 'multiple_controllers_found' ? '發現多個控制端，請關閉多餘的 Django。' : '探索失敗時可使用控制端網址備援。'}`);
+            ? `ESP32 診斷往返已完成（${device.source === 'manual' ? '手動填寫網址' : '自動探索'}）。`
+            : `ESP32 診斷尚未連線：${reasonText(device.reason || device.status || 'waiting_for_report')}。${device.reason === 'multiple_controllers_found' ? '' : '探索失敗時可使用控制端網址備援。'}`);
         const setup = network.setup || {};
         setTextIfChanged(document.getElementById('network-setup-status'), setup.status === 'allowed'
-            ? '可配網（allowed）：ESP32 與中央均處於安全閒置。'
-            : `${setup.status === 'blocked' ? '配網被阻擋（blocked）' : '配網無法確認（unknown）'}：${setup.reason || 'unknown'}`);
+            ? '可以設定網路：ESP32 與 Django 都處於安全閒置。'
+            : `${setup.status === 'blocked' ? '暫時不能設定網路' : '無法確認能否設定網路'}：${reasonText(setup.reason) || statusText('unknown')}`);
         networkSetupButton.disabled = networkSetupInFlight || setup.status !== 'allowed';
         const qr = document.getElementById('camera-qr');
         qr.hidden = !selected;
@@ -544,6 +545,27 @@ const remoteVideo = document.getElementById('remote-video');
         setTextIfChanged(feederSensorStateEl, sensor.label);
         feederSensorIndicator.dataset.state = sensor.tone;
 
+        const network = data.network || {};
+        const rawReasons = {
+            auto_run: data.auto_run_disabled_reason,
+            photo_capture: data.photo_capture_disabled_reason,
+            options: data.options_disabled_reason,
+            classify: data.classify_disabled_reason,
+            manual_grade: data.manual_grade_disabled_reason,
+            feeder_test: data.feeder_test_disabled_reason,
+            recovery: data.network_recovery_confirm_disabled_reason,
+            last_error: data.last_error_reason,
+            alert: data.operator_alert && data.operator_alert.reason,
+            detection: data.detection_error,
+            network: network.reason,
+            discovery: network.discovery && network.discovery.reason,
+            esp32: network.esp32 && network.esp32.reason,
+            setup: network.setup && network.setup.reason,
+        };
+        setTextIfChanged(reasonCodesEl, Object.entries(rawReasons)
+            .filter(([, code]) => code)
+            .map(([key, code]) => `${key}=${code}`)
+            .join('\n') || '無');
         const feederResult = data.feeder_test_result;
         setTextIfChanged(feederTestResultEl, feederResult
             ? `${feederResult.elapsed_ms} / ${feederResult.max_run_ms} ms｜${feederResult.stop_reason}`
@@ -751,14 +773,14 @@ const remoteVideo = document.getElementById('remote-video');
     function errorReasonText(data) {
         const alert = data.operator_alert;
         if (!alert) {
-            return data.last_error_reason || '';
+            return reasonText(data.last_error_reason);
         }
         const feederMetrics = [
             Number.isFinite(alert.feeder_elapsed_ms) ? `實際 ${alert.feeder_elapsed_ms} ms` : '',
             Number.isFinite(alert.feeder_max_run_ms) ? `上限 ${alert.feeder_max_run_ms} ms` : '',
-            alert.feeder_stop_reason ? `停止原因 ${alert.feeder_stop_reason}` : '',
+            alert.feeder_stop_reason ? `停止原因：${reasonText(alert.feeder_stop_reason)}` : '',
         ].filter(Boolean).join('｜');
-        const reason = alert.reason || data.last_error_reason || 'unknown';
+        const reason = reasonText(alert.reason || data.last_error_reason) || statusText('unknown');
         return `${reason}：${alert.instruction || '請排除狀況後重新開始。'}${feederMetrics ? `（${feederMetrics}）` : ''}`;
     }
 
@@ -825,12 +847,20 @@ const remoteVideo = document.getElementById('remote-video');
     const PHOTO_FILENAMES = ['img_01.jpg', 'img_02.jpg', 'img_03.jpg'];
     const CAPTURING_STATUSES = ['waiting_camera', 'uploading', 'photo_interval'];
     const REASON_TEXT = JSON.parse(document.getElementById('reason-text').textContent);
+    const STATUS_TEXT = JSON.parse(document.getElementById('status-text').textContent);
 
+    // The main screen shows Chinese only; raw codes stay in the diagnostics panel.
     function reasonText(code) {
         if (!code) {
             return '';
         }
-        return REASON_TEXT[code] ? `${REASON_TEXT[code]}（${code}）` : code;
+        // Codes may carry detail after a colon, e.g. esp32_not_idle:motion or grade_model_failed: ValueError.
+        const base = String(code).split(':', 1)[0].trim();
+        return REASON_TEXT[base] || '其他狀態，詳見診斷區';
+    }
+
+    function statusText(status) {
+        return STATUS_TEXT[status] || STATUS_TEXT.unknown;
     }
 
     function notificationConfigReasonText(configuration) {
@@ -1147,7 +1177,7 @@ const remoteVideo = document.getElementById('remote-video');
         const result = data.detection_result;
         if (!result) {
             if (data.detection_error) {
-                return { state: 'review', title: '待人工處理', detail: `檢測未完成：${data.detection_error}` };
+                return { state: 'review', title: '待人工處理', detail: `檢測未完成：${reasonText(data.detection_error)}` };
             }
             if (detectionRunning(data)) {
                 return { state: 'running', title: '檢測中', detail: '三張照片已保存，正在執行四模型檢測與 XGBoost 判級' };
@@ -1157,7 +1187,7 @@ const remoteVideo = document.getElementById('remote-video');
         const classification = result.classification || {};
         const storage = result.storage || {};
         if (classification.status === 'abandoned' && classification.source === 'manual') {
-            const failure = result.reason || (result.model_classification || {}).reason || '未知原因';
+            const failure = reasonText(result.reason || (result.model_classification || {}).reason) || '未知原因';
             return {
                 state: 'manual',
                 title: '已放棄本輪',
@@ -1166,7 +1196,7 @@ const remoteVideo = document.getElementById('remote-video');
             };
         }
         if (classification.status === 'graded' && classification.source === 'manual') {
-            const failure = result.reason || (result.model_classification || {}).reason || '未知原因';
+            const failure = reasonText(result.reason || (result.model_classification || {}).reason) || '未知原因';
             return {
                 state: 'manual',
                 title: `${classification.label}（人工判定）`,
@@ -1175,7 +1205,7 @@ const remoteVideo = document.getElementById('remote-video');
             };
         }
         if (storage.status === 'failed') {
-            return { state: 'review', title: '待人工處理', detail: `結果保存失敗，不視為完成：${storage.reason}` };
+            return { state: 'review', title: '待人工處理', detail: `結果保存失敗，不視為完成：${reasonText(storage.reason)}` };
         }
         if (classification.status === 'graded' && result.complete) {
             return { state: 'graded', title: classification.label, detail: '三張照片取最低等級，結果已保存' };
@@ -1184,13 +1214,13 @@ const remoteVideo = document.getElementById('remote-video');
             return {
                 state: 'review',
                 title: '待人工處理',
-                detail: `模型等級 ${classification.label}，但檢測未完整，不視為完成：${result.reason || '未知原因'}`,
+                detail: `模型等級 ${classification.label}，但檢測未完整，不視為完成：${reasonText(result.reason) || '未知原因'}`,
             };
         }
         return {
             state: 'review',
             title: '待人工處理',
-            detail: `無法判級：${classification.reason || result.reason || '未知原因'}`,
+            detail: `無法判級：${reasonText(classification.reason || result.reason) || '未知原因'}`,
         };
     }
 
@@ -1248,8 +1278,8 @@ const remoteVideo = document.getElementById('remote-video');
             `待送 ${counts.pending || 0}（暫停 ${notification.paused || 0}）・已送出 ${counts.sent || 0}`
                 + `・送達不明 ${counts.uncertain || 0}・失敗 ${counts.failed || 0}`,
             current ? `本輪：${NOTIFICATION_RESULT_TEXT[current.status] || current.status}`
-                + (current.reason && current.status !== 'sent' ? `（${current.reason}）` : '') : null,
-            notification.last_error ? `最近錯誤：${notification.last_error}` : null,
+                + (current.reason && current.status !== 'sent' ? `（${reasonText(current.reason)}）` : '') : null,
+            notification.last_error ? `最近錯誤：${reasonText(notification.last_error)}` : null,
         ];
         setTextIfChanged(notificationStatus, lines.filter(Boolean).join('\n'));
     }

@@ -132,7 +132,7 @@
                 <button id="btn-operation-toggle" type="button" class="disclosure-toggle" aria-controls="operation-details" aria-expanded="false" aria-label="展開模式設定"></button>
             </div>
             <ul id="action-guidance" class="action-guidance" aria-live="polite" hidden>
-                <li>ESP32、送料校正、HC-SR04、相機與三站流程皆就緒後，系統才會開放正式自動運轉。</li>
+                <li>ESP32、硬體參數同步、HC-SR04、相機與三站流程皆就緒後，系統才會開放正式自動運轉。</li>
             </ul>
         </div>
     </section>
@@ -367,6 +367,7 @@
                         <div><dt>Capture raw state</dt><dd id="raw-state-label">idle</dd></div>
                         <div><dt>送料結果</dt><dd id="feeder-test-result">尚無資料</dd></div>
                         <div><dt>馬達命令</dt><dd id="motor-command">none</dd></div>
+                        <div><dt>原因代碼</dt><dd id="reason-codes" class="reason-codes">無</dd></div>
                     </dl>
                 <dl class="sorter-summary">
                     <div><dt>硬體分類器</dt><dd id="sorter-status">閒置</dd></div>
@@ -444,6 +445,7 @@
 </section>
 
 {{ reason_text|json_script:"reason-text" }}
+{{ status_text|json_script:"status-text" }}
 <script src="{% static 'fruit_app/js/dashboard.js' %}?v={{ asset_version }}"></script>
 <script src="{% static 'fruit_app/vendor/chart-4.4.1.umd.js' %}"></script>
 <script src="{% static 'fruit_app/js/assistant_render.js' %}?v={{ asset_version }}"></script>

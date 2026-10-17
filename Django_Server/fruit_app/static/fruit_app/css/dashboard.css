@@ -1121,6 +1121,12 @@ textarea {
     font-size: 13px;
 }
 
+.reason-codes {
+    white-space: pre-line;
+    font-family: var(--font-mono);
+    font-size: 12px;
+}
+
 .diagnostics-grid {
     display: grid;
     grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);

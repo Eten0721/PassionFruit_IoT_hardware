@@ -36,7 +36,7 @@ from . import (
 )
 from .dataset_store import DatasetFileBusyError, write_recovery_payload as _write_recovery_payload
 from .runtime_state import RuntimeState
-from .reason_text import REASON_TEXT
+from .reason_text import REASON_TEXT, STATUS_TEXT, describe as describe_reason
 from . import local_network
 from .local_network import network_required
 
@@ -210,7 +210,7 @@ APP_STATE = RuntimeState({
     'detection_progress': None,
     'detection_error': None,
     'status': 'idle',
-    'message': '等待手機相機、ESP32 與送料校正完成。',
+    'message': '等待手機相機與 ESP32 就緒。',
 })
 STATE_LOCK = APP_STATE.lock
 
@@ -543,7 +543,8 @@ def camera_view(request):
 def dashboard_view(request):
     _ensure_dataset_structure()
     # Cached old scripts against a newer /api/state/ break the whole page.
-    context = {'asset_version': _asset_version(DASHBOARD_ASSETS), 'reason_text': REASON_TEXT}
+    context = {'asset_version': _asset_version(DASHBOARD_ASSETS), 'reason_text': REASON_TEXT,
+               'status_text': STATUS_TEXT}
     return _no_store_response(render(request, 'dashboard.html', context))
 
 
@@ -690,7 +691,7 @@ def feeder_test_api(request):
         APP_STATE['last_error_command'] = None
         APP_STATE['last_error_command_id'] = None
         APP_STATE['status'] = 'waiting_feeder'
-        APP_STATE['message'] = 'ESP32 正在執行一次送料校正測試。'
+        APP_STATE['message'] = 'ESP32 正在測試送料一顆。'
         payload = _state_payload(extra={'ok': True, 'feeder_test_started': True})
     return JsonResponse(payload)
 
@@ -959,7 +960,7 @@ def auto_run_api(request):
         reason = _auto_run_disabled_reason(allow_recovery=True)
         if reason:
             return _json_error(
-                '目前無法開始自動運轉，請確認相機、ESP32、設定與送料校正皆已就緒。',
+                '目前無法開始自動運轉，請確認相機、ESP32 與硬體參數同步皆已就緒。',
                 status=409,
                 reason=reason,
             )
@@ -1464,7 +1465,7 @@ def _detection_message(fruit_id, result):
     storage = result.get('storage') or {}
     if storage.get('status') == 'failed':
         return (
-            f'{fruit_id} 檢測結果保存失敗（{storage.get("reason")}），不視為完成；'
+            f'{fruit_id} 檢測結果保存失敗（{describe_reason(storage.get("reason"))}），不視為完成；'
             '請檢查磁碟後刪除本輪重拍。'
         )
     classification = result.get('classification') or {}
@@ -1475,7 +1476,7 @@ def _detection_message(fruit_id, result):
         )
     reason = classification.get('reason') or result.get('reason')
     return (
-        f'{fruit_id} 檢測未完整完成，待人工處理（{reason}）；'
+        f'{fruit_id} 檢測未完整完成，待人工處理（{describe_reason(reason)}）；'
         '已保留原圖與可用產物。'
     )
 
@@ -1710,7 +1711,7 @@ def manual_grade_api(request):
         ).get('grade') == grade
         if reason and not duplicate:
             return _json_error(
-                MANUAL_GRADE_MESSAGES.get(reason, f'無法人工判級：{reason}'), status=409, reason=reason,
+                MANUAL_GRADE_MESSAGES.get(reason, f'無法人工判級：{describe_reason(reason)}'), status=409, reason=reason,
             )
         if abandon and current.get('hardware_mode') != 'photo_only':
             return _json_error(MANUAL_GRADE_MESSAGES['hardware_abandon_requires_discard'],
@@ -2306,7 +2307,7 @@ def classify_api(request):
             reason = _sorter_start_disabled_reason()
             if reason:
                 return _json_error(
-                    f'無法安全分類（{reason}）；已保留暫存照片與 Gate 3 上的果實。',
+                    f'無法安全分類（{describe_reason(reason)}）；已保留暫存照片與 Gate 3 上的果實。',
                     status=409, reason=reason,
                 )
 
@@ -2841,7 +2842,7 @@ def reset_runtime_state_for_tests():
             'detection_progress': None,
             'detection_error': None,
             'status': 'idle',
-            'message': '等待手機相機、ESP32 與送料校正完成。',
+            'message': '等待手機相機與 ESP32 就緒。',
         })
         WEBRTC_STATE.update({
             'offer': None,
@@ -3562,7 +3563,7 @@ def _set_sorter_failed(fruit_id, label, classification_code, reason, *, phase='q
     APP_STATE['sorter_started_monotonic'] = None
     APP_STATE['sorter_deadline_monotonic'] = None
     APP_STATE['sorter_recovery_required'] = True
-    APP_STATE['message'] = f'{fruit_id} 資料已分類，但硬體分類命令建立失敗：{reason}'
+    APP_STATE['message'] = f'{fruit_id} 資料已分類，但硬體分類命令建立失敗：{describe_reason(reason)}'
     try:
         _write_sorter_recovery_marker(phase=phase, reason=reason)
     except OSError:
@@ -3707,7 +3708,7 @@ def _handle_sorter_report(event, data, command_id):
         APP_STATE['sorter_status'] = 'failed'
         APP_STATE['sorter_error'] = reason
         APP_STATE['status'] = 'error'
-        APP_STATE['message'] = f'{fruit_id} 的硬體分類器失敗：{reason}'
+        APP_STATE['message'] = f'{fruit_id} 的硬體分類器失敗：{describe_reason(reason)}'
         APP_STATE['sorter_recovery_required'] = True
         try:
             _write_sorter_recovery_marker(phase='failed', reason=reason)
@@ -4029,7 +4030,7 @@ def _handle_feed_result(event, data, command_id):
         APP_STATE['message'] = (
             'HC-SR04 已偵測百香果，測試送料正常停止。'
             if result['ok']
-            else f'測試送料已停止：{result["stop_reason"]}。'
+            else f'測試送料已停止：{describe_reason(result["stop_reason"])}。'
         )
     elif result['ok']:
         APP_STATE['status'] = 'waiting_fruit'
@@ -4051,7 +4052,7 @@ def _handle_feed_result(event, data, command_id):
                 'HC-SR04 無有效回音；已停止自動送料，請檢查線材、供電、'
                 'Echo 分壓與感測方向。'
             ),
-        }.get(event, f'正式送料已停止：{result["stop_reason"]}。')
+        }.get(event, f'正式送料已停止：{describe_reason(result["stop_reason"])}。')
     if not result['ok']:
         APP_STATE['last_error_reason'] = event
         APP_STATE['last_error_command'] = 'feed_one'
@@ -4371,7 +4372,7 @@ def _apply_sorter_timeout():
     APP_STATE['sorter_status'] = 'timeout'
     APP_STATE['sorter_error'] = reason
     APP_STATE['sorter_deadline_monotonic'] = None
-    APP_STATE['message'] = f'{APP_STATE.get("sorter_fruit_id")} 的硬體分類器逾時：{reason}'
+    APP_STATE['message'] = f'{APP_STATE.get("sorter_fruit_id")} 的硬體分類器逾時：{describe_reason(reason)}'
     APP_STATE['sorter_recovery_required'] = True
     try:
         _write_sorter_recovery_marker(phase='timeout', reason=reason)
