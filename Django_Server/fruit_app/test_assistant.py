@@ -417,6 +417,51 @@ class AssistantTests(SimpleTestCase):
                 assistant.http_post_json('https://example.invalid', {}, {}, 1)
         self.assertEqual(raised.exception.reason, 'assistant_offline')
 
+    def test_system_status_tool_returns_snapshot_to_gemini_without_holding_lock(self):
+        self.configure()
+
+        def http_post(*args):
+            self.assertFalse(views.STATE_LOCK._is_owned())
+            return http(*args)
+
+        http = FakeGemini(
+            _candidate({'functionCall': {'name': 'get_system_status', 'args': {}}}),
+            _candidate({'text': '手機相機已就緒。'}),
+        )
+        bot = assistant.Assistant(self.credentials, self.usage, self.data.root, self.docs,
+                                  http_post=http_post, system_status=lambda: {'camera_ready': True})
+        answer = bot.ask([{'role': 'user', 'text': '手機相機可以用了嗎？'}])
+        self.assertTrue(answer['ok'])
+        declarations = http.calls[0]['payload']['tools'][0]['functionDeclarations']
+        self.assertIn(assistant.SYSTEM_STATUS_TOOL, declarations)
+        self.assertEqual(assistant.SYSTEM_STATUS_TOOL['parameters'],
+                         {'type': 'object', 'properties': {}})
+        response = http.calls[1]['payload']['contents'][-1]['parts'][0]['functionResponse']
+        self.assertEqual(response, {'name': 'get_system_status', 'response': {'camera_ready': True}})
+
+    def test_system_status_tool_absent_or_broken_does_not_end_chat(self):
+        self.configure()
+        http = FakeGemini(_candidate({'text': '答'}))
+        self.ask(http)
+        declarations = http.calls[0]['payload']['tools'][0]['functionDeclarations']
+        self.assertNotIn('get_system_status', [tool['name'] for tool in declarations])
+
+        def broken():
+            raise ValueError('PRIVATE-PATH notification_credentials.json SECRET')
+
+        http = FakeGemini(
+            _candidate({'functionCall': {'name': 'get_system_status', 'args': {}}}),
+            _candidate({'text': '暫時讀不到系統狀態。'}),
+        )
+        bot = assistant.Assistant(self.credentials, self.usage, self.data.root, self.docs,
+                                  http_post=http, system_status=broken)
+        with self.assertLogs('fruit_app.assistant', 'WARNING') as logs:
+            answer = bot.ask([{'role': 'user', 'text': '目前狀態？'}])
+        self.assertTrue(answer['ok'])
+        response = http.calls[1]['payload']['contents'][-1]['parts'][0]['functionResponse']['response']
+        self.assertEqual(response, {'ok': False, 'error': 'system_status_unavailable'})
+        self.assertEqual(logs.output, ['WARNING:fruit_app.assistant:System status unavailable: ValueError'])
+
 
 class LauncherIconTests(SimpleTestCase):
     def setUp(self):

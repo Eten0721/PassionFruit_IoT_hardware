@@ -2122,18 +2122,92 @@ def trend_alerts_api(request):
         return JsonResponse(_state_payload())
 
 
+def get_system_status():
+    """Read the assistant whitelist through Dashboard helpers, without dataset synchronization."""
+    with STATE_LOCK:
+        alert = _operator_alert_payload()
+        payload = {key: APP_STATE.get(key) for key in (
+            'work_mode', 'hardware_mode', 'status', 'message',
+            'esp32_feeder_capable', 'esp32_sorter_capable',
+            'auto_run_recovery_reason', 'last_error_reason', 'sorter_recovery_required',
+        )}
+        last_poll = APP_STATE.get('last_esp32_poll_monotonic')
+        last_frame = APP_STATE.get('camera_last_live_frame_monotonic')
+        recovery = APP_STATE.get('network_recovery')
+        payload['network_recovery'] = {'reason': recovery.get('reason')} if recovery else None
+        payload['operator_alert'] = (
+            {key: alert.get(key) for key in ('reason', 'location', 'instruction')} if alert else None
+        )
+        payload.update(
+            esp32_online=_esp32_is_online(), camera_ready=_camera_is_ready(),
+            gate3_manual_removal_required=_gate3_manual_removal_required(),
+            auto_run_disabled_reason=_auto_run_disabled_reason(),
+            photo_capture_disabled_reason=_photo_capture_disabled_reason(),
+            feeder_test_disabled_reason=_feeder_test_disabled_reason(),
+            network_recovery_required=NETWORK_RECOVERY.needs_confirmation,
+        )
+        setup = _network_setup_payload()
+    now = time.monotonic()
+    payload['message'] = assistant.redact_secret_files(payload['message'] or '')
+    payload.update(
+        ok=True, checked_at=_now_string(),
+        last_esp32_poll_seconds_ago=None if last_poll is None else max(0, int(now - last_poll)),
+        camera_last_live_frame_seconds_ago=None if last_frame is None else max(0, int(now - last_frame)),
+        camera_diagnostics=get_camera_diagnostics(),
+    )
+    network = local_network.NETWORK.snapshot()
+    payload['network'] = {key: network.get(key) for key in ('selected', 'reason')}
+    payload['network']['setup'] = {key: setup.get(key) for key in ('status', 'reason')}
+    payload['photo_capture_disabled_reason'] = (
+        payload['photo_capture_disabled_reason'] if network['selected'] else network['reason']
+    )
+    payload['esp32_diagnostics'] = {
+        key: network['esp32'].get(key) for key in ('status', 'source', 'reason', 'online')
+    }
+    line = notification_outbox().status(payload['hardware_mode'])
+    payload['line'] = {key: line[key] for key in (
+        'enabled', 'configured', 'config_reason', 'config_missing_fields',
+    )}
+    payload['models'] = {}
+    for role, model_path in {**settings.DETECTION_MODEL_PATHS, **settings.GRADE_MODEL_PATHS}.items():
+        path = Path(model_path)
+        try:
+            with path.open('rb') as model_file:
+                header = model_file.read(64)
+            status = 'lfs_pointer' if header.startswith(b'version https://git-lfs.github.com/spec/') else 'ok'
+        except FileNotFoundError:
+            status = 'missing'
+        payload['models'][role] = {'name': path.name, 'status': status}
+    values = []
+
+    def collect_codes(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                collect_codes(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect_codes(item)
+        elif isinstance(value, str) and value in REASON_TEXT:
+            values.append(value)
+
+    collect_codes(payload)
+    payload['reason_text'] = {code: REASON_TEXT[code] for code in values}
+    return payload
+
+
 def dashboard_assistant():
     runtime_root = Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).parent
     return assistant.Assistant(
         runtime_root / 'assistant_credentials.json', runtime_root / 'assistant_usage.json',
         _dataset_root('detection'), Path(settings.BASE_DIR).parent / 'docs',
         trend_status=lambda: trend_alert_monitor().status(include_details=True),
+        system_status=get_system_status,
     )
 
 
 @csrf_exempt
 @require_POST
-@network_required(cleanup=True, operation='assistant')  # Read-only; never takes STATE_LOCK.
+@network_required(cleanup=True, operation='assistant')  # Status takes STATE_LOCK only before Gemini requests.
 def assistant_api(request):
     """Answer one Dashboard chat turn; expected failures return a reason."""
     try:
