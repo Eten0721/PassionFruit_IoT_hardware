@@ -4,7 +4,7 @@
 
 從 [Releases](https://github.com/Eten0721/PassionFruit_IoT_hardware/releases) 下載最新版的 **Source code (zip)** 並解壓縮，雙擊 `啟動系統.bat`；第一次會自動安裝所需環境，完成後開啟 Dashboard。只用電腦與手機相機時，依 [快速開始（不含 ESP32）](docs/快速開始.md) 操作；ESP32 配網、硬體模式與更新方式見 [完整部署與操作說明](docs/環境部署說明文件.md)。
 
-本專案整合 ESP32、Django、手機相機與伺服機構，建立百香果單顆送料、三站定點拍攝、Dataset 管理與四級實體分流。現行軟體已接入送料、三站拍攝、Gate 3 等待人工分類與複合分流，也提供純拍攝、YOLO 外觀檢測及區域網路配網；新平台、送料機構、分類器與供電的完整實機驗收仍未完成。
+本專案整合 ESP32、Django、手機相機與伺服機構，建立百香果單顆送料、三站定點拍攝、Dataset 管理與四級實體分流。現行軟體已接入送料、三站拍攝、Gate 3 等待分類與複合分流，也提供純拍攝、YOLO 外觀檢測與 XGBoost 四級判級、加工果 LINE 通知、瑕疵趨勢提醒、唯讀 AI 助手「奶蛋博士」及區域網路配網；新平台、送料機構、分類器與供電的完整實機驗收仍未完成。
 
 ![早期機構參考圖，現行配置以規格與驗收文件為準](record_image/實際硬體圖/實際硬體圖.png)
 
@@ -28,7 +28,9 @@
 > [!NOTE]
 > Gate 3 等待分類與複合分流已完成軟體實作；MG996R 沒有位置回授，就位與落果仍依固定等待時間控制，不代表實體位置已確認。現行角度、timing 與安全契約見 [拍攝、檢測與分類規格](docs/CAPTURE_SPEC.md)，實機驗收狀態見 [目前狀態](docs/CURRENT_STATUS.md)。
 
-純拍攝可在不連接 ESP32 的情況下自動拍攝三張。自動檢測模式已接入 ROI、色澤、皺褶與局部瑕疵四模型，顯示並保存結果，目前不產生品質級距；使用硬體檢測時固定執行單輪，Gate 3 保持關閉，後續須人工安全復原。
+純拍攝可在不連接 ESP32 的情況下自動拍攝三張。自動檢測依序執行 ROI、色澤、皺褶與局部瑕疵四個 YOLO 模型，再以兩階段 XGBoost 逐張判級，整顆取三張最低級；無法判級時交由人工選級或放棄本輪。硬體模式下，等級保存後經 Gate 3 與分類器實體分槽，連續分槽仍待實機驗收。
+
+檢測結果另有三項延伸功能：加工果可經 LINE 發送圖文通知；Dashboard 提供檢測統計與瑕疵趨勢提醒；奶蛋博士以 Gemini 回答檢測統計、農業知識、部署操作與目前系統狀態，只查詢、不操作機器。契約見規格的 [LINE 通知](docs/CAPTURE_SPEC.md#檢測資料與-line-通知)、[統計與趨勢提醒](docs/CAPTURE_SPEC.md#檢測統計與趨勢提醒) 與 [奶蛋博士](docs/CAPTURE_SPEC.md#奶蛋博士)。
 
 ## 系統架構
 
@@ -43,8 +45,10 @@ flowchart LR
     ESP32 --> Capture["HC-SR04<br/>三站 MG996R 閘門"]
     ESP32 --> Sorter["下置式 MG996R 分類器"]
     Django --> Dataset["Dataset<br/>三站照片與 metadata"]
-    Django --> AI["YOLO 外觀檢測<br/>Django 本地推論、固定部署權重"]
+    Django --> AI["YOLO 檢測 + XGBoost 判級<br/>Django 本地推論、固定部署權重"]
     AI -- 檢測結果 --> Django
+    Django --> Notify["LINE 通知<br/>Cloudinary 圖片"]
+    Assistant["奶蛋博士<br/>Gemini 唯讀助手"] <-- 唯讀查詢 --> Django
 ```
 
 Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS client 輪詢命令，在本機負責感測、馬達停止與有界硬體流程；手機處理相機 readiness、預覽、拍攝與上傳。本 Repository 維護 Django 本地推論、四個 YOLO 權重與兩個 XGBoost 判級模型（Git LFS），部署不需要外部模型 Repository 或資料。
@@ -72,7 +76,9 @@ Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS clie
 - Capture、送料與 sorter 共用單一 motor command slot，command ID 與 retry 具備冪等保護。
 - HC-SR04 正式送料與測試送料共用回授停止、最大運轉時間與感測器 unavailable 安全停止。
 - Gate 3 等待人工分類、分類器先轉向再開閘、四顆馬達共同歸位與跨重啟復原鎖已接入。
-- 純拍攝與硬體模式皆可執行三張照片的四模型檢測、結果展示與保存；檢測不驅動實體分流。
+- 純拍攝與硬體模式皆可執行三張照片的四模型檢測與 XGBoost 判級；硬體模式依等級經 Gate 3 與分類器實體分槽。
+- 加工果 LINE 圖文通知（持久待送與重試）、檢測統計圖表與三層瑕疵趨勢提醒。
+- 奶蛋博士唯讀助手：檢測統計與圖表、農業知識搜尋、部署問答，以及 ESP32、手機相機、模型檔與 LINE 設定的系統狀態查詢。
 - Dashboard 網路確認、相機 QR、ESP32 動態探索、失聯安全鎖與安全閒置 BOOT 配網已接入。
 - 正式 Firmware 已依感測、閘門、分類器、HTTPS 與流程控制拆分模組。
 
@@ -81,7 +87,8 @@ Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS clie
 - 完成新平台、XINHUI 分槽送料盤、下置式分類器與單電源雙降壓分支的製作、校正及完整流程驗收。
 - 三站閘門目前直接寫入 Home／Release 角度；只有新平台實測仍會夾果時，才評估非阻塞小角度遞增。
 - 驗證配網、換網、失聯停止延遲、斷電保存與重新啟動後的實體位置及人工復原。
-- 建立 Dataset 第二份備份、正式 train／valid／test 切分、標註與模型驗收；AI 自動品質分級與實體分流尚未接入。
+- 建立 Dataset 第二份備份、正式 train／valid／test 切分、標註與模型驗收；以實際檢測資料校正趨勢提醒門檻。
+- 以真實帳號驗收 LINE 通知，以真實 Gemini 金鑰與實機情境驗收奶蛋博士。
 
 ## 技術組成
 
@@ -91,7 +98,8 @@ Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS clie
 | Frontend | HTML、CSS、JavaScript、WebRTC |
 | Firmware | ESP32、Arduino C++、ESP32Servo `3.2.1` |
 | Target hardware | HC-SR04、XINHUI `60KG`、4 顆位置型 MG996R、單電源與雙 LM25116 降壓分支 |
-| Detection / Data | YOLO、JPEG、CSV metadata、檔案系統 Dataset 與檢測產物 |
+| Detection / Data | YOLO、XGBoost、JPEG、CSV metadata、檔案系統 Dataset 與檢測產物 |
+| Integrations | LINE Messaging API、Cloudinary、Gemini REST API、Chart.js |
 | Engineering | Git、GitHub Issues、ADR、模組化狀態機與實機驗收 |
 
 ## Repository 結構
