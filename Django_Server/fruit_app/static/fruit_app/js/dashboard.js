@@ -1489,7 +1489,7 @@ const remoteVideo = document.getElementById('remote-video');
         // Reasons stay as button tooltips; the full list shows only when expanded.
         actionGuidance.hidden = !open;
         operationToggle.setAttribute('aria-expanded', String(open));
-        operationToggle.setAttribute('aria-label', `${open ? '收合' : '展開'}目前流程與操作設定`);
+        operationToggle.setAttribute('aria-label', `${open ? '收合' : '展開'}模式設定`);
     }
 
     function renderActionGuidance(data, photoOnly) {

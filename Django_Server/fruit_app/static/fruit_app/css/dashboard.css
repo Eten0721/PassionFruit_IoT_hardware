@@ -1530,9 +1530,29 @@ textarea {
 
 
 .network-panel { margin-bottom: 16px; }
+/* Selection and status on the left, phone QR on the right; stacks on narrow screens. */
+.network-content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
+    gap: 16px 32px;
+    align-items: start;
+}
+.network-main > p,
+.network-qr > p { color: var(--text-soft); }
+.network-qr {
+    display: grid;
+    justify-items: center;
+    text-align: center;
+    padding: 16px;
+    border-radius: var(--radius);
+    background: var(--surface-muted);
+}
+.network-qr > p { margin: 0; font-size: 13px; }
+@media (max-width: 760px) {
+    .network-content { grid-template-columns: minmax(0, 1fr); }
+}
 /* Label on its own row; the select and its confirm button share the next. */
 #network-form {
-    max-width: 640px;
     margin-bottom: 12px;
 }
 
@@ -1710,8 +1730,11 @@ textarea {
     padding: 6px 8px;
 }
 
-.trend-alert-block,
-.notification-block:not(.trend-alert-block) {
+.line-content .control-guidance {
+    margin: 0;
+}
+
+.trend-alert-block {
     padding-top: 16px;
     border-top: 1px solid var(--border);
 }

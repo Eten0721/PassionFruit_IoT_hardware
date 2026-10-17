@@ -44,29 +44,32 @@
                 <span id="network-summary-status" class="summary-badge" data-state="pending">尚未確認</span>
             </span>
         </summary>
-        <div class="disclosure-content">
-            <p>每次啟動都要確認，即使只有一個候選。電腦與手機須連到可互通的同一區域網路。</p>
-            <form id="network-form" class="controls">
-                <label for="network-interface">已連線介面與 IPv4</label>
-                <select id="network-interface" required><option value="">請選擇網路</option></select>
-                <button id="btn-select-network" class="button" type="submit">確認使用</button>
-            </form>
-            <p id="network-status" role="status" aria-live="polite">等待介面盤點。</p>
-            <p>控制端網址：<strong id="server-url">尚未確認</strong></p>
-            <img id="camera-qr" width="220" height="220" alt="手機相機 HTTPS 網址 QR Code" hidden>
-            <p>用手機 Chrome 掃碼，再按「開啟相機」並允許權限。若憑證警告確認後仍無法開啟，依相機頁的安全來源診斷處理。</p>
-            <p id="network-discovery-status"></p>
-            <p id="network-device-status" role="status" aria-live="polite"></p>
+        <div class="disclosure-content network-content">
+            <div class="network-main">
+                <p>每次啟動都要確認，即使只有一個候選。電腦與手機須連到可互通的同一區域網路。</p>
+                <form id="network-form" class="controls">
+                    <label for="network-interface">已連線介面與 IPv4</label>
+                    <select id="network-interface" required><option value="">請選擇網路</option></select>
+                    <button id="btn-select-network" class="button" type="submit">確認使用</button>
+                </form>
+                <p id="network-status" role="status" aria-live="polite">等待介面盤點。</p>
+                <p>控制端網址：<strong id="server-url">尚未確認</strong></p>
+                <p id="network-discovery-status"></p>
+                <p id="network-device-status" role="status" aria-live="polite"></p>
+            </div>
+            <div class="network-qr">
+                <img id="camera-qr" width="220" height="220" alt="手機相機 HTTPS 網址 QR Code" hidden>
+                <p>用手機 Chrome 掃碼，再按「開啟相機」並允許權限。若憑證警告確認後仍無法開啟，依相機頁的安全來源診斷處理。</p>
+            </div>
         </div>
     </details>
-    <section id="operation-panel" class="panel operation-panel" aria-label="目前流程與操作">
+    <section id="operation-panel" class="panel operation-panel" aria-label="模式設定">
         <details id="operation-details" class="operation-details">
             <summary>
                 <span class="operation-summary-text">
-                    <strong id="operation-title">目前流程與操作設定</strong>
+                    <strong id="operation-title">模式設定</strong>
                     <small id="operation-mode-summary">工作模式與硬體選項載入中</small>
                 </span>
-                <span id="notification-summary-status" class="summary-badge neutral" title="LINE 加工果通知">LINE 通知載入中</span>
                 <span id="state-badge" class="state-badge" data-state="idle"><span class="status-dot" aria-hidden="true"></span><strong id="state-label">閒置</strong></span>
             </summary>
             <div class="operation-content">
@@ -108,46 +111,6 @@
                     </ul>
                 </div>
 
-                <div class="notification-block">
-                    <div class="subheading-row">
-                        <h3>LINE 加工果通知</h3>
-                        <span id="notification-mode-label">依目前硬體選項</span>
-                    </div>
-                    <button id="btn-notification-toggle" type="button" class="button" aria-pressed="false" aria-describedby="notification-status">開啟通知</button>
-                    <p id="notification-status" class="control-guidance" aria-live="polite"></p>
-                </div>
-
-                <form id="trend-alert-form" class="notification-block trend-alert-block" novalidate>
-                    <div class="subheading-row">
-                        <h3>瑕疵趨勢提醒</h3>
-                        <span>固定規則・計入所有已判級果實</span>
-                    </div>
-                    <label class="trend-alert-switch"><input id="trend-alert-enabled" type="checkbox"> 啟用趨勢提醒（LINE 與此處顯示）</label>
-                    <div class="trend-alert-grid">
-                        <label>最近幾天<input id="trend-alert-window" type="number" min="1" max="60" step="1"></label>
-                        <label>冷卻（小時）<input id="trend-alert-cooldown" type="number" min="0" max="720" step="1"></label>
-                        <label>當日突增倍數<input id="trend-alert-spike-factor" type="number" min="1.1" max="20" step="0.1"></label>
-                        <label>當日最少顆數<input id="trend-alert-spike-min" type="number" min="1" max="10000" step="1"></label>
-                    </div>
-                    <div class="trend-alert-table-wrap">
-                        <table class="trend-alert-table">
-                            <caption>各類參數（比例以檢測資料中所有已判級果實計）</caption>
-                            <thead><tr><th scope="col">類別</th><th scope="col">門檻 %</th><th scope="col">上升百分點</th><th scope="col">最少顆數</th><th scope="col">提醒方向</th></tr></thead>
-                            <tbody id="trend-alert-categories"></tbody>
-                        </table>
-                    </div>
-                    <dl class="trend-alert-help">
-                        <div><dt>門檻 %</dt><dd>最近幾天內，有這類瑕疵的果實佔已判級果實的比例，達到此值就提醒。例：門檻 20%、最近 7 天 50 顆中有 10 顆炭疽病（20%）即提醒。</dd></div>
-                        <div><dt>上升百分點</dt><dd>最近幾天的比例比再往前同樣天數高出多少就提醒，以百分點相減計算。例：從 10% 升到 25% 是上升 15 個百分點。</dd></div>
-                        <div><dt>最少顆數</dt><dd>最近幾天內至少要有這麼多顆已判級果實才判斷，避免樣本太少誤報；比較上升時，前後兩段都要達到。調低較容易觸發。</dd></div>
-                        <div><dt>最近幾天、冷卻、當日突增</dt><dd>只看最近幾天的果實；同一類提醒過後多久內不再重發；今日比例達到今日之前最近幾天的幾倍、且今日至少幾顆時，視為突增。</dd></div>
-                    </dl>
-                    <p class="control-guidance">同一次檢查達標的類別合併成一則 LINE 訊息；下方只列出提醒時間、類別與送出狀態。</p>
-                    <button id="btn-trend-alert-save" type="submit" class="button secondary">保存提醒設定</button>
-                    <p id="trend-alert-status" class="control-guidance" aria-live="polite"></p>
-                    <ol id="trend-alert-list" class="trend-alert-list"></ol>
-                </form>
-
                 <fieldset id="classification-panel" class="classify-panel">
                     <legend id="classification-title">人工分類</legend>
                     <p id="classification-guidance">確認三張照片後，將目前資料提交到對應等級。</p>
@@ -167,7 +130,7 @@
                 <button id="btn-auto-run" type="button" class="button primary-action" disabled>開始執行</button>
                 <button id="btn-recapture" type="button" class="button warning">重新拍攝</button>
                 <button id="btn-discard" type="button" class="button danger ghost-danger">跳過／刪除</button>
-                <button id="btn-operation-toggle" type="button" class="disclosure-toggle" aria-controls="operation-details" aria-expanded="false" aria-label="展開目前流程與操作設定"></button>
+                <button id="btn-operation-toggle" type="button" class="disclosure-toggle" aria-controls="operation-details" aria-expanded="false" aria-label="展開模式設定"></button>
             </div>
             <ul id="action-guidance" class="action-guidance" aria-live="polite" hidden>
                 <li>ESP32、送料校正、HC-SR04、相機與三站流程皆就緒後，系統才會開放正式自動運轉。</li>
@@ -237,6 +200,56 @@
     </div>
 
     <div class="advanced-stack">
+        <details id="line-panel" class="disclosure-panel" aria-labelledby="line-panel-title">
+            <summary>
+                <span><strong id="line-panel-title">LINE 通知</strong><small>加工果通知與瑕疵趨勢提醒。</small></span>
+                <span class="summary-statuses">
+                    <span id="notification-summary-status" class="summary-badge neutral" title="LINE 加工果通知">LINE 通知載入中</span>
+                </span>
+            </summary>
+            <div class="disclosure-content line-content">
+                <div class="notification-block">
+                    <div class="subheading-row">
+                        <h3>LINE 加工果通知</h3>
+                        <span id="notification-mode-label">依目前硬體選項</span>
+                    </div>
+                    <button id="btn-notification-toggle" type="button" class="button" aria-pressed="false" aria-describedby="notification-status">開啟通知</button>
+                    <p id="notification-status" class="control-guidance" aria-live="polite"></p>
+                </div>
+
+                <form id="trend-alert-form" class="notification-block trend-alert-block" novalidate>
+                    <div class="subheading-row">
+                        <h3>瑕疵趨勢提醒</h3>
+                        <span>固定規則・計入所有已判級果實</span>
+                    </div>
+                    <label class="trend-alert-switch"><input id="trend-alert-enabled" type="checkbox"> 啟用趨勢提醒（LINE 與此處顯示）</label>
+                    <div class="trend-alert-grid">
+                        <label>最近幾天<input id="trend-alert-window" type="number" min="1" max="60" step="1"></label>
+                        <label>冷卻（小時）<input id="trend-alert-cooldown" type="number" min="0" max="720" step="1"></label>
+                        <label>當日突增倍數<input id="trend-alert-spike-factor" type="number" min="1.1" max="20" step="0.1"></label>
+                        <label>當日最少顆數<input id="trend-alert-spike-min" type="number" min="1" max="10000" step="1"></label>
+                    </div>
+                    <div class="trend-alert-table-wrap">
+                        <table class="trend-alert-table">
+                            <caption>各類參數（比例以檢測資料中所有已判級果實計）</caption>
+                            <thead><tr><th scope="col">類別</th><th scope="col">門檻 %</th><th scope="col">上升百分點</th><th scope="col">最少顆數</th><th scope="col">提醒方向</th></tr></thead>
+                            <tbody id="trend-alert-categories"></tbody>
+                        </table>
+                    </div>
+                    <dl class="trend-alert-help">
+                        <div><dt>門檻 %</dt><dd>最近幾天內，有這類瑕疵的果實佔已判級果實的比例，達到此值就提醒。例：門檻 20%、最近 7 天 50 顆中有 10 顆炭疽病（20%）即提醒。</dd></div>
+                        <div><dt>上升百分點</dt><dd>最近幾天的比例比再往前同樣天數高出多少就提醒，以百分點相減計算。例：從 10% 升到 25% 是上升 15 個百分點。</dd></div>
+                        <div><dt>最少顆數</dt><dd>最近幾天內至少要有這麼多顆已判級果實才判斷，避免樣本太少誤報；比較上升時，前後兩段都要達到。調低較容易觸發。</dd></div>
+                        <div><dt>最近幾天、冷卻、當日突增</dt><dd>只看最近幾天的果實；同一類提醒過後多久內不再重發；今日比例達到今日之前最近幾天的幾倍、且今日至少幾顆時，視為突增。</dd></div>
+                    </dl>
+                    <p class="control-guidance">同一次檢查達標的類別合併成一則 LINE 訊息；下方只列出提醒時間、類別與送出狀態。</p>
+                    <button id="btn-trend-alert-save" type="submit" class="button secondary">保存提醒設定</button>
+                    <p id="trend-alert-status" class="control-guidance" aria-live="polite"></p>
+                    <ol id="trend-alert-list" class="trend-alert-list"></ol>
+                </form>
+            </div>
+        </details>
+
         <details id="dataset-management" class="disclosure-panel">
             <summary>
                 <span><strong>資料管理</strong><small>設定下一筆 ID、開啟 Dataset 資料夾或重置資料。<span id="dataset-scope" aria-live="polite"></span></small></span>
@@ -279,11 +292,9 @@
                 <div class="setup-qr-block">
                     <img id="setup-qr" src="{% url 'network_setup_qr_api' %}" width="180" height="180" alt="ESP32 設定頁 http://192.168.4.1/ 的 QR Code">
                     <ol class="setup-steps">
-                        <li>未保存過 Wi-Fi 時，ESP32 開機後會自動開熱點；已有設定時，等安全閒置再按上方「開啟 ESP32 設定熱點」，或在機台按一下 BOOT。不要按住 BOOT 上電或重置。</li>
-                        <li>手機連上名稱以 PF-Setup- 開頭的熱點，密碼由維護者提供。</li>
-                        <li>用手機相機掃描左側 QR Code，開啟 http://192.168.4.1/ 設定頁；也可在瀏覽器網址列直接輸入。</li>
-                        <li>選擇或輸入目標 Wi-Fi 與密碼，按「連線並保存」。顯示 saved 與 IP 後，按「退出連線」關閉熱點，再將手機切回目標 Wi-Fi。</li>
-                        <li>不需變更時按「取消設定」或再按一下 BOOT，ESP32 會恢復原本保存的 Wi-Fi。</li>
+                        <li>點選上方按鈕或按一下機台 BOOT，可以重新設定網路。</li>
+                        <li>連上名稱以 PF-Setup- 開頭的熱點，密碼由維護者提供。</li>
+                        <li>連線後掃描左側 QR Code 進入設定頁。</li>
                     </ol>
                 </div>
             </div>
