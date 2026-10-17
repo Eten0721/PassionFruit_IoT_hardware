@@ -36,6 +36,7 @@ from . import (
     webrtc_signaling,
 )
 from .runtime_state import RuntimeState
+from .reason_text import REASON_TEXT
 from . import local_network
 from .local_network import network_required
 
@@ -558,7 +559,7 @@ def camera_view(request):
 def dashboard_view(request):
     _ensure_dataset_structure()
     # Cached old scripts against a newer /api/state/ break the whole page.
-    context = {'asset_version': _asset_version(DASHBOARD_ASSETS)}
+    context = {'asset_version': _asset_version(DASHBOARD_ASSETS), 'reason_text': REASON_TEXT}
     return _no_store_response(render(request, 'dashboard.html', context))
 
 

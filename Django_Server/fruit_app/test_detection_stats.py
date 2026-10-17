@@ -202,7 +202,8 @@ class FakeOutbox:
         return {alert_id: {'status': 'pending', 'reason': None} for alert_id in ids}
 
     def configuration(self):
-        return {'configured': False, 'config_reason': '尚未設定'}
+        return {'configured': False, 'config_reason': 'line_credentials_missing',
+                'config_missing_fields': []}
 
 
 class TrendAlertTests(SimpleTestCase):

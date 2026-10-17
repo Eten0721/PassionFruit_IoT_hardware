@@ -164,19 +164,53 @@ class NotificationDeliveryTests(SimpleTestCase):
         # Only the composite left the machine; the result folder is unchanged.
         self.assertFalse(any(p.name.startswith('notification_') for p in path.parent.iterdir()))
 
-    def test_missing_credentials_keep_queue_with_readable_reason_and_no_requests(self):
+    def assert_configuration(self, reason, missing_fields=()):
+        expected = {'configured': reason is None, 'config_reason': reason,
+                    'config_missing_fields': list(missing_fields)}
+        self.assertEqual(self.outbox().configuration(), expected)
+        status = self.outbox().status('photo_only', 'fruit_001_id')
+        self.assertEqual({key: status[key] for key in expected}, expected)
+        for payload in (expected, status):
+            text = json.dumps(payload)
+            self.assertNotIn('notification_credentials.json', text)
+            for value in SECRETS.values():
+                self.assertNotIn(value, text)
+        return status
+
+    def test_missing_credentials_keep_queue_with_reason_code_and_no_requests(self):
         self.credentials_path.unlink()
         self.enable()
         result, path = self.save_result()
         self.outbox().enqueue(result, path)
         self.assertEqual(self.outbox().deliver_pending(), [])
         self.assertEqual(self.http.calls, [])
-        status = self.outbox().status('photo_only', 'fruit_001_id')
-        self.assertFalse(status['configured'])
-        self.assertIn('notification_credentials.json', status['config_reason'])
+        status = self.assert_configuration('line_credentials_missing')
         self.assertEqual(status['current']['status'], 'pending')
-        self.credentials_path.write_text(json.dumps({**SECRETS, 'line_group_id': ''}), 'utf-8')
-        self.assertIn('line_group_id', self.outbox().status('photo_only')['config_reason'])
+
+    def test_unreadable_credentials_report_code_without_exception_details(self):
+        self.credentials_path.unlink()
+        self.credentials_path.mkdir()
+        with self.assertLogs(delivery.logger, level='WARNING'):
+            self.assert_configuration('line_credentials_unreadable')
+
+    def test_invalid_credentials_report_code_for_bad_json_encoding_or_non_object(self):
+        for content in (b'{bad json', b'\xff', b'[]', b'null', b'"line-token-SECRET"'):
+            with self.subTest(content=content):
+                self.credentials_path.write_bytes(content)
+                self.assert_configuration('line_credentials_invalid')
+
+    def test_incomplete_credentials_report_only_missing_field_names(self):
+        for value in ('', '  ', None, False, 123, []):
+            with self.subTest(value=value):
+                values = {**SECRETS, 'line_group_id': value, 'cloudinary_api_key': value}
+                del values['cloudinary_api_secret']
+                self.credentials_path.write_text(json.dumps(values), 'utf-8')
+                self.assert_configuration('line_credentials_incomplete', (
+                    'line_group_id', 'cloudinary_api_key', 'cloudinary_api_secret',
+                ))
+
+    def test_valid_credentials_clear_configuration_reason_and_missing_fields(self):
+        self.assert_configuration(None)
 
     def test_offline_upload_and_line_failures_retry_later_with_original_time(self):
         self.enable()

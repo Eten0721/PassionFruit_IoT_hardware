@@ -1,5 +1,6 @@
 import csv
 import json
+import re
 import shutil
 import tempfile
 import threading
@@ -2339,6 +2340,28 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(payload['dashboard_ice'], [])
         self.assertEqual(payload['camera_ice'], [])
         self.assertFalse(payload['answer_present'])
+
+    def test_dashboard_embeds_shared_reason_text_without_polling_copy(self):
+        from .reason_text import REASON_TEXT
+
+        response = self.client.get('/dashboard/')
+        self.assertEqual(response.status_code, 200)
+        html = response.content.decode('utf-8')
+        match = re.search(
+            r'<script id="reason-text" type="application/json">(.*?)</script>', html,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        reasons = json.loads(match.group(1))
+        self.assertEqual(reasons, REASON_TEXT)
+        self.assertEqual(reasons['esp32_offline'], 'ESP32 已離線，Gate 3 維持關閉')
+        self.assertEqual(reasons['camera_not_ready'], '手機拍攝端未就緒')
+        self.assertEqual(reasons['network_recovery_in_progress'],
+                         '安全復原進行中，等待 ESP32 歸位與清鎖交握')
+        self.assertLess(match.end(), html.index('/static/fruit_app/js/dashboard.js'))
+        state = self.client.get('/api/state/').json()
+        self.assertNotIn('reason_text', state)
+        self.assertNotIn('ESP32 已離線，Gate 3 維持關閉', json.dumps(state, ensure_ascii=False))
 
     def test_pages_render(self):
         home_response = self.client.get('/')

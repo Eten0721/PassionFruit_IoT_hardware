@@ -224,7 +224,8 @@ class Outbox:
     def configuration(self) -> dict:
         credentials = self._credentials()
         return {'configured': credentials['ok'],
-                'config_reason': None if credentials['ok'] else credentials['reason']}
+                'config_reason': None if credentials['ok'] else credentials['reason'],
+                'config_missing_fields': credentials.get('missing_fields', [])}
 
     def status(self, mode: str, result_id: str | None = None) -> dict:
         """Dashboard view without credentials, recipients or message bodies."""
@@ -238,11 +239,9 @@ class Outbox:
         errors = [entry for entry in entries
                   if entry.get('status') not in ('sent', 'skipped') and entry.get('last_error')]
         current = state['entries'].get(result_id) if result_id else None
-        credentials = self._credentials()
         return {
             'mode': mode, 'enabled': state['enabled'].get(mode, False),
-            'configured': credentials['ok'],
-            'config_reason': None if credentials['ok'] else credentials['reason'],
+            **self.configuration(),
             'counts': counts,
             'paused': 0 if state['enabled'].get(mode) else counts['pending'],
             'last_error': max(errors, key=lambda e: e['next_attempt_at'])['last_error']
@@ -444,15 +443,18 @@ class Outbox:
         try:
             values = json.loads(path.read_text(encoding='utf-8'))
         except FileNotFoundError:
-            return {'ok': False, 'reason': f'尚未設定通知憑證：請建立 {path.name}'}
-        except (OSError, ValueError) as error:
-            return {'ok': False, 'reason': f'{path.name} 無法讀取：{type(error).__name__}'}
+            return {'ok': False, 'reason': 'line_credentials_missing'}
+        except OSError as error:
+            logger.warning('LINE credentials unreadable: %s', type(error).__name__)
+            return {'ok': False, 'reason': 'line_credentials_unreadable'}
+        except ValueError:
+            return {'ok': False, 'reason': 'line_credentials_invalid'}
         if not isinstance(values, dict):
-            return {'ok': False, 'reason': f'{path.name} 必須是 JSON 物件'}
+            return {'ok': False, 'reason': 'line_credentials_invalid'}
         missing = [field for field in CREDENTIAL_FIELDS
                    if not isinstance(values.get(field), str) or not values[field].strip()]
         if missing:
-            return {'ok': False, 'reason': f"{path.name} 缺少：{'、'.join(missing)}"}
+            return {'ok': False, 'reason': 'line_credentials_incomplete', 'missing_fields': missing}
         return {'ok': True, 'values': {field: values[field].strip() for field in CREDENTIAL_FIELDS}}
 
     def _read(self):
