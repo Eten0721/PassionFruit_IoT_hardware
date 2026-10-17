@@ -29,9 +29,8 @@
 
 ## 版本與 commit 格式
 
-- 合併到 `main` 的 squash commit 標題使用 `vX.Y.Z, 中文說明`，例如 `v1.2.16, 新增版本與 commit 格式規則`；PR 標題直接用此格式，合併時確認 squash 標題一致。
-- 版本號以 `main` 上最新帶版本號的 commit 為基準，每合併一個 PR 遞增一次：一般變更加第三碼；要發布 Release 的重大改版加第二碼並將第三碼歸零（`v1.2.x` → `v1.3.0`）。同時開啟多個 PR 時，以合併順序為準，合併前更新標題。
-- 分支內的過程 commit 不帶版本號，以中文簡述變更。
+- 每個 commit 標題都使用 `vX.Y.Z, 中文說明`，例如 `v1.2.16, 新增版本與 commit 格式規則`；同一個 PR 的 commit 都用該 PR 的版本號，PR 標題用同一字串。Squash 合併時，只有一個 commit 的 PR 沿用 commit 標題，多個 commit 則沿用 PR 標題，合併時確認 squash 標題一致。
+- 版本號以 `main` 上最新帶版本號的 commit 為基準，每合併一個 PR 遞增一次：一般變更加第三碼；要發布 Release 的重大改版加第二碼並將第三碼歸零（`v1.2.x` → `v1.3.0`）。同時開啟多個 PR 時，以合併順序為準，合併前更新 PR 與 squash 標題。
 - GitHub Release 的 tag 與其對應 squash commit 的版本號相同，發布步驟見 [部署說明 9.2](docs/環境部署說明文件.md#92-發布-release)。
 
 ## 驗證要求
