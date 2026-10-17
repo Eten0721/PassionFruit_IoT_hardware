@@ -113,6 +113,15 @@ class DatasetModeTests(SimpleTestCase):
             self.assertEqual(Path(response.json()['path']), self.dataset_base / 'detection')
             open_folder.assert_called_once_with(self.dataset_base / 'detection')
 
+    def test_remote_device_cannot_open_dataset_folder(self):
+        self._select('detection')
+        with mock.patch.object(views.os, 'startfile', create=True) as open_folder:
+            response = self.client.get('/api/open_dataset_folder/?dataset_mode=detection',
+                                       REMOTE_ADDR='192.168.1.50')
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['reason'], 'network_local_dashboard_required')
+        open_folder.assert_not_called()
+
     def test_detection_partition_has_no_label_folders_or_metadata(self):
         detection = self.dataset_base / 'detection'
         detection.mkdir(parents=True, exist_ok=True)

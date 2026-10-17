@@ -450,7 +450,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
   - `model`：YOLO 檔名，以及兩個 XGBoost 檔名、SHA-256、xgboost 版本與第一階段門檻。
   - `images.<img_0N.jpg>`：ROI、各模型結果、`artifacts` 檔名，以及 `grade` 內的 16 個特徵、第一階段機率、第二階段機率、單張等級或 `unavailable` 與具體原因（如 `roi:roi_not_detected`）。
 - 頂層 `complete` 只在推論完整、模型已判級且 JSON／CSV 都保存成功時為真；任一保存失敗記為 `storage.status=failed`，不顯示為完成。人工接手保存成功時 `status=manual_completed`（放棄為 `manual_abandoned`）、`complete=false`，`reason` 保留原推論或判級失敗原因。
-- `detection_summary.csv`（UTF-8 BOM）每顆一列，以 `result_id` 去重，重試與重啟只取代同列：
+- `detection_summary.csv`（UTF-8 BOM）每顆一列，以 `result_id` 去重，重試與重啟只取代同列。檔案被其他程式占用時最多嘗試 `5` 次、間隔 `100 ms`；仍被占用（例如 Excel 開著）即為 `summary_save_failed`，原因提示關閉該檔：
 
   ```csv
   result_id,fruit_id,capture_time,completed_at,hardware_mode,result_status,classification_status,reason,view_01_grade,view_02_grade,view_03_grade,final_grade,final_label,final_code,classification_source,model_version,result_json

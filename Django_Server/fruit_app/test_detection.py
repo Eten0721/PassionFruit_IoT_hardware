@@ -27,6 +27,37 @@ class DetectionModelSettingsTests(SimpleTestCase):
         })
 
 
+class SummaryReplaceRetryTests(SimpleTestCase):
+    def test_brief_lock_retries_and_long_lock_names_the_file(self):
+        from tempfile import TemporaryDirectory
+        from . import detection
+
+        real_replace = Path.replace
+        attempts = []
+
+        def locked_for(times):
+            def replace(staging, target):
+                attempts.append(target)
+                if len(attempts) <= times:
+                    raise PermissionError(13, 'locked')
+                return real_replace(staging, target)
+            return replace
+
+        with TemporaryDirectory() as tmp, mock.patch.object(detection, 'sleep'):
+            path = Path(tmp) / 'detection_summary.csv'
+            with mock.patch.object(Path, 'replace', locked_for(2)):
+                detection.reset_summary(path)
+            self.assertTrue(path.is_file())
+            self.assertEqual(len(attempts), 3)
+
+            attempts.clear()
+            with mock.patch.object(Path, 'replace', locked_for(99)), \
+                    self.assertRaisesRegex(PermissionError, 'detection_summary.csv'):
+                detection.reset_summary(path)
+            self.assertEqual(len(attempts), detection.SUMMARY_REPLACE_ATTEMPTS)
+            self.assertEqual(list(Path(tmp).iterdir()), [path])  # No staging file left behind.
+
+
 class DetectionFlowTests(SimpleTestCase):
     def setUp(self):
         existing.DataCollectionFlowTests.setUp(self)

@@ -2904,6 +2904,9 @@ def detection_image_api(request, fruit_id, filename):
 
 @require_GET
 def open_dataset_folder_api(request):
+    reason = local_network.NETWORK.request_reason(request, local_only=True)
+    if reason:  # Opens a window on this PC, so only the local Dashboard may ask.
+        return local_network.network_error(reason)
     _ensure_dataset_structure()
     with STATE_LOCK:
         mode_error = _request_dataset_mode_error(request)

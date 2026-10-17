@@ -10,7 +10,7 @@ import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any, Callable
 
 import cv2
@@ -43,6 +43,10 @@ SUMMARY_FIELDS = [
     'model_version', 'result_json',
 ]
 _SUMMARY_LOCK = threading.Lock()
+# Windows refuses to replace a file another handle holds open; readers finish
+# in milliseconds, while Excel holds it until closed.
+SUMMARY_REPLACE_ATTEMPTS = 5
+SUMMARY_REPLACE_DELAY_SECONDS = 0.1
 
 
 def _class_names(model) -> set[str]:
@@ -967,7 +971,16 @@ def _write_summary_rows(path: Path, rows: list[dict]) -> None:
             )
             writer.writeheader()
             writer.writerows(rows)
-        staging.replace(path)
+        for attempt in range(SUMMARY_REPLACE_ATTEMPTS):
+            try:
+                staging.replace(path)
+                return
+            except PermissionError as error:
+                if attempt == SUMMARY_REPLACE_ATTEMPTS - 1:
+                    raise PermissionError(
+                        f'{path.name} 正被其他程式開啟（例如 Excel），請關閉後再試。'
+                    ) from error
+                sleep(SUMMARY_REPLACE_DELAY_SECONDS)
     finally:
         staging.unlink(missing_ok=True)
 
