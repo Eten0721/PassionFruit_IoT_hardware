@@ -454,6 +454,7 @@
     <button id="assistant-resize" class="assistant-resize" type="button" aria-label="調整視窗大小" title="拖曳或用方向鍵調整大小；雙擊恢復預設"></button>
 </section>
 
+{{ reason_text|json_script:"reason-text" }}
 <script src="{% static 'fruit_app/js/dashboard.js' %}?v={{ asset_version }}"></script>
 <script src="{% static 'fruit_app/vendor/chart-4.4.1.umd.js' %}"></script>
 <script src="{% static 'fruit_app/js/assistant_render.js' %}?v={{ asset_version }}"></script>

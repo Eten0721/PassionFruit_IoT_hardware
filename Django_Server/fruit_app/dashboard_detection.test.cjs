@@ -20,6 +20,13 @@ function element(id) {
     return elements.get(id);
 }
 const buttons = ['high', 'medium', 'low', 'processing'].map(element);
+element('reason-text').textContent = JSON.stringify({
+    fixture_reason: '頁面提供的原因',
+    line_credentials_missing: '測試缺檔說明',
+    line_credentials_unreadable: '測試讀取說明',
+    line_credentials_invalid: '測試格式說明',
+    line_credentials_incomplete: '測試缺欄位說明',
+});
 const dashboardScript = fs.readFileSync(`${__dirname}/static/fruit_app/js/dashboard.js`, 'utf8');
 function loadDashboard(storage = { getItem() { return null; }, setItem() {} }) {
     const context = vm.createContext({
@@ -76,6 +83,9 @@ assert.equal(element('diagnostics').hidden, true);
 console.log('PASS: hidden diagnostics toggle, reload persistence, selection cleanup and blocked storage.');
 
 const context = loadDashboard();
+assert.equal(vm.runInContext("reasonText('fixture_reason')", context), '頁面提供的原因（fixture_reason）');
+assert.equal(vm.runInContext("reasonText('unknown_reason')", context), 'unknown_reason');
+assert.equal(vm.runInContext("reasonText('')", context), '');
 element('message').textContent = '';
 
 function render(classification, sorting, storage = 'saved') {
@@ -164,7 +174,7 @@ assert.equal(element('notification-summary-status').textContent, 'LINE 通知：
 assert.match(notificationText, /本輪：待送/);
 notificationText = renderNotification({
     mode: 'hardware', enabled: true, configured: false,
-    config_reason: '尚未設定通知憑證：請建立 notification_credentials.json',
+    config_reason: 'line_credentials_missing', config_missing_fields: [],
     counts: { ...counts, pending: 1, uncertain: 1 }, paused: 0,
     current: { status: 'uncertain', reason: '無法確認是否已送達' },
     last_error: 'LINE 連線中斷，送達狀態待確認',
@@ -173,9 +183,22 @@ assert.equal(element('notification-summary-status').textContent, 'LINE 通知：
 assert.equal(element('notification-summary-status').dataset.state, 'error');
 assert.equal(element('btn-notification-toggle').textContent, '關閉通知');
 assert.equal(element('btn-notification-toggle')['aria-pressed'], 'true');
-assert.match(notificationText, /尚未完成設定：尚未設定通知憑證/);
+assert.match(notificationText, /尚未完成設定：測試缺檔說明（line_credentials_missing）/);
 assert.match(notificationText, /本輪：送達不明，請到群組確認（無法確認是否已送達）/);
 assert.match(notificationText, /最近錯誤：LINE 連線中斷/);
+for (const [reason, description] of Object.entries(JSON.parse(element('reason-text').textContent))
+    .filter(([reason]) => reason.startsWith('line_credentials_'))) {
+    const missing = reason === 'line_credentials_incomplete' ? ['line_group_id', 'cloudinary_api_key'] : [];
+    const configuration = { configured: false, config_reason: reason, config_missing_fields: missing };
+    const expected = `${description}（${reason}）` + (missing.length ? '；缺少欄位：line_group_id、cloudinary_api_key' : '');
+    notificationText = renderNotification({ mode: 'hardware', counts, ...configuration });
+    assert.ok(notificationText.includes(`尚未完成設定：${expected}`));
+    context.trendState = { settings: { enabled: false, categories: {} }, line: configuration };
+    vm.runInContext('renderTrendAlerts(trendState)', context);
+    assert.ok(element('trend-alert-status').textContent.includes(`LINE 尚未完成設定：${expected}`));
+    assert.doesNotMatch(notificationText + element('trend-alert-status').textContent,
+                        /notification_credentials\.json|line-token-SECRET|C0123456789abcdef/);
+}
 renderNotification({ mode: 'hardware', enabled: false, error: '通知待送檔無法讀取：bad json' });
 assert.equal(element('btn-notification-toggle').disabled, true);
 assert.equal(element('notification-status').textContent, '通知待送檔無法讀取：bad json');

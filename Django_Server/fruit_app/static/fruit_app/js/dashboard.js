@@ -847,40 +847,19 @@ const remoteVideo = document.getElementById('remote-video');
     ];
     const PHOTO_FILENAMES = ['img_01.jpg', 'img_02.jpg', 'img_03.jpg'];
     const CAPTURING_STATUSES = ['waiting_camera', 'uploading', 'photo_interval'];
-    const REASON_TEXT = {
-        active_fruit_exists: '目前仍有未處理的本輪資料',
-        auto_run_active: '自動運轉中',
-        camera_busy: '照片上傳中',
-        camera_not_ready: '手機拍攝端未就緒',
-        capture_incomplete: '三張照片尚未完成',
-        classifier_busy: '分類器執行中',
-        dataset_operation_in_progress: '資料處理中',
-        detection_in_progress: '檢測進行中',
-        detection_mode: '自動檢測由模型判級，不開放人工分類',
-        esp32_offline: 'ESP32 已離線，Gate 3 維持關閉',
-        sorter_capability_missing: 'Firmware 缺少安全分槽能力',
-        gate3_boot_unconfirmed: 'Gate 3 狀態需人工安全復原',
-        network_recovery_required: '待完成網路安全復原',
-        result_not_saved: '檢測結果尚未保存成功',
-        dataset_busy: '資料處理中',
-        no_detection_result: '沒有待處理的檢測結果',
-        feed_arrival_unconfirmed: '送料到位尚未確認',
-        gate3_manual_removal_required: 'Gate 3 待人工安全復原',
-        network_selection_required: '尚未確認本次使用的網路',
-        network_recovery_in_progress: '安全復原進行中，等待 ESP32 歸位與清鎖交握',
-        no_active_fruit: '沒有待分類的資料',
-        pending_motor_command: '有待執行的馬達命令',
-        photo_only_required: '目前不是純拍攝',
-        sorter_recovery_required: '分類器待人工復原',
-        system_not_idle: '系統尚未閒置',
-        temp_fruit_exists: '暫存區仍有未處理資料',
-    };
+    const REASON_TEXT = JSON.parse(document.getElementById('reason-text').textContent);
 
     function reasonText(code) {
         if (!code) {
             return '';
         }
         return REASON_TEXT[code] ? `${REASON_TEXT[code]}（${code}）` : code;
+    }
+
+    function notificationConfigReasonText(configuration) {
+        const missing = configuration.config_missing_fields || [];
+        return reasonText(configuration.config_reason)
+            + (missing.length ? `；缺少欄位：${missing.join('、')}` : '');
     }
 
     function capturedOriginalUrls(data) {
@@ -1288,7 +1267,7 @@ const remoteVideo = document.getElementById('remote-video');
             enabled
                 ? '只通知最終等級為加工的結果，保存後於背景補送，不影響檢測與分槽。'
                 : '已關閉：既有待送暫停，關閉期間的新結果不排送；已交付 LINE 的訊息無法撤回。',
-            notification.configured ? null : `尚未完成設定：${notification.config_reason}`,
+            notification.configured ? null : `尚未完成設定：${notificationConfigReasonText(notification)}`,
             `待送 ${counts.pending || 0}（暫停 ${notification.paused || 0}）・已送出 ${counts.sent || 0}`
                 + `・送達不明 ${counts.uncertain || 0}・失敗 ${counts.failed || 0}`,
             current ? `本輪：${NOTIFICATION_RESULT_TEXT[current.status] || current.status}`
@@ -1380,7 +1359,7 @@ const remoteVideo = document.getElementById('remote-video');
             settings.enabled
                 ? `各類比例達門檻、比前 ${settings.window_days} 天上升，或今日達前期 ${settings.spike_factor} 倍時提醒；同類 ${settings.cooldown_hours} 小時內不重複。LINE 訊息只列偏高類別與注意事項，數據詳情可問奶蛋博士。`
                 : '已關閉：不檢查也不發送趨勢提醒。',
-            line.configured ? null : `LINE 尚未完成設定：${line.config_reason}（提醒仍會顯示在此）`,
+            line.configured ? null : `LINE 尚未完成設定：${notificationConfigReasonText(line)}（提醒仍會顯示在此）`,
         ].filter(Boolean).join('\n'));
         const recent = trend.recent || [];
         const signature = recent.map((alert) => `${alert.id}:${alert.delivery?.status || ''}`).join('|');
