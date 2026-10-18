@@ -312,7 +312,7 @@ class DetectionFlowTests(SimpleTestCase):
         command = before['motor_command']
         self.assertEqual(before['detection_status'], 'completed')
 
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         views._ensure_dataset_structure()
         state = self.client.get('/api/state/').json()
 
@@ -339,7 +339,7 @@ class DetectionFlowTests(SimpleTestCase):
         self.assertEqual(discarded.status_code, 200)
         self.assertTrue(views._gate3_recovery_path().exists())
 
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         views._ensure_dataset_structure()
         state = self.client.get('/api/state/').json()
         self.assertEqual(
@@ -464,7 +464,7 @@ class DetectionFlowTests(SimpleTestCase):
             fruit_id, _ = self._run_photo_round()
         self.assertTrue((self.dataset_root / 'temp' / fruit_id).exists())
 
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         state = self.client.get('/api/state/').json()
 
         self.assertFalse((self.dataset_root / 'temp' / fruit_id).exists())
@@ -624,7 +624,7 @@ class DetectionFlowTests(SimpleTestCase):
         execute.side_effect = blocked
         fruit_id = self._start_detection().json()['active_fruit_id']
         self._upload_three(fruit_id)
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
 
         state = self.client.get('/api/state/').json()
         self.assertEqual(state['detection_status'], 'failed')
@@ -660,7 +660,7 @@ class DetectionFlowTests(SimpleTestCase):
         fruit_id = self._start_hardware_detection()
         self._upload_hardware_stations(fruit_id)
         self.assertTrue(entered.wait(1))
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
 
         state = self.client.get('/api/state/').json()
         self.assertEqual(state['work_mode'], 'detection')
@@ -699,7 +699,7 @@ class DetectionFlowTests(SimpleTestCase):
         execute.side_effect = blocked
         fruit_id = self._start_detection().json()['active_fruit_id']
         self._upload_three(fruit_id)
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
 
         response = self.client.get('/api/state/')
         self.assertEqual(response.status_code, 200)
@@ -935,7 +935,7 @@ class DetectionFlowTests(SimpleTestCase):
         execute.side_effect = blocked
         fruit_id = self._start_detection().json()['active_fruit_id']
         self._upload_three(fruit_id)
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         state = self.client.get('/api/state/').json()
         self.client.get('/api/state/')
 
@@ -1331,7 +1331,7 @@ class DetectionFlowTests(SimpleTestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIsNone(views.APP_STATE['motor_command'])
         self.assertEqual(self._saved_result(fruit_id), original)
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         locked = self.client.get('/api/state/').json()
         self.assertFalse(locked['can_manual_grade'])
         self.assertEqual(locked['motor_command']['command'], 'none')
@@ -1357,7 +1357,7 @@ class DetectionFlowTests(SimpleTestCase):
 
     def test_restart_of_needs_review_requires_recovery_before_manual_grade(self):
         fruit_id, state = self._hardware_needs_review_round()
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         state = self.client.get('/api/state/').json()
         self.assertFalse(state['can_manual_grade'])
         self.assertTrue(state['detection_result']['sorting']['recovery_required'])

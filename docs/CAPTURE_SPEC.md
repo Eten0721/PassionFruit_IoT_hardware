@@ -216,11 +216,16 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 | `POST` | `/api/photo_capture/` | 僅純拍攝可用的單輪三張入口 |
 | `POST` | `/api/auto_run/` | 啟用正式自動運轉或要求優雅暫停 |
 | `POST` | `/api/feeder/test/` | 在安全 idle 狀態測試一次 HC-SR04 回授送料 |
+| `POST` | `/api/runtime/reset/` | 開發者完全重置 Django 狀態與 Django 端網路設定 |
 | `POST` | `/api/capture_started/` | Best-effort 拍攝 telemetry |
 | `POST` | `/api/upload_images/` | 上傳指定站點照片 |
 | `GET` | `/api/esp32/command/?format=text` | ESP32 取得 motor command |
 | `POST` | `/api/esp32/report/` | ESP32 回報 trigger、station、完成或失敗 |
 | `POST` | `/api/discard/` | 跳過／刪除目前暫存果實 |
+
+分類、刪除、重置、人工判級與檢測的資料鎖（`dataset_operation`）不論成功、預期失敗或未預期例外都必須釋放。進入 `uploading` 後寫檔超過 `30 s` 轉為 `upload_timeout` error，保留已存照片並開放刪除；遲到的上傳完成回 `409 capture_state_changed_during_upload`。
+
+`POST /api/runtime/reset/` 只接受本機 Dashboard（否則 `409 network_local_dashboard_required`），用於狀態卡死時的開發者逃生：清空記憶體中的 capture、command、資料鎖、自動運轉與 ESP32 裝置狀態，取消已選網路並刪除 `network_recovery.json`；照片、Dataset、檢測結果、counter 與 sorter／Gate 3 復原紀錄保留，並如同 Django 啟動般從檔案恢復。不送出任何 motor command；ESP32 的 NVS 失聯鎖不受影響，仍鎖定時下一次回報會讓 Django 重新上鎖。刪除復原紀錄失敗回 `503 recovery_persist_failed`。
 
 `/api/camera/state/` 禁止快取且只讀記憶體狀態與套用 session timeout，不得掃描 Dataset 或同步 metadata／counter。手機 polling 必須 single in-flight；頁面進入背景時停止，回到前景才重啟。只有相機 stream 存在、video track 為 live、已有可擷取影格與有效尺寸時，手機才在 polling query 回報 `camera_ready=1`；Django 只在記憶體保存最後 ready 時間。每次 upload 必須帶 `fruit_id`、`capture_token` 與 `station_index`。
 
@@ -432,6 +437,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 - 沿用本次交付模型的 13 個原始特徵與 3 個衍生特徵，包括 confidence；不得套用舊研究 baseline 的 7 特徵限制，決策見 [ADR-0019](adr/0019-deployed-two-stage-xgboost-grading.md)。特徵名稱與順序以模型檔為準並於載入時核對；數值須為有限值且落在 `0～1`，二元特徵只接受 `0／1`。交付模型存檔不等於分類結果 JSON。
 - 每張先判斷加工／非加工，再將非加工分為其餘三級；整顆取三張預測最低級距，`0／1／2／3` 對應加工／下等／中等／上等，再轉為既有 canonical code。沿用 [ADR-0012](adr/0012-defect-ratio-ai-contract.md)：未偵測瑕疵為 `0`，必要 ROI／推論失敗為 `null` 並待覆核，不補零硬判級距。
 - 部分失敗仍保留已取得原圖、成功產物與具體原因；無法產生的裁切或標示圖不建立，保存失敗不得顯示存檔成功。硬體尚未取得有效分類或資料尚未提交時，不得放行 Gate 3 或開始下一顆。
+- 檢測自排入起超過 `180 s` 未結束（`detection_timeout`），或背景執行緒意外中止（`detection_job_crashed`）時，標記 `detection_failed`、釋放資料鎖、停用自動運轉並保留原圖；遲到的結果因 token 過期一律忽略。Gate 3 保持關閉，操作員刪除本輪後重拍。
 - 無法取得完整模型判級時，標記「待人工處理」並允許操作員檢查照片後人工選級，再經相同的資料提交與安全分類邊界完成分槽；保留原推論失敗原因與模型輸出，另記錄最終分類來源為人工，不將人工結果偽裝成模型成功。人工接手仍屬檢測紀錄，不搬入人工蒐集 Dataset；純拍攝的人工接手也不得建立硬體命令。
 - 人工接手使用 `POST /api/detection/manual_grade/`，附 `dataset_mode`、目前畫面的 `fruit_id`、`result_id` 與 `label`（上等／中等／下等／加工）；純拍攝另接受 `abandon=true`。`/api/state/` 以 `can_manual_grade`、`manual_grade_disabled_reason` 與 `can_manual_abandon` 表示可否操作。只接受目前 `detection_result`、已保存且 `needs_review` 的同一 `result_id`；不符或已開始新一輪回 `409 stale_detection_result`，模型已判級回 `409 not_needs_review`，已人工處理而改送不同決定回 `409 already_manual_graded`，相同決定重送回 `200 duplicate=true` 且只重新同步該列，不重建分槽命令。JSON 或總表保存失敗回 `503 result_json_save_failed／summary_save_failed`，嘗試還原 JSON 並維持待人工處理；還原也失敗時，同級重送可同步資料，但硬體結果視為不確定，必須安全復原。
 - 硬體人工判級前與保存後均檢查失聯／sorter 復原鎖、ESP32 在線、`gate3_sorter_v1` 與同一 boot 的 Gate 3 等待狀態。未處理 `needs_review` 不建立命令；有效人工判級保存後重用 AI 的安全分槽流程。硬體放棄回 `409 hardware_abandon_requires_discard`，操作員改用跳過／刪除與既有斷電移除程序，不把資料刪除當成實體放行。純拍攝成功後維持 idle，不建立 motor command、不自動開始下一輪。
@@ -517,7 +523,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 - 檢測執行中，`/api/state/` 的 `detection_progress` 提供最後完成的 `stage`（`originals／roi／color／wrinkle／defect`）與各張已保存產物、`artifact_urls` 及模型狀態；只在對應產物原子保存後更新，最終結果寫入 `detection_result` 時清空。畫面依此逐步替換，不以動畫推測完成。
 - 「四模型檢測結果」移至原手機預覽所在的左側主區，以三張照片分組、各列 ROI／color／wrinkle／defect，共十二格；成功產物逐步更新，有跳過、缺失或失敗時不得顯示整輪完整成功。
 - 手機即時畫面移至右側原流程操作位置；整顆分類結果也放在檢測區右手邊，以醒目級距文字區分等待、有效結果與待覆核，不只靠顏色表示。
-- 底部摺疊區依序為「LINE 通知 → 資料管理 → ESP32 網路設定 → 停穩設定與送料校正 → 診斷與流程紀錄」。ESP32 網路設定收合時仍以既有連線狀態顯示文字徽章。停穩設定與送料校正只唯讀顯示參數檔數值與同步狀態，摘要列右側提供「測試送料一顆」；它與診斷區皆為維護資訊，預設隱藏，雙擊頁首標題一起切換顯示／隱藏並清除文字選取；狀態保存在瀏覽器 `localStorage`，讀寫失敗不影響頁面操作，讀不到時預設隱藏，顯示時仍可用鍵盤展開摺疊區。
+- 底部摺疊區依序為「LINE 通知 → 資料管理 → ESP32 網路設定 → 停穩設定與送料校正 → 診斷與流程紀錄」。ESP32 網路設定收合時仍以既有連線狀態顯示文字徽章。停穩設定與送料校正只唯讀顯示參數檔數值與同步狀態，摘要列右側依序提供「完全重置Django狀態以及ESP32網路設定」與「測試送料一顆」，兩者執行前都須確認對話框；它與診斷區皆為維護資訊，預設隱藏，雙擊頁首標題一起切換顯示／隱藏並清除文字選取；狀態保存在瀏覽器 `localStorage`，讀寫失敗不影響頁面操作，讀不到時預設隱藏，顯示時仍可用鍵盤展開摺疊區。
 - 主畫面的停用、停止與錯誤原因一律只顯示 `fruit_app/reason_text.py` 的中文說明，未收錄的代碼顯示「其他狀態，詳見診斷區」；原始 reason 代碼只列在診斷區的「原因代碼」。新增操作員可見的代碼時必須同時補上中文。
 - 全域訊息列沒有內容時整列隱藏；開啟 Dataset 資料夾成功不顯示路徑訊息，其他錯誤與提醒保留。切換維護區時短暫提示「已顯示維護資訊」／「已隱藏維護資訊」，時間沿用既有訊息慣例。阻擋原因、安全復原提示與串流失敗原因直接可見；檢測展示重用真實前處理產物，既有橢圓 ROI 遮罩演算法不因版面調整而更改。
 

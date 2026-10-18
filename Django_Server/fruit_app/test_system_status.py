@@ -35,7 +35,7 @@ class SystemStatusTests(SimpleTestCase):
                 views.APP_STATE.update(previous)
 
         self.addCleanup(restore)
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         network = {
             'selected': True, 'reason': None,
             'setup': {'status': 'unknown', 'reason': 'network_capability_missing'},

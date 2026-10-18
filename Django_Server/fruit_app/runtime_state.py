@@ -9,7 +9,8 @@ slow filesystem work.
 from __future__ import annotations
 
 import threading
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 
 class RuntimeState(dict[str, Any]):
@@ -38,6 +39,19 @@ class RuntimeState(dict[str, Any]):
             return False
         self['dataset_operation'] = None
         return True
+
+    @contextmanager
+    def releasing_dataset_operation(self, token: int) -> Iterator[None]:
+        """Release ``token`` however the slow work exits, including unexpected errors.
+
+        Normal paths finish the operation themselves, so this is then a no-op;
+        a newer operation's token never matches and is left alone.
+        """
+        try:
+            yield
+        finally:
+            with self.lock:
+                self.finish_dataset_operation(token)
 
     def dataset_operation_payload(self) -> dict[str, Any] | None:
         operation = self.get('dataset_operation')

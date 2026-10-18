@@ -240,7 +240,7 @@ class NetworkSafetyTests(SimpleTestCase):
         switched = self.post('/api/collection_options/', {'work_mode': 'collection', 'hardware_mode': 'photo_only'})
         self.assertEqual(switched.status_code, 200, switched.content)
         # Reload must retain the selected photo-only mode and the dormant motor lock.
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         state = self.client.get('/api/state/').json()
         self.assertEqual(state['hardware_mode'], 'photo_only')
         self.assertEqual(state['network_recovery']['generation'], locked['generation'])
@@ -306,7 +306,7 @@ class NetworkSafetyTests(SimpleTestCase):
                 views.APP_STATE['camera_last_live_frame_monotonic'] = views.time.monotonic() - 10
                 recovery = self.client.get('/api/state/').json()['network_recovery']
                 old_server_run_id = self.network.snapshot()['server_run_id']
-                views.reset_runtime_state_for_tests()
+                views.reset_runtime_state()
                 self.network.start_run(port=8443)
                 state = self.client.get('/api/state/').json()
                 self.assertFalse(state['network']['selected'])
@@ -352,7 +352,7 @@ class NetworkSafetyTests(SimpleTestCase):
                         'command': 'start_sequence', 'server_run_id': 'old-run', 'network_revision': 3,
                         'recovery_command_id': 42, 'recovery_boot_id': 'board-a', 'deadline': 123,
                     })
-                    views.reset_runtime_state_for_tests()
+                    views.reset_runtime_state()
                     state = self.client.get('/api/state/').json()
                     recovery = state['network_recovery']
                     self.assertEqual(recovery['phase'], 'locked')
@@ -377,7 +377,7 @@ class NetworkSafetyTests(SimpleTestCase):
                         'phase': phase, 'generation': 8, 'reason': 'network_changed',
                         'hardware_mode': mode, 'data_locked': False, 'motor_locked': False,
                     })
-                    views.reset_runtime_state_for_tests()
+                    views.reset_runtime_state()
                     recovery = self.client.get('/api/state/').json()['network_recovery']
                     self.assertEqual(recovery['phase'], 'locked')
                     self.assertEqual(recovery['generation'], 8)
@@ -390,7 +390,7 @@ class NetworkSafetyTests(SimpleTestCase):
             'phase': 'locked', 'generation': 7,
             'reason': 'esp32_network_interlocked', 'hardware_mode': 'photo_only',
         })
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         self.network.start_run(port=8443)
         state = self.client.get('/api/state/').json()
         self.assertFalse(state['network_recovery']['data_locked'])
@@ -439,7 +439,7 @@ class NetworkSafetyTests(SimpleTestCase):
         for route, method in (('/api/esp32/heartbeat/', 'get'), ('/api/esp32/command/', 'get'),
                               ('/api/esp32/report/', 'post'), ('/api/esp32_trigger/', 'post')):
             with self.subTest(route=route):
-                views.reset_runtime_state_for_tests()
+                views.reset_runtime_state()
                 self.client.get('/api/state/')
                 device = self.device(network_interlocked='1', feeder_sensor_state='blocked', feeder_state='awaiting_fruit',
                                      event='network_aborted')
@@ -530,7 +530,7 @@ class NetworkSafetyTests(SimpleTestCase):
         self.assertTrue(self.post('/api/esp32/report/', ack).json()['duplicate'])
         self.assertIsNone(views.APP_STATE['motor_command'])
         generation = views.APP_STATE['recovery_generation']
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         self.client.get('/api/state/')
         self.assertEqual(views.APP_STATE['recovery_generation'], generation)
         self.assertTrue(self.post('/api/esp32/report/', ack).json()['duplicate'])
@@ -656,7 +656,7 @@ class NetworkSafetyTests(SimpleTestCase):
         self.prepare()
         self.lock()
         generation = views.APP_STATE['recovery_generation']
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         state = self.client.get('/api/state/').json()
         self.assertEqual(state['network_recovery']['phase'], 'locked')
         self.assertEqual(state['recovery_generation'], generation)
@@ -667,7 +667,7 @@ class NetworkSafetyTests(SimpleTestCase):
         with mock.patch.object(views, '_write_recovery_payload', side_effect=OSError('disk full')):
             self.lock()
         generation = views.APP_STATE['recovery_generation']
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         response = self.client.get('/api/esp32/command/', self.device(
             recovery_generation=generation, network_interlocked='1')).json()
         self.assertEqual(response['recovery_generation'], generation)

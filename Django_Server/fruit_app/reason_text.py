@@ -108,6 +108,9 @@ REASON_TEXT = {
     'recovery_persist_failed': '無法保存復原狀態',
     # 拍攝、資料與檢測
     'camera_upload_timeout': '手機上傳照片逾時',
+    'upload_timeout': '照片寫入逾時',
+    'detection_timeout': '檢測逾時',
+    'detection_job_crashed': '檢測程序意外中止',
     'capture_options_invalid': '本輪拍攝設定紀錄有誤',
     'dataset_commit_failed': '照片保存狀態不確定',
     'dataset_options_invalid': '工作模式紀錄損壞',

@@ -122,6 +122,9 @@ ESP32_ONLINE_WINDOW_SECONDS = 6
 ESP32_START_TIMEOUT_SECONDS = 10
 HARDWARE_STEP_TIMEOUT_SECONDS = 20
 CAMERA_UPLOAD_TIMEOUT_SECONDS = 45
+# Django has the whole request body before 'uploading'; only the disk write remains.
+UPLOAD_SAVE_TIMEOUT_SECONDS = 30
+DETECTION_TIMEOUT_SECONDS = 180
 # Photo-only detection pauses after each saved photo so operators can see it.
 PHOTO_DETECTION_INTERVAL_SECONDS = 1.0
 SORTER_PENDING_TIMEOUT_SECONDS = 30
@@ -710,6 +713,34 @@ def feeder_test_api(request):
         APP_STATE['status'] = 'waiting_feeder'
         APP_STATE['message'] = 'ESP32 正在測試送料一顆。'
         payload = _state_payload(extra={'ok': True, 'feeder_test_started': True})
+    return JsonResponse(payload)
+
+
+@csrf_exempt
+@require_POST
+def runtime_reset_api(request):
+    """Developer escape hatch: forget every in-memory state and the Django network setup.
+
+    Photos, dataset files and the sorter/Gate 3 markers stay on disk and are
+    restored as at startup; the ESP32 keeps its own NVS interlock and relocks
+    Django on its next report if it is still interlocked.
+    """
+    reason = local_network.NETWORK.request_reason(request, local_only=True)
+    if reason:
+        return local_network.network_error(reason)
+    with STATE_LOCK:
+        try:
+            dataset_store.clear_recovery_marker(NETWORK_RECOVERY.path())
+        except OSError as exc:
+            return _json_error(f'無法清除網路復原紀錄：{exc}', status=503, reason='recovery_persist_failed')
+        local_network.NETWORK.clear_selection()
+        reset_runtime_state()
+        _ensure_dataset_structure()
+        _sync_active_state_with_filesystem()
+        if APP_STATE['status'] == 'idle':
+            APP_STATE['message'] = 'Django 狀態與網路設定已完全重置，請重新選擇網路。'
+        _record_transition('runtime_reset')
+        payload = _state_payload(extra={'runtime_reset': True})
     return JsonResponse(payload)
 
 
@@ -1518,6 +1549,47 @@ def _run_detection_job(operation_token, fruit_id, fruit_dir, session):
         APP_STATE['status'] = 'detection_running'
         APP_STATE['message'] = f'{fruit_id} 正在執行四模型檢測與 XGBoost 判級。'
 
+    with APP_STATE.releasing_dataset_operation(operation_token):
+        try:
+            _finish_detection_job(operation_token, fruit_id, fruit_dir, session)
+        except Exception:
+            logger.exception('Detection job for %s failed unexpectedly', fruit_id)
+            with STATE_LOCK:
+                if (APP_STATE.get('active_fruit_id') == fruit_id
+                        and APP_STATE['status'] in ('detection_pending', 'detection_running')):
+                    _abandon_detection('detection_job_crashed')
+
+
+def _abandon_detection(reason):
+    """Fail a hung or crashed detection round; its late result is ignored by the stale token."""
+    operation = APP_STATE.get('dataset_operation') or {}
+    if operation.get('kind') == 'detection':
+        APP_STATE.finish_dataset_operation(operation['token'])
+    fruit_id = APP_STATE.get('active_fruit_id')
+    APP_STATE['detection_status'] = 'failed'
+    APP_STATE['detection_progress'] = None
+    APP_STATE['detection_error'] = reason
+    APP_STATE['detection_started_monotonic'] = None
+    APP_STATE['status'] = 'detection_failed'
+    APP_STATE['message'] = (
+        f'{fruit_id} 檢測未完成（{describe_reason(reason)}）；已保留原圖，請刪除本輪後重拍。'
+        + ('' if _photo_only_session() else ' Gate 3 仍保持關閉，請依斷電程序安全移除。')
+    )
+    _disable_auto_run()
+    APP_STATE['auto_run_finishing'] = False
+    _clear_wait_timer()
+    _record_transition('detection_abandoned', fruit_id=fruit_id, details={'reason': reason})
+
+
+def _apply_detection_timeout():
+    started = APP_STATE.get('detection_started_monotonic')
+    if APP_STATE['status'] not in ('detection_pending', 'detection_running') or started is None:
+        return
+    if time.monotonic() - started > DETECTION_TIMEOUT_SECONDS:
+        _abandon_detection('detection_timeout')
+
+
+def _finish_detection_job(operation_token, fruit_id, fruit_dir, session):
     try:
         result = detection.run_and_save(
             fruit_id=fruit_id,
@@ -1738,7 +1810,7 @@ def manual_grade_api(request):
             'manual_grade', fruit_id,
         )
 
-    try:
+    with APP_STATE.releasing_dataset_operation(operation_token):
         outcome = detection.apply_manual_decision(
             output_root=_detection_output_root(),
             summary_path=_detection_summary_path(),
@@ -1746,40 +1818,35 @@ def manual_grade_api(request):
             result_id=data['result_id'],
             grade=grade,
         )
-    except Exception:
+        notice = _queue_notification(outcome.get('result')) + _check_trend_alerts(outcome.get('result'))
         with STATE_LOCK:
             APP_STATE.finish_dataset_operation(operation_token)
-        raise
-
-    notice = _queue_notification(outcome.get('result')) + _check_trend_alerts(outcome.get('result'))
-    with STATE_LOCK:
-        APP_STATE.finish_dataset_operation(operation_token)
-        if not outcome['ok']:
-            return _manual_grade_failure_response(outcome)
-        if (APP_STATE.get('detection_result') or {}).get('result_id') == data['result_id']:
-            APP_STATE['detection_result'] = outcome['result']
-            APP_STATE['detection_error'] = None
-            decision = '已放棄本輪、不分級' if abandon else f'已人工判為「{label}」'
-            if current.get('hardware_mode') == 'photo_only':
-                APP_STATE['message'] = (
-                    f'{fruit_id} {decision}並更新檢測紀錄；'
-                    '原檢測失敗資訊仍保留。純拍攝不啟動硬體或下一輪。' + notice
-                )
-            elif not outcome['duplicate']:
-                _start_saved_detection_sorting(outcome['result'], notice)
-            elif APP_STATE.get('active_fruit_id') == fruit_id:
-                _set_sorter_failed(fruit_id, label, CLASSIFICATION_CODES[label],
-                                   'manual_decision_uncertain')
-        _record_transition(
-            'detection_manual_decided', fruit_id=fruit_id,
-            details={'label': label, 'abandoned': abandon,
-                     'duplicate': outcome['duplicate']},
-        )
-        return JsonResponse(_state_payload(extra={
-            'manual_grade_saved': True,
-            'duplicate': outcome['duplicate'],
-            'fruit_id': fruit_id,
-        }))
+            if not outcome['ok']:
+                return _manual_grade_failure_response(outcome)
+            if (APP_STATE.get('detection_result') or {}).get('result_id') == data['result_id']:
+                APP_STATE['detection_result'] = outcome['result']
+                APP_STATE['detection_error'] = None
+                decision = '已放棄本輪、不分級' if abandon else f'已人工判為「{label}」'
+                if current.get('hardware_mode') == 'photo_only':
+                    APP_STATE['message'] = (
+                        f'{fruit_id} {decision}並更新檢測紀錄；'
+                        '原檢測失敗資訊仍保留。純拍攝不啟動硬體或下一輪。' + notice
+                    )
+                elif not outcome['duplicate']:
+                    _start_saved_detection_sorting(outcome['result'], notice)
+                elif APP_STATE.get('active_fruit_id') == fruit_id:
+                    _set_sorter_failed(fruit_id, label, CLASSIFICATION_CODES[label],
+                                       'manual_decision_uncertain')
+            _record_transition(
+                'detection_manual_decided', fruit_id=fruit_id,
+                details={'label': label, 'abandoned': abandon,
+                         'duplicate': outcome['duplicate']},
+            )
+            return JsonResponse(_state_payload(extra={
+                'manual_grade_saved': True,
+                'duplicate': outcome['duplicate'],
+                'fruit_id': fruit_id,
+            }))
 
 
 def _manual_grade_failure_response(outcome):
@@ -2114,6 +2181,7 @@ def _start_detection_job(fruit_id, fruit_dir):
             reason='dataset_operation_in_progress',
         )
     APP_STATE['detection_status'] = 'pending'
+    APP_STATE['detection_started_monotonic'] = time.monotonic()
     APP_STATE['status'] = 'detection_pending'
     APP_STATE['message'] = f'{fruit_id} 三張原圖已保存，等待批次檢測。'
     threading.Thread(
@@ -2166,6 +2234,7 @@ def upload_images_api(request):
             return _json_error(f'第 {station_index} 站照片已存在，請勿重複上傳。', status=409, reason='duplicate_station_image')
         APP_STATE['pending_capture'] = False
         APP_STATE['status'] = 'uploading'
+        APP_STATE['upload_started_monotonic'] = time.monotonic()
         APP_STATE['message'] = f'{active_fruit_id} 正在接收第 {station_index} 站照片，請勿刪除或重置。'
         upload_boot_id = APP_STATE.get('esp32_boot_id')
         photo_only = _photo_only_session()
@@ -2376,87 +2445,88 @@ def classify_api(request):
         operation_token = APP_STATE.begin_dataset_operation('classify', fruit_id)
         APP_STATE['message'] = f'{fruit_id} 正在分類為「{label}」。'
 
-    try:
-        dataset_store.safe_move(src_dir, dest_dir)
-        dataset_store.append_metadata(_dataset_root(), fruit_id, label, capture_time, relative_path, note, dest_dir)
-        fruit_number = dataset_store.parse_fruit_number(fruit_id)
-        if fruit_number is not None:
-            dataset_store.write_counter(_dataset_root(), max(dataset_store.load_counter(_dataset_root()), fruit_number + 1))
-        if photo_only:
-            try:
-                (dest_dir / '.capture-session.json').unlink(missing_ok=True)
-            except OSError:
-                pass  # Metadata and photos are already committed; cleanup is best effort.
-    except (DatasetFileBusyError, OSError) as exc:
-        with STATE_LOCK:
-            APP_STATE.finish_dataset_operation(operation_token)
-            dataset_untouched = src_dir.exists() and not dest_dir.exists()
+    with APP_STATE.releasing_dataset_operation(operation_token):
+        try:
+            dataset_store.safe_move(src_dir, dest_dir)
+            dataset_store.append_metadata(_dataset_root(), fruit_id, label, capture_time, relative_path, note, dest_dir)
+            fruit_number = dataset_store.parse_fruit_number(fruit_id)
+            if fruit_number is not None:
+                dataset_store.write_counter(_dataset_root(), max(dataset_store.load_counter(_dataset_root()), fruit_number + 1))
             if photo_only:
-                APP_STATE['message'] = f'{fruit_id} 分類保存失敗：{exc}'
-                APP_STATE['status'] = 'uploaded' if dataset_untouched else 'error'
-                APP_STATE['last_error_reason'] = 'dataset_commit_failed'
-            elif dataset_untouched:
                 try:
-                    _clear_sorter_recovery_marker()
-                    _reset_sorter_state()
+                    (dest_dir / '.capture-session.json').unlink(missing_ok=True)
                 except OSError:
+                    pass  # Metadata and photos are already committed; cleanup is best effort.
+        except (DatasetFileBusyError, OSError) as exc:
+            with STATE_LOCK:
+                APP_STATE.finish_dataset_operation(operation_token)
+                dataset_untouched = src_dir.exists() and not dest_dir.exists()
+                if photo_only:
+                    APP_STATE['message'] = f'{fruit_id} 分類保存失敗：{exc}'
+                    APP_STATE['status'] = 'uploaded' if dataset_untouched else 'error'
+                    APP_STATE['last_error_reason'] = 'dataset_commit_failed'
+                elif dataset_untouched:
+                    try:
+                        _clear_sorter_recovery_marker()
+                        _reset_sorter_state()
+                    except OSError:
+                        _set_sorter_failed(
+                            fruit_id,
+                            label,
+                            classification_code,
+                            'sorter_recovery_clear_failed',
+                            phase='dataset_failed',
+                        )
+                    else:
+                        APP_STATE['message'] = f'{fruit_id} 分類失敗，可稍後重試。'
+                else:
                     _set_sorter_failed(
                         fruit_id,
                         label,
                         classification_code,
-                        'sorter_recovery_clear_failed',
+                        'dataset_commit_uncertain',
                         phase='dataset_failed',
                     )
-                else:
-                    APP_STATE['message'] = f'{fruit_id} 分類失敗，可稍後重試。'
-            else:
+            return _json_error(str(exc), status=409, reason='dataset_file_busy')
+
+        with STATE_LOCK:
+            if not APP_STATE.operation_matches(operation_token):
                 _set_sorter_failed(
                     fruit_id,
                     label,
                     classification_code,
-                    'dataset_commit_uncertain',
-                    phase='dataset_failed',
+                    'dataset_commit_state_changed',
+                    phase='dataset_committed',
                 )
-        return _json_error(str(exc), status=409, reason='dataset_file_busy')
-
-    with STATE_LOCK:
-        if not APP_STATE.operation_matches(operation_token):
-            _set_sorter_failed(
-                fruit_id,
-                label,
-                classification_code,
-                'dataset_commit_state_changed',
-                phase='dataset_committed',
-            )
-            return _json_error('分類完成時狀態已變更，已保留資料供人工確認。', status=409, reason='stale_operation')
-        if APP_STATE.get('active_fruit_id') != fruit_id:
+                return _json_error('分類完成時狀態已變更，已保留資料供人工確認。', status=409, reason='stale_operation')
+            if APP_STATE.get('active_fruit_id') != fruit_id:
+                APP_STATE.finish_dataset_operation(operation_token)
+                _set_sorter_failed(
+                    fruit_id,
+                    label,
+                    classification_code,
+                    'dataset_commit_state_changed',
+                    phase='dataset_committed',
+                )
+                return _json_error('分類完成時 fruit 已變更，已保留資料供人工確認。', status=409, reason='stale_operation')
             APP_STATE.finish_dataset_operation(operation_token)
-            _set_sorter_failed(
-                fruit_id,
-                label,
-                classification_code,
-                'dataset_commit_state_changed',
-                phase='dataset_committed',
-            )
-            return _json_error('分類完成時 fruit 已變更，已保留資料供人工確認。', status=409, reason='stale_operation')
-        APP_STATE.finish_dataset_operation(operation_token)
-        _clear_classified_dataset_state(fruit_id, label)
-        _record_transition('fruit_classified', fruit_id=fruit_id, details={'label': label})
-        if photo_only:
-            APP_STATE['status'] = 'idle'
-            sorter_result = {'sorter_command_queued': False, 'hardware_skipped': True}
-        else:
-            sorter_result = _queue_sorter_command(fruit_id, label)
-        payload = {
-            'status': 'success',
-            'data_classified': True,
-            'fruit_id': fruit_id,
-            'label': label,
-            'path': relative_path,
-            'next_fruit_id': dataset_store.format_fruit_id(dataset_store.load_counter(_dataset_root())),
-            **sorter_result,
-        }
-    return JsonResponse(payload)
+            _clear_classified_dataset_state(fruit_id, label)
+            _record_transition('fruit_classified', fruit_id=fruit_id, details={'label': label})
+            if photo_only:
+                APP_STATE['status'] = 'idle'
+                sorter_result = {'sorter_command_queued': False, 'hardware_skipped': True}
+            else:
+                sorter_result = _queue_sorter_command(fruit_id, label)
+            payload = {
+                'status': 'success',
+                'data_classified': True,
+                'fruit_id': fruit_id,
+                'label': label,
+                'path': relative_path,
+                'next_fruit_id': dataset_store.format_fruit_id(dataset_store.load_counter(_dataset_root())),
+                **sorter_result,
+            }
+        return JsonResponse(payload)
 
 
 @csrf_exempt
@@ -2512,67 +2582,68 @@ def discard_api(request):
         operation_token = APP_STATE.begin_dataset_operation('discard', fruit_id)
         APP_STATE['message'] = f'{fruit_id} 正在刪除或隔離。'
 
-    try:
-        if result_dir is not None:
-            detection.remove_summary_rows(_detection_summary_path(), fruit_id)
-        result_discard = (
-            dataset_store.discard_temp_fruit(
-                _dataset_root(), result_dir, fruit_id, now_string=_now_string, fruit_id_exists=_fruit_id_exists,
-            ) if result_dir is not None else None
-        )
-        discard_result = dataset_store.discard_temp_fruit(
-            _dataset_root(), fruit_dir, fruit_id, now_string=_now_string, fruit_id_exists=_fruit_id_exists,
-        )
-        if result_discard and result_discard['mode'] != 'deleted':
-            discard_result = result_discard
-    except (DatasetFileBusyError, OSError) as exc:
-        with STATE_LOCK:
-            APP_STATE.finish_dataset_operation(operation_token)
-            APP_STATE['message'] = f'{fruit_id} 刪除失敗，可稍後重試。'
-        return _json_error(str(exc), status=409, reason='dataset_file_busy')
-    discard_mode = discard_result['mode']
-    if discard_mode == 'deleted':
-        message = f'{fruit_id} 已刪除，counter 不會自動增加。'
-    elif discard_mode == 'quarantined':
-        message = f'{fruit_id} 暫時無法刪除，已隔離到 _delete_pending，現在可繼續拍攝。'
-    else:
-        message = (
-            f'{fruit_id} 暫時被其他程式占用，已標記為待清理並跳過此 ID；'
-            f'下一筆將從 {discard_result["next_fruit_id"]} 開始。'
-        )
-
-    with STATE_LOCK:
-        if not APP_STATE.operation_matches(operation_token):
-            return _json_error('刪除完成時狀態已變更。', status=409, reason='stale_operation')
-        APP_STATE.finish_dataset_operation(operation_token)
-        _clear_active_state(message, status='idle')
-        APP_STATE['detection_status'] = 'idle'
-        APP_STATE['detection_result'] = None
-        APP_STATE['detection_error'] = None
-        if gate3_waiting:
-            APP_STATE['status'] = 'error'
-            APP_STATE['auto_run_recovery_reason'] = 'gate3_manual_removal_required'
-            APP_STATE['last_error_reason'] = 'gate3_manual_removal_required'
-            APP_STATE['last_error_command'] = 'classify_fruit'
-            APP_STATE['last_error_command_id'] = None
-            APP_STATE['message'] = (
-                f'{fruit_id} 暫存資料已處理，但果實仍可能位於 Gate 3。'
-                '系統不會自動開啟 Gate 3；請依斷電程序切斷伺服電源，'
-                '確認安全後人工移除。'
+    with APP_STATE.releasing_dataset_operation(operation_token):
+        try:
+            if result_dir is not None:
+                detection.remove_summary_rows(_detection_summary_path(), fruit_id)
+            result_discard = (
+                dataset_store.discard_temp_fruit(
+                    _dataset_root(), result_dir, fruit_id, now_string=_now_string, fruit_id_exists=_fruit_id_exists,
+                ) if result_dir is not None else None
             )
-        _record_transition(
-            'fruit_discarded',
-            fruit_id=fruit_id,
-            details={'discard_mode': discard_mode},
-        )
-        payload = _state_payload(extra={
-            'discarded_fruit_id': fruit_id,
-            'discard_mode': discard_mode,
-            'discard_cleanup_pending': discard_mode != 'deleted',
-            'discard_cleanup_path': discard_result.get('cleanup_path'),
-            'next_fruit_id': discard_result.get('next_fruit_id') or dataset_store.format_fruit_id(dataset_store.load_counter(_dataset_root())),
-        })
-    return JsonResponse(payload)
+            discard_result = dataset_store.discard_temp_fruit(
+                _dataset_root(), fruit_dir, fruit_id, now_string=_now_string, fruit_id_exists=_fruit_id_exists,
+            )
+            if result_discard and result_discard['mode'] != 'deleted':
+                discard_result = result_discard
+        except (DatasetFileBusyError, OSError) as exc:
+            with STATE_LOCK:
+                APP_STATE.finish_dataset_operation(operation_token)
+                APP_STATE['message'] = f'{fruit_id} 刪除失敗，可稍後重試。'
+            return _json_error(str(exc), status=409, reason='dataset_file_busy')
+        discard_mode = discard_result['mode']
+        if discard_mode == 'deleted':
+            message = f'{fruit_id} 已刪除，counter 不會自動增加。'
+        elif discard_mode == 'quarantined':
+            message = f'{fruit_id} 暫時無法刪除，已隔離到 _delete_pending，現在可繼續拍攝。'
+        else:
+            message = (
+                f'{fruit_id} 暫時被其他程式占用，已標記為待清理並跳過此 ID；'
+                f'下一筆將從 {discard_result["next_fruit_id"]} 開始。'
+            )
+
+        with STATE_LOCK:
+            if not APP_STATE.operation_matches(operation_token):
+                return _json_error('刪除完成時狀態已變更。', status=409, reason='stale_operation')
+            APP_STATE.finish_dataset_operation(operation_token)
+            _clear_active_state(message, status='idle')
+            APP_STATE['detection_status'] = 'idle'
+            APP_STATE['detection_result'] = None
+            APP_STATE['detection_error'] = None
+            if gate3_waiting:
+                APP_STATE['status'] = 'error'
+                APP_STATE['auto_run_recovery_reason'] = 'gate3_manual_removal_required'
+                APP_STATE['last_error_reason'] = 'gate3_manual_removal_required'
+                APP_STATE['last_error_command'] = 'classify_fruit'
+                APP_STATE['last_error_command_id'] = None
+                APP_STATE['message'] = (
+                    f'{fruit_id} 暫存資料已處理，但果實仍可能位於 Gate 3。'
+                    '系統不會自動開啟 Gate 3；請依斷電程序切斷伺服電源，'
+                    '確認安全後人工移除。'
+                )
+            _record_transition(
+                'fruit_discarded',
+                fruit_id=fruit_id,
+                details={'discard_mode': discard_mode},
+            )
+            payload = _state_payload(extra={
+                'discarded_fruit_id': fruit_id,
+                'discard_mode': discard_mode,
+                'discard_cleanup_pending': discard_mode != 'deleted',
+                'discard_cleanup_path': discard_result.get('cleanup_path'),
+                'next_fruit_id': discard_result.get('next_fruit_id') or dataset_store.format_fruit_id(dataset_store.load_counter(_dataset_root())),
+            })
+        return JsonResponse(payload)
 
 
 @csrf_exempt
@@ -2614,35 +2685,36 @@ def reset_dataset_api(request):
         operation_token = APP_STATE.begin_dataset_operation('reset', APP_STATE.get('active_fruit_id'))
         APP_STATE['message'] = '正在重置 dataset。'
 
-    try:
-        _ensure_dataset_structure()
-        delete_warnings = dataset_store.reset_dataset_contents(
-            _dataset_root(), collects_by_label=_collects_by_label(), labels=LABELS,
-            now_string=_now_string, reset_summary=detection.reset_summary,
-            clear_image_cache=_load_image_list.cache_clear,
-        )
-    except (DatasetFileBusyError, OSError) as exc:
-        with STATE_LOCK:
-            APP_STATE.finish_dataset_operation(operation_token)
-            APP_STATE['message'] = 'dataset 重置失敗，可稍後重試。'
-        return _json_error(str(exc), status=409, reason='dataset_file_busy')
+    with APP_STATE.releasing_dataset_operation(operation_token):
+        try:
+            _ensure_dataset_structure()
+            delete_warnings = dataset_store.reset_dataset_contents(
+                _dataset_root(), collects_by_label=_collects_by_label(), labels=LABELS,
+                now_string=_now_string, reset_summary=detection.reset_summary,
+                clear_image_cache=_load_image_list.cache_clear,
+            )
+        except (DatasetFileBusyError, OSError) as exc:
+            with STATE_LOCK:
+                APP_STATE.finish_dataset_operation(operation_token)
+                APP_STATE['message'] = 'dataset 重置失敗，可稍後重試。'
+            return _json_error(str(exc), status=409, reason='dataset_file_busy')
 
-    with STATE_LOCK:
-        if not APP_STATE.operation_matches(operation_token):
-            return _json_error('重置完成時狀態已變更。', status=409, reason='stale_operation')
-        APP_STATE.finish_dataset_operation(operation_token)
-        _clear_active_state('dataset 已重置，下一筆資料將從 fruit_001 開始。', status='idle')
-        APP_STATE['detection_status'] = 'idle'
-        APP_STATE['detection_result'] = None
-        APP_STATE['detection_error'] = None
-        _reset_sorter_state()
-        APP_STATE['capture_token'] = 0
-        APP_STATE['transition_trace'] = []
-        APP_STATE['trace_sequence'] = 0
-        _reset_timing_state()
-        _record_transition('dataset_reset', details={'delete_warning_count': len(delete_warnings)})
-        payload = _state_payload(extra={'reset_done': True, 'delete_warnings': delete_warnings})
-    return JsonResponse(payload)
+        with STATE_LOCK:
+            if not APP_STATE.operation_matches(operation_token):
+                return _json_error('重置完成時狀態已變更。', status=409, reason='stale_operation')
+            APP_STATE.finish_dataset_operation(operation_token)
+            _clear_active_state('dataset 已重置，下一筆資料將從 fruit_001 開始。', status='idle')
+            APP_STATE['detection_status'] = 'idle'
+            APP_STATE['detection_result'] = None
+            APP_STATE['detection_error'] = None
+            _reset_sorter_state()
+            APP_STATE['capture_token'] = 0
+            APP_STATE['transition_trace'] = []
+            APP_STATE['trace_sequence'] = 0
+            _reset_timing_state()
+            _record_transition('dataset_reset', details={'delete_warning_count': len(delete_warnings)})
+            payload = _state_payload(extra={'reset_done': True, 'delete_warnings': delete_warnings})
+        return JsonResponse(payload)
 
 
 @require_GET
@@ -2824,7 +2896,7 @@ def webrtc_state_api(request):
     return JsonResponse(payload)
 
 
-def reset_runtime_state_for_tests():
+def reset_runtime_state():
     with STATE_LOCK:
         for key in ('network_recovery', 'network_identity', 'network_persist_failed',
                     'esp32_network_capable', 'esp32_interlocked', 'esp32_motion',
@@ -4408,10 +4480,17 @@ def _clear_wait_timer():
 
 
 def _apply_session_timeouts():
+    # Runs before the busy guard: a hung detection job is the operation holding it.
+    _apply_detection_timeout()
     if APP_STATE.get('dataset_operation'):
         return
     _release_due_photo_capture()
     _apply_sorter_timeout()
+    upload_started = APP_STATE.get('upload_started_monotonic')
+    if (APP_STATE['status'] == 'uploading' and upload_started is not None
+            and time.monotonic() - upload_started > UPLOAD_SAVE_TIMEOUT_SECONDS):
+        _set_error_state('upload_timeout', '照片寫入逾時；已保留已存照片，請刪除本輪後重拍。')
+        return
     if not APP_STATE['active_fruit_id'] or not APP_STATE.get('wait_started_monotonic'):
         return
     elapsed = time.monotonic() - APP_STATE['wait_started_monotonic']
@@ -5084,6 +5163,8 @@ def _apply_capture_meta(raw_meta):
     try:
         meta = json.loads(raw_meta)
     except (TypeError, json.JSONDecodeError):
+        return
+    if not isinstance(meta, dict):
         return
 
     _apply_client_timing(meta.get('client_timing'))
