@@ -633,6 +633,21 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
       command.timing.feederStopUS = static_cast<uint32_t>(feederStopUS);
       command.timing.feederDriveUS = static_cast<uint32_t>(feederDriveUS);
       command.timing.feederMaxRunMS = static_cast<uint32_t>(feederMaxRunMS);
+      static const char* const kGateHomeKeys[] = {
+          "gate1_home_angle", "gate2_home_angle", "gate3_home_angle"};
+      static const char* const kSorterBinKeys[] = {
+          "sorter_high_angle", "sorter_medium_angle", "sorter_low_angle",
+          "sorter_processing_angle"};
+      for (uint8_t index = 0; index < FirmwareConfig::kGateCount; index += 1) {
+        const String value = readTextValue(body, kGateHomeKeys[index]);
+        if (value.length() > 0) command.timing.gateHomeAngles[index] = value.toInt();
+      }
+      const String sorterHomeValue = readTextValue(body, "sorter_home_angle");
+      if (sorterHomeValue.length() > 0) command.timing.sorterHomeAngle = sorterHomeValue.toInt();
+      for (uint8_t index = 0; index < FirmwareConfig::kSorterBinCount; index += 1) {
+        const String value = readTextValue(body, kSorterBinKeys[index]);
+        if (value.length() > 0) command.timing.sorterBinAngles[index] = value.toInt();
+      }
       command.hasTimingConfig = true;
     }
   }

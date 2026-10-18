@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include "Config.h"
+
 class ClassificationSequence {
  public:
   enum class Action : uint8_t {
@@ -34,15 +36,17 @@ class ClassificationSequence {
           reason(stepReason) {}
   };
 
-  static constexpr int kGateHomeAngle = 0;
   static constexpr int kGateReleaseAngle = 90;
-  static constexpr int kSorterHomeAngle = 85;
   static constexpr uint32_t kSorterPositionSettleMS = 500UL;
   static constexpr uint32_t kFruitDropHoldMS = 1000UL;
   static constexpr uint32_t kJointHomeSettleMS = 500UL;
   static constexpr uint32_t kOperationTimeoutMS = 5000UL;
 
-  Step start(int commandId, const char* classificationCode, uint32_t currentTime);
+  Step start(
+      int commandId,
+      const char* classificationCode,
+      uint32_t currentTime,
+      const int (&binAngles)[FirmwareConfig::kSorterBinCount]);
   Step tick(uint32_t currentTime);
   bool busy() const;
   static bool bootHomeReady(uint32_t currentTime, uint32_t bootHomeStartedAt);
@@ -64,7 +68,7 @@ class ClassificationSequence {
   char classificationCode_[16] = {0};
   const char* failureReason_ = "";
 
-  int angleForClassification(const char* classificationCode) const;
+  static int binForClassification(const char* classificationCode);
   Step terminal(Action action, const char* reason);
   static bool timeReached(uint32_t currentTime, uint32_t deadline);
 };

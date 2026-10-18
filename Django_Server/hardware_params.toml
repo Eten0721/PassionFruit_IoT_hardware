@@ -5,13 +5,13 @@
 # 改了送料脈波或最長運轉時間後，請先用 Dashboard 的「測試送料一顆」確認恰好送出一顆。
 
 # 第 1 站停穩時間（ms）｜推薦 300｜50～3000，50 的倍數
-first_station_settle_ms = 400
+first_station_settle_ms = 500
 
 # 伺服放行後穩定時間（ms）｜推薦 200｜50～3000，50 的倍數
-servo_settle_ms = 400
+servo_settle_ms = 500
 
 # 到下一站停穩時間（ms）｜推薦 350｜50～3000，50 的倍數
-fruit_settle_ms = 400
+fruit_settle_ms = 500
 
 # 第 3 站放行後歸位延遲（ms）｜推薦 300｜0～3000，50 的倍數
 final_gate_return_delay_ms = 500
@@ -24,8 +24,35 @@ idle_command_poll_interval_ms = 250
 feeder_stop_us = 1500
 
 # 送料驅動脈波（us）｜推薦 1300｜1000～2000，10 的倍數，不得與停止脈波相同
-feeder_drive_us = 1370
+feeder_drive_us = 1300
 
 # 送料最長運轉時間（ms）｜推薦 5000｜1000～20000，500 的倍數
 # 警告：若設定過長將導致連續送料之情形發生。
 feeder_max_run_ms = 5000
+
+# 伺服角度（度）｜0～180 的整數。改完請空機確認馬達不會撞到機構。
+# 閘門放行角度固定 90°，三站初始角度不得設為 90。
+
+# 第 1 站閘門初始角度｜推薦 0
+gate1_home_angle = 0
+
+# 第 2 站閘門初始角度｜推薦 0
+gate2_home_angle = 0
+
+# 第 3 站閘門初始角度｜推薦 0
+gate3_home_angle = 0
+
+# 分類器初始角度｜推薦 ?
+sorter_home_angle = 45
+
+# 分類器「上等」角度｜推薦 ?
+sorter_high_angle = 15
+
+# 分類器「中等」角度｜推薦 ?
+sorter_medium_angle = 30
+
+# 分類器「下等」角度｜推薦 ?
+sorter_low_angle = 60
+
+# 分類器「加工」角度｜推薦 ?
+sorter_processing_angle = 75

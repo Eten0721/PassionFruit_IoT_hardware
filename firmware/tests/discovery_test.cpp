@@ -20,7 +20,7 @@ static int queryCount() {
 static void noMotion() {
   for (const auto& output : Fake::outputs) {
     assert((output.pin == 23 && output.value == 1500) ||
-           (output.pin == 25 && output.value == 85) ||
+           (output.pin == 25 && output.value == 45) ||
            (output.pin != 23 && output.pin != 25 && output.value == 0));
   }
 }

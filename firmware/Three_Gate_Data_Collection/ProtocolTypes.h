@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 
+#include "Config.h"
+
 struct TimingConfig {
   uint32_t revision;
   uint32_t firstStationSettleMS;
@@ -12,6 +14,9 @@ struct TimingConfig {
   uint32_t feederStopUS;
   uint32_t feederDriveUS;
   uint32_t feederMaxRunMS;
+  int gateHomeAngles[FirmwareConfig::kGateCount];
+  int sorterHomeAngle;
+  int sorterBinAngles[FirmwareConfig::kSorterBinCount];
 
   TimingConfig()
       : revision(0),
@@ -22,7 +27,14 @@ struct TimingConfig {
         idleCommandPollIntervalMS(0),
         feederStopUS(0),
         feederDriveUS(0),
-        feederMaxRunMS(0) {}
+        feederMaxRunMS(0),
+        gateHomeAngles{FirmwareConfig::kHomeAngle, FirmwareConfig::kHomeAngle, FirmwareConfig::kHomeAngle},
+        sorterHomeAngle(FirmwareConfig::kSorterHomeAngle),
+        sorterBinAngles{
+            FirmwareConfig::kSorterBinAngles[0],
+            FirmwareConfig::kSorterBinAngles[1],
+            FirmwareConfig::kSorterBinAngles[2],
+            FirmwareConfig::kSorterBinAngles[3]} {}
 };
 
 struct MotorCommand {

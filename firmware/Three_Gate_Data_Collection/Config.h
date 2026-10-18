@@ -14,6 +14,10 @@ constexpr uint8_t kBootPin = 0;  // Candidate for this FQBN; physical board veri
 
 constexpr int kHomeAngle = 0;
 constexpr int kReleaseAngle = 90;
+constexpr int kSorterHomeAngle = 45;
+// Basket order: high, medium, low, processing. Django hardware_params.toml overrides these.
+constexpr uint8_t kSorterBinCount = 4;
+constexpr int kSorterBinAngles[kSorterBinCount] = {15, 30, 60, 75};
 
 constexpr float kTriggerDistanceCM = 6.0F;
 constexpr float kRearmDistanceCM = 8.0F;

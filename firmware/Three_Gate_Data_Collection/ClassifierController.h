@@ -32,6 +32,8 @@ class ClassifierController {
   };
 
   void begin(uint32_t currentTime, GateController& gates, bool home = true);
+  // Only takes effect on the next home(); callers re-home after changing it.
+  void setAngles(int homeAngle, const int (&binAngles)[FirmwareConfig::kSorterBinCount]);
   void abort();
   void home(uint32_t currentTime);
   void tick(uint32_t currentTime);
@@ -51,6 +53,12 @@ class ClassifierController {
   ClassificationSequence sequence_;
   State state_ = State::kUninitialized;
   uint32_t bootHomeStartedAt_ = 0;
+  int homeAngle_ = FirmwareConfig::kSorterHomeAngle;
+  int binAngles_[FirmwareConfig::kSorterBinCount] = {
+      FirmwareConfig::kSorterBinAngles[0],
+      FirmwareConfig::kSorterBinAngles[1],
+      FirmwareConfig::kSorterBinAngles[2],
+      FirmwareConfig::kSorterBinAngles[3]};
   String activeClassificationCode_;
   Result result_;
 

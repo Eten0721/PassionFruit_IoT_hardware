@@ -213,16 +213,16 @@ static void captureAndSorterKeepExistingPhases() {
   assert(Fake::sensorReads >= reads + 10);
   assert(outputCount(18, 90) == 0);
   Fake::unblock();
-  pumpUntil(controller, [] { return outputCount(25, 55) == 1; });
-  const auto sorterStarted = lastOutputAt(25, 55);
+  pumpUntil(controller, [] { return outputCount(25, 15) == 1; });
+  const auto sorterStarted = lastOutputAt(25, 15);
   tickAt(controller, sorterStarted + 499);
   assert(outputCount(21, 90) == 0);
   tickAt(controller, sorterStarted + 500);
   assert(lastOutputAt(21, 90) == sorterStarted + 500);
   tickAt(controller, sorterStarted + 1499);
-  assert(outputCount(25, 85) == 1);
+  assert(outputCount(25, 45) == 1);
   tickAt(controller, sorterStarted + 1500);
-  assert(lastOutputAt(25, 85) == sorterStarted + 1500);
+  assert(lastOutputAt(25, 45) == sorterStarted + 1500);
   assert(lastOutputAt(18, 0) == sorterStarted + 1500);
   assert(lastOutputAt(19, 0) == sorterStarted + 1500);
   assert(lastOutputAt(21, 0) == sorterStarted + 1500);
@@ -231,7 +231,7 @@ static void captureAndSorterKeepExistingPhases() {
   const auto retried = reports("classification_sorter_completed");
   assert(retried[0].body == retried[1].body);
   for (int count = 0; count < 30; ++count) tickAt(controller, millis() + 50);
-  assert(outputCount(25, 55) == 1 && outputCount(21, 90) == 1);
+  assert(outputCount(25, 15) == 1 && outputCount(21, 90) == 1);
 }
 
 static void sensorLatencyCannotExpireNewLegacyWait(bool timeout) {

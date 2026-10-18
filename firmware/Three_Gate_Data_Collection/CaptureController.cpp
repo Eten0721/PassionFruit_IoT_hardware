@@ -24,7 +24,7 @@ void CaptureController::begin() {
   persistFailed_ = persistFailed_ || !preferencesReady_;
   networkInterlocked_ = !preferencesReady_ || persistFailed_ || interlockRecord_.phase != 0;
   generation_ = interlockRecord_.generation;
-  if (!networkInterlocked_) gates_.moveAll(FirmwareConfig::kHomeAngle);
+  if (!networkInterlocked_) gates_.moveAllHome();
   feeder_.attach(FirmwareConfig::kFeederPin, 1000, 2000);
   feeder_.writeMicroseconds(interlockRecord_.stopUS);
 
@@ -346,7 +346,7 @@ void CaptureController::recoverNetwork(const MotorCommand& command, uint32_t cur
     return;
   }
   feeder_.writeMicroseconds(appliedTiming_.feederStopUS);
-  gates_.moveAll(FirmwareConfig::kHomeAngle);
+  gates_.moveAllHome();
   classifier_.home(currentTime);
   recoveryRunning_ = true;
   motionPhase_ = MotionPhase::kRecoverySettling;
@@ -415,7 +415,7 @@ void CaptureController::advanceMotion(uint32_t currentTime) {
       return;
 
     case MotionPhase::kFinalGateReturnDelay:
-      gates_.moveAll(activeCommand_.homeAngle);
+      gates_.moveAllHome();
       motionPhase_ = MotionPhase::kFinalHomeSettling;
       phaseDeadlineAt_ = currentTime + activeTiming_.servoSettleMS;
       printTiming("all_gates_returning_home");
@@ -1039,10 +1039,36 @@ TimingConfig CaptureController::defaultTimingConfig() const {
   return timing;
 }
 
+static bool servoAngleIsValid(int angle) {
+  return angle >= 0 && angle <= 180;
+}
+
+static bool servoAnglesAreValid(const TimingConfig& timing) {
+  for (uint8_t index = 0; index < FirmwareConfig::kGateCount; index += 1) {
+    const int home = timing.gateHomeAngles[index];
+    if (!servoAngleIsValid(home) || home == FirmwareConfig::kReleaseAngle) return false;
+  }
+  for (uint8_t index = 0; index < FirmwareConfig::kSorterBinCount; index += 1) {
+    if (!servoAngleIsValid(timing.sorterBinAngles[index])) return false;
+  }
+  return servoAngleIsValid(timing.sorterHomeAngle);
+}
+
+static bool servoAnglesEqual(const TimingConfig& left, const TimingConfig& right) {
+  for (uint8_t index = 0; index < FirmwareConfig::kGateCount; index += 1) {
+    if (left.gateHomeAngles[index] != right.gateHomeAngles[index]) return false;
+  }
+  for (uint8_t index = 0; index < FirmwareConfig::kSorterBinCount; index += 1) {
+    if (left.sorterBinAngles[index] != right.sorterBinAngles[index]) return false;
+  }
+  return left.sorterHomeAngle == right.sorterHomeAngle;
+}
+
 bool CaptureController::timingConfigIsValid(const TimingConfig& timing) const {
   constexpr uint32_t kMinimumSettleMS = 50UL;
   constexpr uint32_t kMaximumSettleMS = 3000UL;
-  return timing.firstStationSettleMS >= kMinimumSettleMS &&
+  return servoAnglesAreValid(timing) &&
+         timing.firstStationSettleMS >= kMinimumSettleMS &&
          timing.firstStationSettleMS <= kMaximumSettleMS &&
          timing.servoSettleMS >= kMinimumSettleMS &&
          timing.servoSettleMS <= kMaximumSettleMS &&
@@ -1094,11 +1120,21 @@ bool CaptureController::applyPendingTimingConfig(uint32_t currentTime) {
     return false;
   }
 
+  const bool anglesChanged = !servoAnglesEqual(appliedTiming_, pendingTiming_);
   appliedTiming_ = pendingTiming_;
   hasPendingTiming_ = false;
+  gates_.setHomeAngles(appliedTiming_.gateHomeAngles);
+  classifier_.setAngles(appliedTiming_.sorterHomeAngle, appliedTiming_.sorterBinAngles);
   if (!saveInterlock(networkInterlocked_ ? 1 : 0)) {
     lockNetwork("recovery_persist_failed");
     return true;
+  }
+  if (anglesChanged) {
+    // Only applied while idle at home, so moving to the new home cannot drop a fruit mid-sequence.
+    gates_.moveAllHome();
+    classifier_.home(currentTime);
+    motionPhase_ = MotionPhase::kBootHomeSettling;
+    phaseDeadlineAt_ = currentTime + ClassificationSequence::kJointHomeSettleMS;
   }
   Serial.print("Timing configuration applied. revision=");
   Serial.print(appliedTiming_.revision);
@@ -1248,7 +1284,7 @@ void CaptureController::handleCommand(
         motionPhase_ == MotionPhase::kWaitingForCommand &&
         gates_.atAngle(1, FirmwareConfig::kReleaseAngle) &&
         gates_.atAngle(2, FirmwareConfig::kReleaseAngle) &&
-        gates_.atAngle(3, FirmwareConfig::kHomeAngle);
+        gates_.atHome(3);
     if (!waitingForGate3Classification) {
       queueClassifierFailure(command, "gate3_classification_not_ready");
       return;
@@ -1446,8 +1482,8 @@ void CaptureController::startSequence(
     return;
   }
 
-  if (!gates_.allAtAngle(command.homeAngle)) {
-    gates_.moveAll(command.homeAngle);
+  if (!gates_.atHome()) {
+    gates_.moveAllHome();
     motionPhase_ = MotionPhase::kStartHomeSettling;
     phaseDeadlineAt_ = currentTime + activeTiming_.servoSettleMS;
     return;
@@ -1495,7 +1531,7 @@ void CaptureController::queueMotorError(
     const String& reason) {
   Serial.print("Motor command rejected: ");
   Serial.println(reason);
-  gates_.moveAll(FirmwareConfig::kHomeAngle);
+  gates_.moveAllHome();
   setAutoTriggerEnabled(false, "motor_error");
   sequenceActive_ = false;
   clearActiveTiming();

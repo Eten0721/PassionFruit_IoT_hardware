@@ -16,10 +16,20 @@ void ClassifierController::begin(uint32_t currentTime, GateController& gates, bo
     state_ = State::kIdleHome;
     return;
   }
-  servo_.write(ClassificationSequence::kSorterHomeAngle);
+  servo_.write(homeAngle_);
   state_ = State::kBootHomeSettling;
   bootHomeStartedAt_ = currentTime;
-  Serial.println("Classifier returning to HOME 85 degrees.");
+  Serial.print("Classifier returning to HOME degrees=");
+  Serial.println(homeAngle_);
+}
+
+void ClassifierController::setAngles(
+    int homeAngle,
+    const int (&binAngles)[FirmwareConfig::kSorterBinCount]) {
+  homeAngle_ = homeAngle;
+  for (uint8_t index = 0; index < FirmwareConfig::kSorterBinCount; index += 1) {
+    binAngles_[index] = binAngles[index];
+  }
 }
 
 void ClassifierController::abort() {
@@ -31,7 +41,7 @@ void ClassifierController::abort() {
 void ClassifierController::home(uint32_t currentTime) {
   if (!servo_.attached()) return;
   abort();
-  servo_.write(ClassificationSequence::kSorterHomeAngle);
+  servo_.write(homeAngle_);
   state_ = State::kBootHomeSettling;
   bootHomeStartedAt_ = currentTime;
 }
@@ -70,7 +80,8 @@ bool ClassifierController::start(
   const ClassificationSequence::Step step = sequence_.start(
       commandId,
       classificationCode.c_str(),
-      currentTime);
+      currentTime,
+      binAngles_);
   if (step.action == ClassificationSequence::Action::kIgnored) {
     reason = step.reason;
     return false;
@@ -126,8 +137,8 @@ void ClassifierController::applyStep(
       return;
 
     case ClassificationSequence::Action::kHomeAll:
-      gates_->moveAll(ClassificationSequence::kGateHomeAngle);
-      servo_.write(ClassificationSequence::kSorterHomeAngle);
+      gates_->moveAllHome();
+      servo_.write(homeAngle_);
       return;
 
     case ClassificationSequence::Action::kCompleted:

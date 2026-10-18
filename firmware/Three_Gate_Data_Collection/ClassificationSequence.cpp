@@ -5,7 +5,8 @@
 ClassificationSequence::Step ClassificationSequence::start(
     int commandId,
     const char* classificationCode,
-    uint32_t currentTime) {
+    uint32_t currentTime,
+    const int (&binAngles)[FirmwareConfig::kSorterBinCount]) {
   if (commandId <= 0) {
     return Step(Action::kFailed, 0, commandId, "", "invalid_command_id");
   }
@@ -16,8 +17,8 @@ ClassificationSequence::Step ClassificationSequence::start(
     return Step(Action::kFailed, 0, commandId, classificationCode, "classification_sequence_busy");
   }
 
-  const int targetAngle = angleForClassification(classificationCode);
-  if (targetAngle < 0) {
+  const int bin = binForClassification(classificationCode);
+  if (bin < 0) {
     lastTerminalCommandId_ = commandId;
     return Step(Action::kFailed, 0, commandId, classificationCode, "invalid_classification_code");
   }
@@ -28,7 +29,7 @@ ClassificationSequence::Step ClassificationSequence::start(
   operationStartedAt_ = currentTime;
   phase_ = Phase::kPositioningSorter;
   phaseDeadlineAt_ = currentTime + kSorterPositionSettleMS;
-  return Step(Action::kMoveSorterToTarget, targetAngle, commandId_, classificationCode_);
+  return Step(Action::kMoveSorterToTarget, binAngles[bin], commandId_, classificationCode_);
 }
 
 ClassificationSequence::Step ClassificationSequence::tick(uint32_t currentTime) {
@@ -41,7 +42,7 @@ ClassificationSequence::Step ClassificationSequence::tick(uint32_t currentTime) 
     phase_ = Phase::kFailureHoming;
     phaseDeadlineAt_ = currentTime + kJointHomeSettleMS;
     failureReason_ = "classifier_timeout";
-    return Step(Action::kHomeAll, kSorterHomeAngle, commandId_, classificationCode_, failureReason_);
+    return Step(Action::kHomeAll, 0, commandId_, classificationCode_, failureReason_);
   }
   if (!timeReached(currentTime, phaseDeadlineAt_)) {
     return Step();
@@ -56,7 +57,7 @@ ClassificationSequence::Step ClassificationSequence::tick(uint32_t currentTime) 
     case Phase::kHoldingAfterGateRelease:
       phase_ = Phase::kHoming;
       phaseDeadlineAt_ = currentTime + kJointHomeSettleMS;
-      return Step(Action::kHomeAll, kSorterHomeAngle, commandId_, classificationCode_);
+      return Step(Action::kHomeAll, 0, commandId_, classificationCode_);
 
     case Phase::kHoming:
       return terminal(Action::kCompleted, "classification_sorter_completed");
@@ -80,21 +81,22 @@ bool ClassificationSequence::bootHomeReady(
   return timeReached(currentTime, bootHomeStartedAt + kJointHomeSettleMS);
 }
 
-int ClassificationSequence::angleForClassification(const char* classificationCode) const {
+// Index into the bin angle order: high, medium, low, processing.
+int ClassificationSequence::binForClassification(const char* classificationCode) {
   if (classificationCode == nullptr) {
     return -1;
   }
   if (strcmp(classificationCode, "high") == 0 || strcmp(classificationCode, "high_medium") == 0) {
-    return 55;
+    return 0;
   }
   if (strcmp(classificationCode, "medium") == 0 || strcmp(classificationCode, "discard") == 0) {
-    return 70;
+    return 1;
   }
   if (strcmp(classificationCode, "low") == 0) {
-    return 100;
+    return 2;
   }
   if (strcmp(classificationCode, "processing") == 0) {
-    return 115;
+    return 3;
   }
   return -1;
 }

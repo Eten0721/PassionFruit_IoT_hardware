@@ -1131,6 +1131,8 @@ class DataCollectionFlowTests(SimpleTestCase):
             fruit_settle_ms=450,
             idle_command_poll_interval_ms=400,
             feeder_drive_us=1310,
+            gate2_home_angle=15,
+            sorter_low_angle=105,
         )
         views.reset_runtime_state_for_tests()
         views._ensure_dataset_structure()
@@ -1145,6 +1147,9 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(command['timing_revision'], str(revision))
         self.assertEqual(command['first_station_settle_ms'], '350')
         self.assertEqual(command['idle_command_poll_interval_ms'], '400')
+        self.assertEqual(command['gate2_home_angle'], '15')
+        self.assertEqual(command['sorter_low_angle'], '105')
+        self.assertEqual(command['sorter_home_angle'], '45')
 
         acknowledged = self._report('timing_config_applied', timing_revision=revision)
         self.assertEqual(acknowledged.status_code, 200)
@@ -1166,6 +1171,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             'capture_timing_invalid_step': {'feeder_max_run_ms': 5250},
             'capture_timing_out_of_range': {'idle_command_poll_interval_ms': 50},
             'capture_timing_invalid_value': {'servo_settle_ms': '"fast"'},
+            'gate_home_matches_release': {'gate3_home_angle': 90},
         }
         for reason, overrides in invalid_files.items():
             with self.subTest(reason=reason):
@@ -2381,9 +2387,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertIn('kSorterPositionSettleMS = 500UL', sequence_header)
         self.assertIn('kFruitDropHoldMS = 1000UL', sequence_header)
         self.assertIn('kJointHomeSettleMS = 500UL', sequence_header)
-        self.assertIn('kSorterHomeAngle = 85', sequence_header)
-        for angle in ('return 55;', 'return 70;', 'return 100;', 'return 115;'):
-            self.assertIn(angle, sequence_source)
+        self.assertIn('kSorterHomeAngle = 45', config)
+        self.assertIn('kSorterBinAngles[kSorterBinCount] = {15, 30, 60, 75}', config)
         self.assertIn('Action::kReleaseGate3', sequence_source)
         self.assertIn('Action::kHomeAll', sequence_source)
         self.assertNotIn('delay(', classifier_source)

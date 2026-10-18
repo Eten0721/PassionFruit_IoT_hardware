@@ -105,7 +105,7 @@ static void nvsFailureBlocksFeed() {
   controller.begin();
   for (int i = 0; i < 70; ++i) tick(controller, millis() + 50);
   assert(outputs(23, 1300) == 0);
-  assert(outputs(25, 85) == 0);
+  assert(outputs(25, 45) == 0);
 }
 static void malformedAndExpiredPermissionCannotDrive() {
   reset();
@@ -150,14 +150,14 @@ static void recoveryCommitsOnce() {
   Fake::controlAllowed = false;
   Fake::serverGeneration = 1;
   for (int i = 0; i < 150; ++i) tick(controller, millis() + 10);
-  const int homes = outputs(25, 85);
+  const int homes = outputs(25, 45);
   Fake::recoveryAllowed = true;
   Fake::enqueue({200, "command=recover_network\ncommand_id=9\n", "", false, "GET"});
-  pump(controller, [&] { return outputs(25, 85) == homes + 1; });
+  pump(controller, [&] { return outputs(25, 45) == homes + 1; });
   Fake::enqueue({200, "{\"ok\":true,\"recovery_commit\":true}", "", false, "POST"});
   Fake::enqueue({200, "{\"ok\":true,\"recovery_committed\":true}", "", false, "POST"});
   for (int i = 0; i < 170; ++i) tick(controller, millis() + 10);
-  assert(outputs(25, 85) == homes + 1);
+  assert(outputs(25, 45) == homes + 1);
   assert(outputs(23, 1300) == 1);
 }
 
@@ -218,7 +218,7 @@ static void revokedRecoveryAckAllowsNewHumanCommand(bool advanceGeneration) {
   };
   pump(controller, [&] { return completed == 2; });
   for (int i = 0; i < 80; ++i) tick(controller, millis() + 10);
-  assert(outputs(25, 85) == 3);
+  assert(outputs(25, 45) == 3);
   assert(outputs(23, 1300) == 1);
 }
 static void classifierLossCancelsEveryRemainingPhase() {
@@ -239,7 +239,7 @@ static void classifierLossCancelsEveryRemainingPhase() {
     };
     CaptureController controller;
     controller.begin();
-    pump(controller, [] { return outputs(25, 55) == 1; });
+    pump(controller, [] { return outputs(25, 15) == 1; });
     const uint32_t started = millis();
     tick(controller, started + phase);
     Fake::connected = false;
@@ -251,6 +251,33 @@ static void classifierLossCancelsEveryRemainingPhase() {
     assert(Fake::outputs.size() == stopped);
   }
 }
+static void timingProfileAppliesServoAngles() {
+  reset();
+  const std::string profile = "timing_revision=2\nfirst_station_settle_ms=300\nservo_settle_ms=200\nfruit_settle_ms=350\nfinal_gate_return_delay_ms=300\nidle_command_poll_interval_ms=250\nfeeder_stop_us=1500\nfeeder_drive_us=1300\nfeeder_max_run_ms=5000\ngate1_home_angle=10\ngate2_home_angle=20\ngate3_home_angle=30\nsorter_home_angle=80\nsorter_high_angle=60\nsorter_medium_angle=75\nsorter_low_angle=105\nsorter_processing_angle=120\n";
+  std::atomic<int> station{-1};
+  Fake::bridge = [&](const Fake::Request& request) {
+    std::string payload = "command=none\n" + profile;
+    const int current = station;
+    if (request.method == "GET" && current >= 0) {
+      payload = current == 0 ? "command=start_sequence\ncommand_id=1\n"
+          : current < 3 ? "command=release_gate\ncommand_id=" + std::to_string(current + 1) + "\nstation_index=" + std::to_string(current) + "\n"
+          : "command=classify_fruit\ncommand_id=4\nclassification_code=high\n";
+    } else if (request.body.find("event=timing_config_applied") == 0) {
+      station = 0;
+    } else if (request.body.find("event=station_") == 0) {
+      station = request.body[14] - '0';
+    }
+    return controlReply(request, payload, true, false, 0);
+  };
+  CaptureController controller;
+  controller.begin();
+  // The full three-station sequence outlasts pump()'s 2.5 s budget.
+  for (int i = 0; i < 2000 && outputs(25, 60) == 0; ++i) tick(controller, millis() + 10);
+  assert(outputs(25, 60) == 1);
+  assert(outputs(18, 10) >= 1 && outputs(19, 20) >= 1 && outputs(21, 30) >= 1);
+  assert(outputs(25, 80) >= 1 && outputs(25, 15) == 0);
+  pump(controller, [] { return outputs(25, 80) >= 2 && outputs(21, 30) >= 2; });
+}
 static void idleDeviceAdoptsServerRecoveryGeneration() {
   reset();
   Fake::controlAllowed = false;
@@ -260,7 +287,7 @@ static void idleDeviceAdoptsServerRecoveryGeneration() {
   pump(controller, [] { return outputs(23, 1500) == 2; });
   Fake::recoveryAllowed = true;
   Fake::enqueue({200, "command=recover_network\ncommand_id=9\n", "", false, "GET"});
-  pump(controller, [] { return outputs(25, 85) == 2; });
+  pump(controller, [] { return outputs(25, 45) == 2; });
   assert(outputs(23, 1300) == 0);
 }
 static void rebootRestoresCalibratedStopAndNoHome() {
@@ -290,6 +317,7 @@ int main() {
   rebootRestoresCalibratedStopAndNoHome();
   classifierLossCancelsEveryRemainingPhase();
   idleDeviceAdoptsServerRecoveryGeneration();
+  timingProfileAppliesServoAngles();
   for (auto& worker : Fake::workers) worker.join();
   std::cout << "Firmware network safety contracts passed.\n";
 }

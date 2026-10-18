@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
       const int feeds = count(23, 1300);
       if (feeds == 3) {
         assert(lost && committed && "New feed must follow both commits");
-        assert(count(25, 85) == 2 && "Recovery must home exactly once");
+        assert(count(25, 45) == 2 && "Recovery must home exactly once");
         std::cout << "PASS" << std::endl;
         break;
       }

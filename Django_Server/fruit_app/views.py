@@ -74,6 +74,17 @@ IDLE_COMMAND_POLL_INTERVAL_MS = 250
 FEEDER_STOP_US = 1500
 FEEDER_DRIVE_US = 1300
 FEEDER_MAX_RUN_MS = 5000
+SERVO_ANGLE_RECOMMENDED = {
+    'gate1_home_angle': HOME_ANGLE,
+    'gate2_home_angle': HOME_ANGLE,
+    'gate3_home_angle': HOME_ANGLE,
+    'sorter_home_angle': 45,
+    'sorter_high_angle': 15,
+    'sorter_medium_angle': 30,
+    'sorter_low_angle': 60,
+    'sorter_processing_angle': 75,
+}
+GATE_HOME_ANGLE_FIELDS = ('gate1_home_angle', 'gate2_home_angle', 'gate3_home_angle')
 CAPTURE_TIMING_RECOMMENDED = {
     'first_station_settle_ms': FIRST_STATION_SETTLE_MS,
     'servo_settle_ms': SERVO_SETTLE_MS,
@@ -83,6 +94,7 @@ CAPTURE_TIMING_RECOMMENDED = {
     'feeder_stop_us': FEEDER_STOP_US,
     'feeder_drive_us': FEEDER_DRIVE_US,
     'feeder_max_run_ms': FEEDER_MAX_RUN_MS,
+    **SERVO_ANGLE_RECOMMENDED,
 }
 CAPTURE_TIMING_FIELDS = tuple(CAPTURE_TIMING_RECOMMENDED)
 CAPTURE_TIMING_STEP_MS = 50
@@ -93,15 +105,18 @@ CAPTURE_TIMING_FIELD_LIMITS = {
     'feeder_stop_us': (1400, 1600),
     'feeder_drive_us': (1000, 2000),
     'feeder_max_run_ms': (1000, 20000),
+    **{field: (0, 180) for field in SERVO_ANGLE_RECOMMENDED},
 }
 CAPTURE_TIMING_FIELD_STEPS = {
     'feeder_stop_us': 5,
     'feeder_drive_us': 10,
     'feeder_max_run_ms': 500,
+    **{field: 1 for field in SERVO_ANGLE_RECOMMENDED},
 }
 CAPTURE_TIMING_FIELD_UNITS = {
     'feeder_stop_us': 'us',
     'feeder_drive_us': 'us',
+    **{field: '°' for field in SERVO_ANGLE_RECOMMENDED},
 }
 ESP32_ONLINE_WINDOW_SECONDS = 6
 ESP32_START_TIMEOUT_SECONDS = 10
@@ -3121,6 +3136,13 @@ def _normalise_capture_timing(raw_timing, *, require_all):
             status=400,
             reason='feeder_drive_matches_stop',
         )
+    for field in GATE_HOME_ANGLE_FIELDS:
+        if timing.get(field) == RELEASE_ANGLE:
+            raise CaptureCommandError(
+                f'{field} 不得等於放行角度 {RELEASE_ANGLE}°。',
+                status=400,
+                reason='gate_home_matches_release',
+            )
     return timing
 
 
@@ -4031,6 +4053,7 @@ def _esp32_command_payload():
         'feeder_stop_us': timing['feeder_stop_us'],
         'feeder_drive_us': timing['feeder_drive_us'],
         'feeder_max_run_ms': timing['feeder_max_run_ms'],
+        **{field: timing[field] for field in SERVO_ANGLE_RECOMMENDED},
         'message': APP_STATE['message'],
     }
 
@@ -4253,6 +4276,7 @@ def _format_command_text(payload):
             'feeder_stop_us',
             'feeder_drive_us',
             'feeder_max_run_ms',
+            *SERVO_ANGLE_RECOMMENDED,
         ])
         if payload.get('command') == 'feed_one':
             keys.append('feed_context')

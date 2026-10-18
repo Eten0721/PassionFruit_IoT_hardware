@@ -132,7 +132,7 @@
 | Upstream feeder XINHUI `60KG` continuous rotation | `23` | HC-SR04 回授停止，最大運轉時間安全保護 |
 | HC-SR04 Trigger | `26` | `10 us` pulse |
 | HC-SR04 Echo | `27` | `12000 us` timeout，輸入必須安全降壓 |
-| Position-control MG996R sorter | `25` | Home `85°` |
+| Position-control MG996R sorter | `25` | Home `45°` |
 
 三站閘門先沿用直接寫入 `0°／90°` 的控制方式，實際角度須以無干涉且能穩定推動果實的實機結果為準。新平台若仍發生夾果或過度推擠，再依 Issue [#16](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/16) 評估非阻塞小角度遞增；該觀察不阻擋 Gate 3／分類器複合流程。若後續實作慢速控制，必須使用 deadline 推進，不能以長時間同步迴圈阻塞 HTTPS、感測與安全停止。
 
@@ -146,12 +146,14 @@ XINHUI `60KG` 送料馬達直立於筒底中央並帶動分槽送料盤。送料
 
 | 中文分類 | Command code | 角度 |
 |---|---|---:|
-| 上等 | `high` | `55°` |
-| 中等 | `medium` | `70°` |
-| 下等 | `low` | `100°` |
-| 加工 | `processing` | `115°` |
+| 上等 | `high` | `15°` |
+| 中等 | `medium` | `30°` |
+| 下等 | `low` | `60°` |
+| 加工 | `processing` | `75°` |
 
-Firmware 可接受舊輸入 alias `high_medium` 與 `discard`，分別套用上等與中等的新角度；Django 與新決策層不得再產生 alias。分類器收到目標角度後先以開迴路方式等待 `500 ms`，再將 Gate 3 直接放行至 `90°`；從 Gate 3 到達 Release 後計時，分類器在目標角度保持 `1000 ms`。落果等待完成後，三顆 Gate 同時回 Home `0°`，分類器同時回 Home `85°`，共同歸位等待 `500 ms` 後才可回報完成。MG996R 沒有位置回授，這些等待只代表控制時序完成，不證明實際位置。複合動作 timeout 必須涵蓋分類器轉向、Gate 3 放行、落果保持與四顆馬達歸位，最終值由實作與實機量測決定。
+上表與三站 Home `0°`、分類器 Home `45°` 為預設值；實機可在 `Django_Server/hardware_params.toml` 調整三站與分類器 Home 及四個分類角度（`0～180°`，三站 Home 不得等於放行角度 `90°`）。ESP32 在閒置且四顆馬達已歸位時套用，角度有變更就先移到新 Home 並等待 `500 ms`；ESP32 重開機後會先回到 Firmware 預設角度，等 Django 重新下發設定。
+
+Firmware 可接受舊輸入 alias `high_medium` 與 `discard`，分別套用上等與中等的新角度；Django 與新決策層不得再產生 alias。分類器收到目標角度後先以開迴路方式等待 `500 ms`，再將 Gate 3 直接放行至 `90°`；從 Gate 3 到達 Release 後計時，分類器在目標角度保持 `1000 ms`。落果等待完成後，三顆 Gate 同時回 Home `0°`，分類器同時回 Home `45°`，共同歸位等待 `500 ms` 後才可回報完成。MG996R 沒有位置回授，這些等待只代表控制時序完成，不證明實際位置。複合動作 timeout 必須涵蓋分類器轉向、Gate 3 放行、落果保持與四顆馬達歸位，最終值由實作與實機量測決定。
 
 伺服供電使用一顆 `AC 110 V → DC 12 V／20 A` 電源供應器，並接供應兩顆 LM25116 的輸入。分支 A 初始降至 `6.0 V`，供三站與分類器四顆 MG996R，且不得超過 `6.6 V`；分支 B 降至 `8.4 V`，只供 XINHUI 送料馬達。兩顆模組的輸出正極不得互接，電源 DC 負極、兩顆模組 GND 與 ESP32 GND 必須共地。完整配線、安全與負載估算見 [`record_image/硬體接線與驗收摘要.md`](../record_image/硬體接線與驗收摘要.md)。
 
@@ -334,7 +336,7 @@ Gate 1 已實際攔住果實是部署前提，並非額外位置感測。捷徑�
 5. 第 3 站保存後，Django 將三張照片標記為可檢查與分類，不建立 `station_index=3` 的 `release_gate`；Gate 3 保持 Home，果實留在第 3 站。
 6. 使用者分類時，Django 先確認 ESP32 已回報 `gate3_sorter_v1`；能力缺失時保留暫存照片與果實並拒絕分類，能力存在時才提交 Dataset 與 metadata，再建立 `classify_fruit`。
 7. ESP32 將分類器轉至目標角度並等待 `500 ms`，再放行 Gate 3；Gate 3 到達 Release 後保持分類角度 `1000 ms`。
-8. 落果等待完成後，三顆 Gate 同時回 Home `0°`，分類器同時回 Home `85°`；共同歸位等待 `500 ms` 後回報 `classification_sorter_completed`。
+8. 落果等待完成後，三顆 Gate 同時回 Home `0°`，分類器同時回 Home `45°`；共同歸位等待 `500 ms` 後回報 `classification_sorter_completed`。
 9. 失敗或結果不確定時保持自動運轉關閉，且不得自動重放實體動作。
 
 任何固定延遲都不能取代 Django 確認照片保存成功。
@@ -534,7 +536,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 3. 高速錄影確認第 2、3 站 ready 前果實已停止，且三張照片清晰。
 4. 模擬 Wi-Fi 中斷、TLS timeout、手機未上傳、錯站、重複 trigger 與 duplicate command。
 5. 驗證第 3 張保存後 Gate 3 仍保持關閉、Gate 1／2 維持 Release、未分類鎖定，以及缺少 `gate3_sorter_v1` 時在 Dataset 提交前拒絕分類。
-6. 驗證四個分類角度 `55°／70°／100°／115°`、分類器就位等待 `500 ms`、Gate 3 放行後落果保持 `1000 ms`、四顆馬達同時歸位與共同等待 `500 ms`，以及 report retry 不重複轉動分類器或 Gate 3；刪除未分類果實不得自動放行。
+6. 驗證四個分類角度 `15°／30°／60°／75°`、分類器就位等待 `500 ms`、Gate 3 放行後落果保持 `1000 ms`、四顆馬達同時歸位與共同等待 `500 ms`，以及 report retry 不重複轉動分類器或 Gate 3；刪除未分類果實不得自動放行。
 7. 以 `10` 顆作為現階段一體式送料筒裝載量，由 `1300 us` 起校正能可靠起轉且不造成雙送的最慢驅動脈波，並由 `5000 ms` 起調整最大運轉時間；最終時間由操作員依實測自行指定。每次修改送料參數並重啟 Django 後，以測試送料目視確認恰好一顆。
 8. 十顆測試果實應盡量涵蓋不同大小、形狀與蒂頭方向，並記錄各顆最大橫向直徑；樣本外形過於相近時只完成基本功能驗證，混合果形仍由後續正式實機驗收補足。
 9. 每次果實都必須落在拍攝平台起點範圍內，不得彈出軌道、越過 Gate 1、勾住出口或產生可見破皮與凹傷。
