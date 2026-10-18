@@ -330,6 +330,7 @@
             <summary>
                 <span><strong>停穩設定與送料校正</strong><small>參數來自 Django_Server/hardware_params.toml，修改後重新啟動 Django 才生效。</small></span>
                 <span class="summary-statuses">
+                    <button id="btn-runtime-reset" type="button" class="button warning summary-action">完全重置Django狀態以及ESP32網路設定</button>
                     <button id="btn-test-feeder" type="button" class="button warning summary-action">測試送料一顆</button>
                     <span id="timing-summary-status" class="summary-badge" data-state="pending">待同步</span>
                 </span>

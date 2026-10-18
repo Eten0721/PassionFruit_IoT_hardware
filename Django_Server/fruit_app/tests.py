@@ -58,7 +58,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.safety_monitor_patcher = mock.patch.object(views, '_check_network_safety')
         self.safety_monitor_patcher.start()
         self.addCleanup(self.safety_monitor_patcher.stop)
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         views._ensure_dataset_structure()
         views.APP_STATE['camera_last_live_frame_monotonic'] = views.time.monotonic()
         self.client = Client()
@@ -66,7 +66,7 @@ class DataCollectionFlowTests(SimpleTestCase):
     def tearDown(self):
         self.settings_override.disable()
         self.temp_dir.cleanup()
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
 
     def test_three_station_flow_uploads_and_classifies_dataset(self):
         response = self._post_json('/api/set_counter/', {'start_id': 120})
@@ -411,7 +411,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         command = self._esp32_command()
         self.assertTrue(views._sorter_recovery_path().exists())
 
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         views._ensure_dataset_structure()
         self.assertTrue(views.APP_STATE['sorter_recovery_required'])
         self._mark_esp32_online()
@@ -454,7 +454,7 @@ class DataCollectionFlowTests(SimpleTestCase):
     def test_django_restart_requires_gate3_recovery_before_classification(self):
         self._complete_auto_session('fruit_001')
 
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         views._ensure_dataset_structure()
         self._mark_esp32_online()
         recovered = self.client.get('/api/state/').json()
@@ -514,7 +514,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertTrue(views.APP_STATE['sorter_recovery_required'])
         self.assertTrue(views._sorter_recovery_path().exists())
 
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         views._ensure_dataset_structure()
         blocked = self._post_json('/api/auto_run/', {'enabled': True})
         self.assertEqual(blocked.status_code, 409)
@@ -539,7 +539,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertTrue(views.APP_STATE['sorter_recovery_required'])
         self.assertTrue(views._sorter_recovery_path().exists())
 
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         views._ensure_dataset_structure()
         blocked = self._post_json('/api/auto_run/', {'enabled': True})
         self.assertEqual(blocked.status_code, 409)
@@ -560,7 +560,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertTrue((self.dataset_root / '中等' / 'fruit_001').exists())
         self.assertTrue(views._sorter_recovery_path().exists())
 
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         views._ensure_dataset_structure()
         blocked = self._post_json('/api/auto_run/', {'enabled': True})
         self.assertEqual(blocked.status_code, 409)
@@ -675,7 +675,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         with views.STATE_LOCK:
             first = views._set_motor_command('start_sequence', station_index=1).copy()
             views.APP_STATE['motor_command'] = None
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         views._ensure_dataset_structure()
         with views.STATE_LOCK:
             second = views._set_motor_command('start_sequence', station_index=1).copy()
@@ -1134,7 +1134,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             gate2_home_angle=15,
             sorter_low_angle=105,
         )
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         views._ensure_dataset_structure()
 
         state = self.client.get('/api/state/').json()
@@ -1155,12 +1155,12 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(acknowledged.status_code, 200)
         self.assertEqual(acknowledged.json()['capture_timing_status'], 'applied')
 
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         views._ensure_dataset_structure()
         self.assertEqual(views.APP_STATE['capture_timing_revision'], revision)
 
         write_hardware_params(self.hardware_params_path, fruit_settle_ms=500)
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         views._ensure_dataset_structure()
         self.assertNotEqual(views.APP_STATE['capture_timing_revision'], revision)
         self.assertEqual(views.APP_STATE['capture_timing']['fruit_settle_ms'], 500)
@@ -1176,7 +1176,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         for reason, overrides in invalid_files.items():
             with self.subTest(reason=reason):
                 write_hardware_params(self.hardware_params_path, **overrides)
-                views.reset_runtime_state_for_tests()
+                views.reset_runtime_state()
                 with self.assertRaisesRegex(views.ImproperlyConfigured, reason):
                     views._ensure_capture_timing_config()
 
@@ -1189,17 +1189,17 @@ class DataCollectionFlowTests(SimpleTestCase):
                 write_hardware_params(self.hardware_params_path)
                 with self.hardware_params_path.open('a', encoding='utf-8') as params_file:
                     params_file.write(extra)
-                views.reset_runtime_state_for_tests()
+                views.reset_runtime_state()
                 with self.assertRaisesRegex(views.ImproperlyConfigured, reason):
                     views._ensure_capture_timing_config()
 
         self.hardware_params_path.write_text('servo_settle_ms = 200\n', encoding='utf-8')
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         with self.assertRaisesRegex(views.ImproperlyConfigured, 'capture_timing_field_missing'):
             views._ensure_capture_timing_config()
 
         self.hardware_params_path.unlink()
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         with self.assertRaisesRegex(views.ImproperlyConfigured, 'hardware_params_missing'):
             views._ensure_capture_timing_config()
         write_hardware_params(self.hardware_params_path)
@@ -1211,7 +1211,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             feeder_drive_us=1310,
             feeder_max_run_ms=20000,
         )
-        views.reset_runtime_state_for_tests()
+        views.reset_runtime_state()
         views._ensure_dataset_structure()
         revision = views.APP_STATE['capture_timing_revision']
         self.client.get('/api/esp32/command/', {

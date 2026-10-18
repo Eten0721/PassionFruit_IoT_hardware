@@ -99,6 +99,7 @@ const remoteVideo = document.getElementById('remote-video');
     const timingSummaryStatus = document.getElementById('timing-summary-status');
     const timingConfigStatus = document.getElementById('timing-config-status');
     const testFeederButton = document.getElementById('btn-test-feeder');
+    const runtimeResetButton = document.getElementById('btn-runtime-reset');
     const imageDialog = document.getElementById('image-dialog');
     const imageDialogImage = document.getElementById('image-dialog-image');
     const imageDialogTitle = document.getElementById('image-dialog-title');
@@ -1663,6 +1664,28 @@ const remoteVideo = document.getElementById('remote-video');
         }
     }
 
+    async function resetRuntime(event) {
+        // The button sits inside <summary>; clicking it must not fold the panel.
+        event.preventDefault();
+        if (!confirm('將清空 Django 所有執行狀態並取消已選網路；照片與 dataset 會保留。'
+            + '請先確認機台停止、Gate 3 與分類器沒有果實，再繼續。')) {
+            return;
+        }
+        if (!beginControlAction('runtime-reset', runtimeResetButton)) {
+            return;
+        }
+        try {
+            const payload = await postJson('/api/runtime/reset/');
+            lastState = payload;
+            renderState(payload);
+            setMessage(payload.message || 'Django 狀態已完全重置。');
+        } catch (error) {
+            setMessage(`完全重置失敗：${error.message}`);
+        } finally {
+            endControlAction(runtimeResetButton);
+        }
+    }
+
     function transitionTraceFromState(data) {
         const candidates = [
             data.transition_trace,
@@ -2077,6 +2100,7 @@ const remoteVideo = document.getElementById('remote-video');
     document.getElementById('btn-set-counter').addEventListener('click', setCounter);
     exportButton.addEventListener('click', exportDetection);
     testFeederButton.addEventListener('click', testFeederOnce);
+    runtimeResetButton.addEventListener('click', resetRuntime);
     autoRunButton.addEventListener('click', toggleAutoRun);
     operationToggle.addEventListener('click', () => {
         operationDetails.open = !operationDetails.open;

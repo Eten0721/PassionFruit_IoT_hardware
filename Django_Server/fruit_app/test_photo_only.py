@@ -175,7 +175,7 @@ class PhotoOnlyFlowTests(SimpleTestCase):
         )
         for lock in cases:
             with self.subTest(lock=lock):
-                existing.views.reset_runtime_state_for_tests()
+                existing.views.reset_runtime_state()
                 existing.views.APP_STATE.update(lock)
                 response = self._post_json('/api/collection_options/', {
                     'work_mode': 'collection', 'hardware_mode': 'photo_only',
@@ -234,7 +234,7 @@ class PhotoOnlyFlowTests(SimpleTestCase):
         for station in (1, 2, 3):
             camera = self.client.get('/api/camera/state/').json()
             self._upload_station('fruit_001', camera['capture_token'], station)
-        existing.views.reset_runtime_state_for_tests()
+        existing.views.reset_runtime_state()
         state = self.client.get('/api/state/').json()
         self.assertEqual(state['hardware_mode'], 'photo_only')
         self.assertTrue(state['can_classify'])

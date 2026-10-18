@@ -236,6 +236,18 @@ class LocalNetwork:
             self._discovery = {'status': 'pending', 'reason': 'network_discovery_pending'}
             return self.snapshot()
 
+    def clear_selection(self):
+        """Forget the chosen network; ESP32 and phone must rejoin after a new selection."""
+        with self._lock:
+            if self.selection:
+                self._close_discovery()
+                self.revision += 1
+            self.selection = None
+            self._reason = 'network_selection_required'
+            self._invalidate_diagnostics()
+            self._diagnostic_report_at = None
+            self._discovery = {'status': 'waiting', 'reason': 'network_selection_required'}
+
     def _invalidate_diagnostics(self):
         self._diagnostic = None
         self._diagnostic_report_at = None

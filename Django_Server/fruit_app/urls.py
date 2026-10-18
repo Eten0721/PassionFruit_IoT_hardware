@@ -20,6 +20,7 @@ urlpatterns = [
     path('api/photo_capture/', views.photo_capture_api, name='photo_capture_api'),
     path('api/auto_run/', views.auto_run_api, name='auto_run_api'),
     path('api/feeder/test/', views.feeder_test_api, name='feeder_test_api'),
+    path('api/runtime/reset/', views.runtime_reset_api, name='runtime_reset_api'),
     path('api/esp32_trigger/', views.esp32_trigger_api, name='esp32_trigger_api'),
     path('api/esp32/command/', views.esp32_command_api, name='esp32_command_api'),
     path('api/esp32/heartbeat/', views.esp32_heartbeat_api, name='esp32_heartbeat_api'),
