@@ -30,7 +30,7 @@
 
 ## 裝置網路連線目標
 
-本節為 2026-10-10 討論已接受的目標，尚未完成實作與實機驗收；架構取捨見 [ADR-0018](adr/0018-local-network-onboarding.md)。以下要求不代表目前程式已具備此行為。
+本節為 2026-10-10 討論已接受的需求，Django 與 Firmware 已依此實作；架構取捨見 [ADR-0018](adr/0018-local-network-onboarding.md)，實機驗收狀態見 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
 
 ### 部署與日常啟動
 
@@ -63,7 +63,7 @@
 
 ### 本期技術基線
 
-本節為待實作的工程方案；上述已接受操作需求優先，以下數值與相容性均尚未實機驗收。行為與協定只在本文維護，GitHub 規格 Issue 引用本文並追蹤交付。
+本節為已實作的工程方案；上述已接受操作需求優先，以下數值與相容性均尚未實機驗收。行為與協定只在本文維護，GitHub 規格 Issue 引用本文並追蹤交付。
 
 #### Django 網路選擇與探索
 
@@ -163,10 +163,10 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 
 | 設定 | 推薦值 | 允許範圍 |
 |---|---:|---:|
-| `first_station_settle_ms` | `300 ms` | `50～3000 ms` |
-| `servo_settle_ms` | `200 ms` | `50～3000 ms` |
-| `fruit_settle_ms` | `350 ms` | `50～3000 ms` |
-| `final_gate_return_delay_ms` | `300 ms` | `0～3000 ms` |
+| `first_station_settle_ms` | `500 ms` | `50～3000 ms` |
+| `servo_settle_ms` | `500 ms` | `50～3000 ms` |
+| `fruit_settle_ms` | `500 ms` | `50～3000 ms` |
+| `final_gate_return_delay_ms` | `500 ms` | `0～3000 ms` |
 | `idle_command_poll_interval_ms` | `250 ms` | `100～5000 ms` |
 
 上述拍攝值必須為 `50 ms` 的倍數。送料參數與拍攝值放在同一份檔案、共用 revision：

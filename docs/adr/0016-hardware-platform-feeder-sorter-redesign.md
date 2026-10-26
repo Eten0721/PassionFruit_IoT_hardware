@@ -13,7 +13,7 @@
 
 ### 拍攝平台與三站閘門
 
-拍攝平台重建為低點高 `7 cm`、高點高 `18 cm`、水平投影長度 `55 cm`、平台寬度 `21 cm`、軌道內寬 `10 cm`，三站中心間距採 `16 cm`。依高低差 `11 cm` 與水平投影推算，斜面長度約為 `56.1 cm`、坡度約為 `11.3°`；這兩個值是幾何推算，完工後仍須實測。
+拍攝平台重建為低點高 `7 cm`、高點高 `18 cm`、水平投影長度 `55 cm`、平台寬度 `21 cm`、軌道內寬 `10 cm`，三站中心間距原採 `16 cm`，現場實際製作後改為 `19 cm`。依高低差 `11 cm` 與水平投影推算，斜面長度約為 `56.1 cm`、坡度約為 `11.3°`；這兩個值是幾何推算，完工後仍須實測。
 
 三站閘門全部改用位置型 MG996R，沿用 GPIO `18`、`19`、`21` 與 Home／Release 邏輯。新平台先使用直接寫入 Home／Release 角度的現行控制方式；是否需要非阻塞小角度遞增，須依新平台實機觀察決定，並由 GitHub Issue [#16](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/16) 獨立追蹤，不阻擋 Gate 3／分類器複合流程。
 
@@ -26,7 +26,7 @@
 1. 分類器移至目標角度。
 2. 以開迴路方式等待分類器就位 `500 ms`，再將 Gate 3 直接放行至 Release。
 3. 從 Gate 3 到達 Release 後計時，分類器維持目標角度 `1000 ms`，等待果實通過落料管並滾向籃子。
-4. 三顆 Gate 同時回到 Home `0°`，分類器同時回到 Home `85°`。
+4. 三顆 Gate 同時回到 Home，分類器同時回到 Home；Home 與四級分類角度的現行預設值見 [CAPTURE_SPEC.md](../CAPTURE_SPEC.md#硬體設定)，實際值依實機測試在 `hardware_params.toml` 調整。
 5. 等待共同歸位 `500 ms` 後，才回報 `classification_sorter_completed`。
 
 位置型 MG996R 沒有位置回授，`500 ms` 只表示分類器就位等待完成，不證明實際到達目標角度。Firmware 必須回報 `gate3_sorter_v1` capability；Django 未收到此能力時，在 Dataset 提交前拒絕分類並保留暫存照片與 Gate 3 上的果實。分類器動作無法開始或結果不確定時，Gate 3 必須保持關閉。斷電、重新啟動或結果不確定時不得自動重放實體動作，必須停止自動運轉並要求操作員檢查。刪除未分類果實時也不自動開啟 Gate 3，由操作員斷電確認安全後移除果實。
@@ -62,4 +62,4 @@ Tower Pro 對 [MG996R](https://towerpro.com.tw/product/mg996R/) 標示 `4.8～6.
 
 本 ADR 取代 [ADR-0015](0015-integrated-radial-paddle-feeder.md) 的四片徑向撥片、MG996R 送料馬達及電池盒假設；一體式送料筒與側面出口繼續保留，但尺寸及分槽盤細節須重新驗收。[ADR-0014](0014-hcsr04-terminated-upstream-feed.md) 的 HC-SR04 本機停止、安全逾時、command 冪等與不自動補轉決策維持有效。
 
-本決策先建立目標硬體與流程契約。Django 與 Firmware 尚未實作 Gate 3 等待分類、複合 `classify_fruit`、`gate3_sorter_v1` capability 及 XINHUI 送料校正；三站慢速角度遞增只在 Issue #16 的實機觀察證明仍會夾果後才進入開發。正式自動運轉必須等文件中的電氣、機構與完整流程驗收通過後才可恢復。
+Gate 3 等待分類、複合 `classify_fruit`、`gate3_sorter_v1` capability 與 XINHUI 送料參數已在 Django 與 Firmware 實作，新平台、送料筒與分類器也已完成製作；電氣、機構與完整流程的實機驗收狀態見 [CURRENT_STATUS.md](../CURRENT_STATUS.md)。三站慢速角度遞增只在 Issue #16 的實機觀察證明仍會夾果後才進入開發。

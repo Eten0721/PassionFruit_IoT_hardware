@@ -1,6 +1,6 @@
 # 目前狀態
 
-更新日期：2026-10-14
+更新日期：2026-10-26
 
 本文件是可覆寫的目前快照。完成歷史由 Git、tag 與 release 保存；未完成工作的詳細規格與討論以 GitHub Issues 為準。
 
@@ -57,7 +57,7 @@
 
 Issue #9、#11 與 #12 的 Django、Dashboard 與 Firmware 軟體實作已完成；GPIO `23` 的 production／calibration 送料會在 HC-SR04 `<= 6.0 cm` 時停止，或依 `1000～20000 ms`、間距 `500 ms` 的安全上限在 ESP32 本機先停止，感測器 unavailable 也會立即本機停止。Dashboard 已開放具 runtime 安全門檻的正式自動運轉與優雅暫停；機構校正及連續運轉仍依待實機驗證項目執行。
 
-[ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md) 已接受新硬體目標：三站閘門全部改為位置型 MG996R；上游使用 XINHUI `60KG` 連續旋轉伺服帶動分槽盤；分類器移到平台出口正下方且只保留一顆位置型 MG996R；全部馬達使用一顆 `12 V／20 A` 電源供應器與兩顆 LM25116，分別提供 `6.0 V` 與 `8.4 V`。平台目標為低點 `7 cm`、高點 `18 cm`、水平長度 `55 cm`、寬度 `21 cm`、軌道內寬 `10 cm` 與站距 `16 cm`。上述機構尚未完成製作與實機驗收。
+[ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md) 已接受新硬體目標：三站閘門全部改為位置型 MG996R；上游使用 XINHUI `60KG` 連續旋轉伺服帶動分槽盤；分類器移到平台出口正下方且只保留一顆位置型 MG996R；全部馬達使用一顆 `12 V／20 A` 電源供應器與兩顆 LM25116，分別提供 `6.0 V` 與 `8.4 V`。平台目標為低點 `7 cm`、高點 `18 cm`、水平長度 `55 cm`、寬度 `21 cm`、軌道內寬 `10 cm` 與站距 `19 cm`（實際製作後由原設計 `16 cm` 調整）。上述機構已完成製作，完整實機驗收尚未完成。
 
 Issue [#14](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/14) 的 Django、Dashboard 與 Firmware 軟體實作已完成：第 3 張保存後不再建立 `station_index=3` 的 `release_gate` 或等待獨立 `capture_sequence_finished`；分類器依四個目標角度轉向並等待 `500 ms`，Gate 3 放行、落果保持 `1000 ms`，再讓三顆 Gate 與分類器同時歸位並等待 `500 ms`。Django 會以 `gate3_sorter_v1` 阻擋舊 Firmware，並以原子 recovery marker 在 ESP32／Django 重啟或 terminal report retry 時避免重送實體動作；結果不確定時須由 Dashboard 明確確認人工安全復原，才可清除鎖定。純 C++ harness、Django 測試與正式 ESP32 編譯已通過；新機構的實體動作仍須依 Issue [#15](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/15) 驗收，不得把軟體驗證視為硬體已穩定運作。
 

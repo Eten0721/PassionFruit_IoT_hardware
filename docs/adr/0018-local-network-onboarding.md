@@ -1,6 +1,6 @@
 # ADR-0018：區域網路獨立運作與裝置配網
 
-- Status: Accepted（目標決策，尚未實作驗收）
+- Status: Accepted（已實作，實機驗收見 Issue [#27](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/27)）
 - Date: 2026-10-10
 
 ## Context
@@ -17,4 +17,4 @@ Demo 目前依賴特定手機熱點與電腦固定 IP，換電腦或 Wi-Fi 會�
 
 首次安裝可下載套件，離線運作則須驗證頁面資源、服務探索與影像連線沒有必要的外網依賴。沿用 Chrome 的成功經驗仍須在新 IP 與新電腦驗證，不能推定 HTTPS 信任問題已解決。
 
-[ADR-0013](0013-django-orchestrated-single-feed-auto-run.md) 的中央狀態來源、冪等與優雅暫停原則仍有效；斷線安全停止是另外的復原情境。現行相機恢復後自動送料與新目標的差異已在規格明示，本次文件紀錄不代表韌體已能依新目標停止。
+[ADR-0013](0013-django-orchestrated-single-feed-auto-run.md) 的中央狀態來源、冪等與優雅暫停原則仍有效；斷線安全停止是另外的復原情境。斷線安全停止已依規格實作，實際偵測與停止時序仍須實機驗收。

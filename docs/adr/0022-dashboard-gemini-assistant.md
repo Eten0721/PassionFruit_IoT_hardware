@@ -1,6 +1,6 @@
 # ADR-0022：奶蛋博士唯讀 Gemini 助手
 
-- Status: Accepted（目標決策，尚未實作驗收）
+- Status: Accepted（已實作，待以真實 Gemini 金鑰與 LINE 帳號驗收）
 - Date: 2026-10-16
 
 ## Context
