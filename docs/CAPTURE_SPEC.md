@@ -179,7 +179,9 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 
 `feeder_drive_us` 不得等於 `feeder_stop_us`，但不限制兩者差值或驅動脈波位於停止值的哪一側。`feeder_max_run_ms` 是唯一運轉上限；Dashboard 與 Firmware 不得另設隱藏上限或靜默截斷。參數檔在該欄位註解中保留「若設定過長將導致連續送料之情形發生」警告。
 
-八項參數只來自 `Django_Server/hardware_params.toml`（決策見 [ADR-0023](adr/0023-file-based-hardware-params.md)）。Django 只在啟動時讀取並驗證上表範圍、間距與脈波規則；檔案遺失、TOML 格式錯誤、出現未知欄位或數值不合法時拒絕啟動，分別回報 `hardware_params_missing`、`hardware_params_invalid_toml`、`hardware_params_unknown_field` 或對應的 `capture_timing_*` reason。執行中沒有修改 API；修改後必須重新啟動 Django。Revision 由參數內容計算，內容不變則重啟後 revision 不變。ESP32 只在 idle、沒有 sequence／pending report、三閘門 Home 且送料馬達停止時套用，再回報 `timing_config_applied`。
+八項參數只來自 `Django_Server/hardware_params.toml`（決策見 [ADR-0023](adr/0023-file-based-hardware-params.md)）。Django 只在啟動時讀取並驗證上表範圍、間距與脈波規則；檔案遺失、TOML 格式錯誤、出現未知欄位或數值不合法時拒絕啟動，分別回報 `hardware_params_missing`、`hardware_params_invalid_toml`、`hardware_params_unknown_field` 或對應的 `capture_timing_*` reason。執行中沒有修改 API；修改後必須重新啟動 Django。ESP32 只在 idle、沒有 sequence／pending report、三閘門 Home 且送料馬達停止時套用，再回報 `timing_config_applied`。
+
+`runtime_config/hardware_sync.json` 原子保存已驗證參數、wire revision 與該版本的 ACK；它是同步紀錄，不取代 TOML 設定來源。首次遷移以 `1000000 + 舊內容 CRC revision` 建立高於舊範圍的新版本；後續內容相同則保持版本，內容修改或回復舊值則取前版加一與新內容初始版本兩者較大值。版本必須小於 `2147483647`，紀錄損壞或版本耗盡時拒絕啟動，不靜默降回較小版本。只有相符的真實 `timing_config_applied` 才保存 `{boot_id, revision, applied_at}`；保存失敗回 `503 hardware_sync_save_failed`，維持未確認並讓 ESP32 重試。Django 重啟先視為未知，收到通過既有網路身分檢查且 boot 相符的裝置請求後才恢復 ACK；不同 boot 或新版本須重新回報。此紀錄不得用來恢復自動運轉、解除復原鎖或建立 motor command。
 
 每顆 fruit 開始時 snapshot 前四項拍攝機構 timing；每次建立 `feed_one` 時 snapshot 三項送料設定，流程中不得覆寫。
 
@@ -298,7 +300,7 @@ ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、送料能力
 - `feed_one` 先建立時，視為已承諾；目前果實完成拍攝與實體分類後停止。
 - 安全逾時後仍保持感測器待命；若實際沒有果實，不建立 Capture session，也不自動補轉。
 
-暫停可發生於送料後等待、三站拍攝、等待人工分類、實體分類或分類後尚未建立下一次送料。Dashboard 主操作區只使用同一按鈕：停止時顯示「開始拍攝」、運轉時顯示「停止拍攝」（即優雅暫停）、正在完成目前果實時顯示 disabled「正在完成目前果實」；純拍攝同一按鈕顯示「開始拍攝」。本軟體暫停不是實體緊急斷電。
+暫停可發生於送料後等待、三站拍攝、等待人工分類、實體分類或分類後尚未建立下一次送料。Dashboard 主操作區只使用同一按鈕：停止時顯示「開始拍攝」、運轉時顯示「停止拍攝」（即優雅暫停）、正在完成目前果實時顯示 disabled「正在完成目前果實」；檢測待人工判級時改為「等待人工處理」，分類器逾時則清除 finishing 狀態並保留復原鎖。硬體復原鎖存在時顯示「確認安全復原」；純拍攝同一按鈕顯示「開始拍攝」。本軟體暫停不是實體緊急斷電。
 
 重拍與刪除成功時都關閉自動運轉。重拍由操作員將同一顆果實放回 Gate 1，再走既有 `start_sequence`，不驅動送料機構；完成後由操作員重新按「開始拍攝」。正式硬體流程不提供通用 manual capture；純拍攝僅使用下述受模式限制的獨立入口。
 
@@ -396,7 +398,7 @@ dataset/collection/
 fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,station_03_ok,note
 ```
 
-跳過／刪除先關閉自動運轉，再嘗試實體刪除；Windows 檔案占用時移至 `_delete_pending`，仍失敗則持久標記待清理並跳過該 fruit ID。成功結果必須清除 capture token、等待計時器、fast-path 與 motor command，安全回到 idle，且不得自動送料。
+跳過／刪除先關閉自動運轉，再嘗試實體刪除；Windows 檔案占用時移至 `_delete_pending`，仍失敗則持久標記待清理並跳過該 fruit ID。成功結果必須清除 capture token、等待計時器、fast-path 與 motor command，且不得自動送料。硬體請求若附 `fruit_id`，也須附相符的 `capture_token`；不符回 `409 stale_capture`。Gate 3 等待中的跳過先保存人工移除鎖並撤銷 ESP32 舊流程，維持 error；操作員依斷電程序移除果實、手離開並恢復供電後，按「確認安全復原」，重用上述 `recover_network` 雙端歸位交握。兩端完成提交後才清除 Gate 3 鎖並回 idle，仍須再按「開始拍攝」才送料；舊版只保存 Gate 3 marker 的復原同樣須經此交握。其他成功刪除回 idle。
 
 ### 資料分區
 
@@ -519,7 +521,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 - 「確認本次使用的網路」下方新增操作摺疊列，收納目前流程、模式選項、啟動條件、開始／重新拍攝／跳過或刪除，以及人工分類。收合時仍在該列保留開始／重新拍攝／跳過等主要操作；按鈕可用性沿用狀態與安全限制，運轉時保留「停止拍攝」。蒐集模式固定顯示重新拍攝與跳過／刪除；自動檢測只在 `can_recapture`／`can_discard` 為真（拍攝失敗、安全復原或刪除未保存成功的本輪）時顯示，平常隱藏。
 - 移除獨立「三張原圖預覽」區塊；自動檢測每張原圖保存後先顯示於對應 ROI 格，待該張 ROI 產物可用才替換，未完成時明示等待／處理中，不把原圖冒充 ROI 結果。
-- 蒐集模式沿用左側同一展示區，只顯示三張原圖，隱藏未執行的模型格與自動分類結果；人工級距按鈕留在操作摺疊區。自動檢測無法判級時，右側結果卡顯示失敗原因並開放人工四級；純拍攝另顯示「放棄本輪」，硬體使用跳過／刪除的安全移除程序。收合操作區後仍可見人工接手入口；人工完成後顯示「等級（人工判定）」或「已放棄本輪」與保留的原失敗原因。結果卡另以文字區分已判級、已保存、分槽中、分槽完成／失敗與需復原；AI 成功不表示實體動作完成。
+- 蒐集模式沿用左側同一展示區，只顯示三張原圖，隱藏未執行的模型格與自動分類結果；人工級距按鈕留在操作摺疊區。自動檢測無法判級時，右側結果卡顯示失敗原因並開放人工四級；純拍攝另顯示「放棄本輪」，硬體於同一卡片提供「跳過當顆（人工移除）」，重用跳過／刪除的安全移除程序與 `can_discard`，不因無法人工判級而隱藏清理入口。收合操作區後仍可見人工接手與跳過入口；人工完成後顯示「等級（人工判定）」或「已放棄本輪」與保留的原失敗原因。結果卡另以文字區分已判級、已保存、分槽中、分槽完成／失敗與需復原；AI 成功不表示實體動作完成。
 - 檢測執行中，`/api/state/` 的 `detection_progress` 提供最後完成的 `stage`（`originals／roi／color／wrinkle／defect`）與各張已保存產物、`artifact_urls` 及模型狀態；只在對應產物原子保存後更新，最終結果寫入 `detection_result` 時清空。畫面依此逐步替換，不以動畫推測完成。
 - 「四模型檢測結果」移至原手機預覽所在的左側主區，以三張照片分組、各列 ROI／color／wrinkle／defect，共十二格；成功產物逐步更新，有跳過、缺失或失敗時不得顯示整輪完整成功。
 - 手機即時畫面移至右側原流程操作位置；整顆分類結果也放在檢測區右手邊，以醒目級距文字區分等待、有效結果與待覆核，不只靠顏色表示。

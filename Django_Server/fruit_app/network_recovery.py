@@ -218,6 +218,7 @@ class Policy:
 
     def record_device_facts(self, data):
         # Terminal reports omit unchanged facts; omission must not erase a valid poll.
+        self.runtime._restore_timing_ack_for_boot(data.get('boot_id') or self.state.get('esp32_boot_id'))
         if 'capability' in data or 'sorter_capability' in data:
             self.state['esp32_feeder_capable'] = data.get('capability') == 'feeder_v1'
             self.state['esp32_sorter_capable'] = data.get('sorter_capability') == 'gate3_sorter_v1'
@@ -304,6 +305,7 @@ class Policy:
         self.state['last_error_reason'] = retained['reason'] if retained else None
         self.state['status'] = 'idle'
         self.state['esp32_feeder_state'] = 'idle'
+        self.state['auto_run_finishing'] = False
         if receipt is not None:
             self.state['esp32_interlocked'] = False
         if retained is None:
@@ -334,9 +336,12 @@ class Policy:
         response = self.finish(receipt)
         if response is not None:
             return response
-        if self.runtime._auto_run_disabled_reason() is None:
+        if (recovery.get('reason') != 'gate3_manual_removal_required'
+                and self.runtime._auto_run_disabled_reason() is None):
             self.state['auto_run_enabled'] = True
             self.runtime._queue_production_feed()
+        elif recovery.get('reason') == 'gate3_manual_removal_required':
+            self.state['message'] = '本輪已跳過，ESP32 已完成歸位交握；請按「開始拍攝」開始下一顆。'
         return JsonResponse({'ok': True, 'recovery_committed': True})
 
     def restore(self):
