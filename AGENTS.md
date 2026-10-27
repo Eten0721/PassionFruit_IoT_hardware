@@ -6,7 +6,7 @@
 2. `docs/CAPTURE_SPEC.md`：硬體與純拍攝流程、檢測、分類、API、command、GPIO、角度與 timing。
 3. `docs/CURRENT_STATUS.md`：目前穩定功能、問題、實機驗證與里程碑。
 4. `docs/adr/`：與修改範圍相關的架構決策。
-5. `record_image/硬體接線與驗收摘要.md`：機構檢查、接線安全、維修與實機驗收。
+5. `record_image/電源供應器接線注意事項.md`：接線安全、上電前檢查與維修。
 
 未完成工作以 GitHub Issues 為準，不在本文件維護待辦或版本進度。
 
@@ -69,7 +69,7 @@ C:\Users\qoqoo\anaconda3\envs\PF\python.exe -s manage.py test fruit_app
 - 一項事實只保留一個 authoritative source；其他文件只放摘要與連結，不為「保持同步」複製內容。
 - `AGENTS.md` 只保存長期規則；`PROJECT_CONTEXT.md` 只保存架構與責任邊界。
 - `CAPTURE_SPEC.md` 是拍攝、檢測、分類流程、硬體參數與協定的唯一規格；`CURRENT_STATUS.md` 是可覆寫快照。
-- 機構決策寫入相關 ADR，演進歷史由 Git 保存；接線安全與維修檢查寫入 `硬體接線與驗收摘要.md`。
+- 機構決策寫入相關 ADR，演進歷史由 Git 保存；接線安全與維修檢查寫入 `電源供應器接線注意事項.md`。
 - 未完成工作用 GitHub Issues；完成歷史由 Git 保存；架構決策使用獨立 ADR。
 - 文件超過既定篇幅時，先精簡再加入內容。
 

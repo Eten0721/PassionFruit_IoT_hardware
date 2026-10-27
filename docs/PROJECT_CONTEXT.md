@@ -97,5 +97,5 @@ ESP32 是 HTTPS client，Django 不主動呼叫硬體。Wi-Fi、感測、伺服 
 - 現行規格：[CAPTURE_SPEC.md](CAPTURE_SPEC.md)
 - 目前狀態：[CURRENT_STATUS.md](CURRENT_STATUS.md)
 - 架構決策：[adr/README.md](adr/README.md)
-- 硬體接線與驗收：[硬體接線與驗收摘要.md](../record_image/硬體接線與驗收摘要.md)
+- 硬體接線與驗收：[電源供應器接線注意事項.md](../record_image/電源供應器接線注意事項.md)
 - 正式部署模型：[權重替換與驗收](../Django_Server/models/README.md)

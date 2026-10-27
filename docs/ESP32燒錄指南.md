@@ -34,7 +34,7 @@ notepad firmware/Three_Gate_Data_Collection/setup.local.h
 
 ## 3. 編譯與上傳
 
-1. 先只連接 ESP32 與可傳資料的 USB 線；接回其他硬體前須依 [上電前檢查](../record_image/硬體接線與驗收摘要.md#上電前檢查) 完成安全確認。
+1. 先只連接 ESP32 與可傳資料的 USB 線；接回其他硬體前須依 [上電前檢查](../record_image/電源供應器接線注意事項.md#上電前檢查) 完成安全確認。
 2. 在 Arduino IDE 開啟 `firmware/Three_Gate_Data_Collection/Three_Gate_Data_Collection.ino`。整個資料夾內的 `.h`、`.cpp` 都是正式程式的一部分，不只複製 `.ino`。
 3. 選擇 `ESP32 Dev Module` 與目前實際出現的 COM 埠；COM 編號依電腦與裝置而異，不固定為 `COM7`。
 4. 「Core Debug Level」使用非 `Verbose` 設定；Firmware 會拒絕可能輸出設定頁 POST 密碼的 `Verbose` build。

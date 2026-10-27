@@ -42,17 +42,17 @@ gate2_home_angle = 0
 # 第 3 站閘門初始角度｜推薦 0
 gate3_home_angle = 0
 
-# 分類器初始角度｜推薦 ?
-sorter_home_angle = 45
+# 分類器初始角度｜推薦 160（2026-10-27 實機）
+sorter_home_angle = 160
 
-# 分類器「上等」角度｜推薦 ?
-sorter_high_angle = 15
+# 分類器「上等」角度｜推薦 140
+sorter_high_angle = 140
 
-# 分類器「中等」角度｜推薦 ?
-sorter_medium_angle = 30
+# 分類器「中等」角度｜推薦 150
+sorter_medium_angle = 150
 
-# 分類器「下等」角度｜推薦 ?
-sorter_low_angle = 60
+# 分類器「下等」角度｜推薦 170
+sorter_low_angle = 170
 
-# 分類器「加工」角度｜推薦 ?
-sorter_processing_angle = 75
+# 分類器「加工」角度｜推薦 180
+sorter_processing_angle = 180

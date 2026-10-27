@@ -34,7 +34,7 @@
 
 ## 系統架構
 
-![硬體系統架構圖](record_image/設計圖/硬體系統架構圖.png)
+![硬體系統架構圖](record_image/硬體系統架構圖.png)
 
 ```mermaid
 flowchart LR
@@ -53,7 +53,7 @@ flowchart LR
 
 Django 是 capture、送料與分類狀態的唯一來源。ESP32 以 HTTPS client 輪詢命令，在本機負責感測、馬達停止與有界硬體流程；手機處理相機 readiness、預覽、拍攝與上傳。本 Repository 維護 Django 本地推論、四個 YOLO 權重與兩個 XGBoost 判級模型（Git LFS），部署不需要外部模型 Repository 或資料。
 
-硬體採單電源、雙 LM25116 降壓分支，分別供三站與分類器的 MG996R，以及 XINHUI 送料馬達。電壓設定見 [現行規格](docs/CAPTURE_SPEC.md)，接線、市電安全與負載驗收要求見 [硬體接線與驗收摘要](record_image/硬體接線與驗收摘要.md)。
+硬體採單電源、雙 LM25116 降壓分支，分別供三站與分類器的 MG996R，以及 XINHUI 送料馬達。電壓設定見 [現行規格](docs/CAPTURE_SPEC.md)，接線、市電安全與負載驗收要求見 [電源供應器接線注意事項](record_image/電源供應器接線注意事項.md)。
 
 ## 我的主要負責項目
 
@@ -121,7 +121,7 @@ PassionFruit_IoT_hardware/
 - [專案脈絡與架構](docs/PROJECT_CONTEXT.md)
 - [目前狀態](docs/CURRENT_STATUS.md)
 - [拍攝、檢測與分類規格](docs/CAPTURE_SPEC.md)
-- [硬體接線與驗收摘要](record_image/硬體接線與驗收摘要.md)
+- [電源供應器接線注意事項](record_image/電源供應器接線注意事項.md)
 - [ADR-0016：硬體平台、送料與分類器重構](docs/adr/0016-hardware-platform-feeder-sorter-redesign.md)
 - [架構決策索引](docs/adr/README.md)
 
