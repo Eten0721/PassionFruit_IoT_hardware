@@ -536,6 +536,74 @@ class NetworkSafetyTests(SimpleTestCase):
         self.assertTrue(self.post('/api/esp32/report/', ack).json()['duplicate'])
         self.assertIsNone(views.APP_STATE.get('network_recovery'))
 
+    def test_gate3_skip_reconciles_board_before_explicit_next_feed(self):
+        self.prepare()
+        self.post('/api/esp32/report/', self.device(
+            event='timing_config_applied', timing_revision=views.APP_STATE['capture_timing_revision']))
+        fruit_dir = self.dataset_root / 'temp' / 'fruit_001'
+        fruit_dir.mkdir()
+        for name in views.IMAGE_FILENAMES:
+            (fruit_dir / name).write_bytes(b'photo fixture')
+        views.APP_STATE.update(active_fruit_id='fruit_001', status='uploaded',
+                               capture_token=123, auto_run_finishing=True)
+        stale = self.post('/api/discard/', {'fruit_id': 'fruit_002', 'capture_token': 123})
+        self.assertEqual(stale.json()['reason'], 'stale_capture')
+        self.assertTrue(fruit_dir.exists())
+        skipped = self.post('/api/discard/', {'fruit_id': 'fruit_001', 'capture_token': 123})
+        self.assertEqual(skipped.status_code, 200, skipped.content)
+        state = skipped.json()
+        self.assertFalse(state['auto_run_finishing'])
+        self.assertTrue(state['network_recovery_required'])
+        self.assertEqual(state['network_recovery']['fruit_id'], 'fruit_001')
+        command = self.client.get('/api/esp32/command/', self.device()).json()
+        self.assertEqual(command['command'], 'none')
+        self.assertFalse(command['control_allowed'])
+        self.assertEqual(self.post('/api/auto_run/', {'enabled': True}).status_code, 409)
+        confirmed = self.post('/api/auto_run/', {'enabled': True, 'recovery_confirmed': True})
+        self.assertTrue(confirmed.json()['recovery_pending'])
+        command = self.client.get('/api/esp32/command/', self.device(network_interlocked='1')).json()
+        self.assertEqual(command['command'], 'recover_network')
+        ack = self.device(event='network_recovery_completed', command_id=command['command_id'],
+                          network_interlocked='1')
+        self.assertTrue(self.post('/api/esp32/report/', ack).json()['recovery_commit'])
+        self.assertIsNotNone(views.APP_STATE['network_recovery'])
+        self.assertTrue(views._gate3_recovery_path().exists())
+        ack.update(event='network_recovery_committed')
+        self.assertTrue(self.post('/api/esp32/report/', ack).json()['recovery_committed'])
+        self.assertFalse(views._gate3_recovery_path().exists())
+        self.assertFalse(views.APP_STATE['auto_run_enabled'])
+        self.assertFalse(views.APP_STATE['auto_run_finishing'])
+        self.assertIsNone(views.APP_STATE['motor_command'])
+        self.assertTrue(self.post('/api/esp32/report/', ack).json()['duplicate'])
+        # The board clears NVS only after receiving recovery_committed, then
+        # publishes its cleared interlock on its next poll.
+        self.client.get('/api/esp32/command/', self.device())
+        restarted = self.post('/api/auto_run/', {'enabled': True})
+        self.assertEqual(restarted.status_code, 200, restarted.content)
+        self.assertEqual(restarted.json()['motor_command']['command'], 'feed_one')
+
+    def test_legacy_gate3_marker_cannot_restart_by_only_clearing_server_state(self):
+        self.prepare()
+        dataset_store.write_gate3_recovery_marker(views._gate3_recovery_path(), 'fruit_001')
+        views.APP_STATE.update(auto_run_recovery_reason='gate3_manual_removal_required', status='error')
+        response = self.post('/api/auto_run/', {'enabled': True, 'recovery_confirmed': True})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['motor_command']['command'], 'recover_network')
+        self.assertTrue(views._gate3_recovery_path().exists())
+        self.assertFalse(views.APP_STATE['auto_run_enabled'])
+
+    def test_sorter_timeout_releases_finishing_flag_but_retains_safety_lock(self):
+        self.prepare()
+        views.APP_STATE.update(auto_run_finishing=True, sorter_status='running',
+                               sorter_command_id=42, sorter_fruit_id='fruit_001',
+                               sorter_deadline_monotonic=views.time.monotonic() - 1,
+                               motor_command={'command': 'classify_fruit', 'command_id': 42})
+        state = self.client.get('/api/state/').json()
+        self.assertFalse(state['auto_run_finishing'])
+        self.assertTrue(state['sorter_recovery_required'])
+        self.assertEqual(state['sorter_status'], 'timeout')
+        self.assertEqual(state['motor_command']['command'], 'none')
+
     def test_recovery_refreshes_blocked_sensor_before_committing_new_feed(self):
         self.prepare()
         applied = self.post('/api/esp32/report/', self.device(

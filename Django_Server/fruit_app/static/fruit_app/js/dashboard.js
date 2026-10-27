@@ -43,6 +43,7 @@ const remoteVideo = document.getElementById('remote-video');
     const manualGradeGuidance = document.getElementById('manual-grade-guidance');
     const manualGradeButtons = Array.from(document.querySelectorAll('.manual-grade-button'));
     const manualAbandonButton = document.getElementById('btn-manual-abandon');
+    const manualSkipButton = document.getElementById('btn-manual-skip');
     const stageChips = document.getElementById('stage-chips');
     const operationModeSummary = document.getElementById('operation-mode-summary');
     const notificationSummary = document.getElementById('notification-summary-status');
@@ -620,7 +621,7 @@ const remoteVideo = document.getElementById('remote-video');
         setTextIfChanged(
             discardButton,
             detectionMode && !photoOnly
-                ? '安全復原'
+                ? '跳過當顆（人工移除）'
                 : detectionMode && data.discardable_fruit_id && !data.active_fruit_id
                     ? '刪除未保存成功的本輪檢測'
                 : '跳過／刪除目前資料',
@@ -634,11 +635,11 @@ const remoteVideo = document.getElementById('remote-video');
             autoRunButton.dataset.mode = 'pause';
             autoRunButton.disabled = Boolean(controlActionInFlight);
         } else if (data.auto_run_finishing) {
-            setTextIfChanged(autoRunButton, '正在完成目前果實');
+            setTextIfChanged(autoRunButton, waitingForManualGrade(data) ? '等待人工處理' : '正在完成目前果實');
             autoRunButton.dataset.mode = 'finishing';
             autoRunButton.disabled = true;
         } else {
-            setTextIfChanged(autoRunButton, '開始拍攝');
+            setTextIfChanged(autoRunButton, data.network_recovery_required ? '確認安全復原' : '開始拍攝');
             autoRunButton.dataset.mode = 'start';
             autoRunButton.disabled = Boolean(controlActionInFlight)
                 || !data.can_start_auto_run;
@@ -750,6 +751,12 @@ const remoteVideo = document.getElementById('remote-video');
         return labels[status] || '待同步';
     }
 
+    function waitingForManualGrade(data) {
+        return data.work_mode === 'detection'
+            && data.detection_result?.classification?.status === 'needs_review'
+            && Boolean(data.active_fruit_id);
+    }
+
     function autoRunGuidanceText(data) {
         if (data.network_recovery && data.network_recovery_confirm_disabled_reason !== 'network_recovery_not_required') {
             const recoveryReason = data.network_recovery_confirm_disabled_reason;
@@ -757,7 +764,9 @@ const remoteVideo = document.getElementById('remote-video');
                 ? `目前無法確認安全復原：${reasonText(recoveryReason)}`
                 : data.hardware_mode === 'photo_only'
                     ? '按「開始拍攝」確認本輪資料已清理，再開始新一輪拍攝。馬達安全鎖仍保留。'
-                    : '按「開始拍攝」確認人工安全復原；只會讓馬達歸位並解除安全鎖。正式運轉仍需相機、HC-SR04 與設定同步。';
+                    : data.network_recovery.reason === 'gate3_manual_removal_required'
+                        ? '按「確認安全復原」確認果實已人工移除、手已離開；完成 ESP32 歸位交握後，再按「開始拍攝」。'
+                        : '按「確認安全復原」確認人工清理完成；ESP32 歸位交握後，啟動條件成立時才送料。';
         }
         if (data.hardware_mode === 'photo_only') {
             const reason = data.photo_capture_disabled_reason;
@@ -765,9 +774,12 @@ const remoteVideo = document.getElementById('remote-video');
                 ? `目前無法開始：${reasonText(reason)}。本輪完成後請分類或刪除。`
                 : '按一次自動拍三張；每張保存成功才拍下一張。果實需自行擺位，三張不保證不同視角。';
         }
+        if (waitingForManualGrade(data)) {
+            return '本輪等待人工判級；也可按「跳過當顆（人工移除）」，依斷電程序移除果實後完成安全復原。';
+        }
         if (data.auto_run_enabled) {
             return data.work_mode === 'detection'
-                ? '本輪使用硬體送料與三站拍攝；檢測完成後不會放行 Gate 3 或送入下一顆。'
+                ? '本輪完成檢測並保存判級後執行分槽；確認分槽完成後才送下一顆。'
                 : '目前為連續自動運轉；按「停止拍攝」會讓目前果實完成後停止送入下一顆。';
         }
         if (data.auto_run_finishing) {
@@ -1507,8 +1519,12 @@ const remoteVideo = document.getElementById('remote-video');
         });
         manualAbandonButton.hidden = data.hardware_mode !== 'photo_only';
         manualAbandonButton.disabled = Boolean(controlActionInFlight) || !data.can_manual_abandon;
+        manualSkipButton.hidden = data.hardware_mode === 'photo_only';
+        manualSkipButton.disabled = Boolean(controlActionInFlight) || !data.can_discard;
         setTextIfChanged(manualGradeGuidance, data.can_manual_grade
-            ? '檢查左側三張照片與失敗原因後選擇等級；人工結果與模型輸出分開保存。'
+            ? data.hardware_mode === 'photo_only'
+                ? '檢查三張照片後選級，或放棄本輪；人工結果與模型輸出分開保存。'
+                : '檢查三張照片後選級，或跳過當顆；跳過須依斷電程序人工移除果實。人工結果與模型輸出分開保存。'
             : `目前無法人工判級：${reasonText(reason)}`);
     }
 
@@ -1860,7 +1876,11 @@ const remoteVideo = document.getElementById('remote-video');
             });
             lastState = payload;
             renderState(payload);
-            setMessage(payload.recovery_pending ? '已確認人工復原，等待 ESP32 安全歸位與清鎖交握。' : enabled
+            setMessage(payload.recovery_pending
+                ? payload.network_recovery?.reason === 'gate3_manual_removal_required'
+                    ? '已確認人工復原，等待 ESP32 安全歸位與清鎖交握；完成後請再按「開始拍攝」。'
+                    : '已確認人工復原，等待 ESP32 安全歸位與清鎖交握。'
+                : enabled
                 ? '自動運轉已開始，正在送入第一顆百香果。'
                 : '已要求暫停；目前百香果完成後不會送入下一顆。');
             await refreshState();
@@ -1980,9 +2000,9 @@ const remoteVideo = document.getElementById('remote-video');
         const gate3Recovery = lastState.gate3_manual_removal_required
             || (lastState.work_mode === 'detection' && lastState.hardware_mode !== 'photo_only');
         const prompt = gate3Recovery
-            ? `安全復原（Gate 3）\n\n${fruitId} 的檢測結果已另存。這只會處理暫存原圖，Gate 3 與分類器仍保持鎖定，不會自動動作。\n\n`
-                + '請切斷伺服電源，確認 Gate 3 與分類器不會動作後人工移除果實；手離開機構並恢復安全狀態後，再按「開始拍攝」。\n\n'
-                + '是否進入人工安全復原？'
+            ? `跳過當顆（人工移除）\n\n${fruitId} 已保存的檢測紀錄會保留；只清理本輪暫存資料，不自動開啟 Gate 3 或送料。\n\n`
+                + '請切斷伺服電源，確認不會動作後人工移除果實；手離開機構並恢復供電後，按「確認安全復原」讓 ESP32 歸位。交握完成後，再按「開始拍攝」。\n\n'
+                + '是否跳過當顆並進入人工安全復原？'
             : `確定刪除 ${fruitId} 的暫存照片嗎？`;
         if (!confirm(prompt)) {
             return;
@@ -2172,6 +2192,7 @@ const remoteVideo = document.getElementById('remote-video');
         button.addEventListener('click', () => manualGrade(button.dataset.label));
     });
     manualAbandonButton.addEventListener('click', () => manualGrade(null));
+    manualSkipButton.addEventListener('click', discardCurrent);
     classifyButtons.forEach((button) => {
         button.addEventListener('click', () => classify(button.dataset.label));
     });

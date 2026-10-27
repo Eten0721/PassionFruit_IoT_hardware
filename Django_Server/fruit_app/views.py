@@ -195,6 +195,7 @@ APP_STATE = RuntimeState({
     'capture_timing': dict(CAPTURE_TIMING_RECOMMENDED),
     'capture_timing_revision': 1,
     'capture_timing_applied_revision': 0,
+    'capture_timing_sync_record': None,
     'capture_timing_applied_at': None,
     'capture_timing_loaded_path': None,
     'auto_run_enabled': False,
@@ -965,6 +966,11 @@ def auto_run_api(request):
         _sync_active_state_with_filesystem()
         if enabled and APP_STATE.get('hardware_mode') == 'photo_only':
             return _json_error('純拍攝不啟用自動送料。', status=409, reason='hardware_mode_required')
+        if (enabled and not NETWORK_RECOVERY.locked
+                and APP_STATE.get('auto_run_recovery_reason') == 'gate3_manual_removal_required'):
+            # Older releases only cleared Django's marker. The board can still
+            # be waiting at Gate 3, so it must acknowledge homing before a feed.
+            NETWORK_RECOVERY.lock('gate3_manual_removal_required', force=True)
         if enabled and NETWORK_RECOVERY.needs_confirmation:
             return _confirm_network_recovery(data)
         if not enabled:
@@ -2548,8 +2554,13 @@ def discard_api(request):
             return _json_error('照片正在上傳中，請等待上傳完成後再刪除。', status=409)
         active_fruit_id = APP_STATE['active_fruit_id']
         fruit_id = _discardable_fruit_id()
+        data = _request_data(request)
+        if fruit_id and not _photo_only_session() and data.get('fruit_id') is not None and (
+            data['fruit_id'] != fruit_id
+            or _safe_int(data.get('capture_token')) != APP_STATE['capture_token']
+        ):
+            return _json_error('本輪資料已變更，請重新確認照片。', status=409, reason='stale_capture')
         if fruit_id and _photo_only_session():
-            data = _request_data(request)
             stale_capture = (
                 active_fruit_id
                 and _safe_int(data.get('capture_token')) != APP_STATE['capture_token']
@@ -2569,6 +2580,11 @@ def discard_api(request):
                     status=503,
                     reason='gate3_recovery_persist_failed',
                 )
+            # Revoke the board's old sequence without moving any motor. Only
+            # explicit recovery confirmation may publish recover_network.
+            NETWORK_RECOVERY.lock('gate3_manual_removal_required', force=True)
+            if APP_STATE.get('network_persist_failed'):
+                return local_network.network_error('recovery_persist_failed', status=503)
         _disable_auto_run()
         APP_STATE['auto_run_finishing'] = False
         fruit_dir = _temp_dir() / fruit_id
@@ -2944,6 +2960,7 @@ def reset_runtime_state():
             'capture_timing': dict(CAPTURE_TIMING_RECOMMENDED),
             'capture_timing_revision': 1,
             'capture_timing_applied_revision': 0,
+            'capture_timing_sync_record': None,
             'capture_timing_applied_at': None,
             'capture_timing_loaded_path': None,
             'auto_run_enabled': False,
@@ -3224,17 +3241,36 @@ def _ensure_capture_timing_config():
     if APP_STATE.get('capture_timing_loaded_path') == path_key:
         return
     try:
-        raw, revision = capture_timing.load(path, CAPTURE_TIMING_FIELDS)
+        raw, fingerprint = capture_timing.load(path, CAPTURE_TIMING_FIELDS)
         timing = _normalise_capture_timing(raw, require_all=True)
+        sync_record = capture_timing.publish(_hardware_sync_path(), timing, fingerprint)
     except (capture_timing.TimingValidationError, CaptureCommandError) as exc:
         raise ImproperlyConfigured(
             f'硬體參數檔 {path} 無效（{exc.reason}）：{exc.message} 修正後重新啟動 Django。'
         ) from None
+    except OSError as exc:
+        raise ImproperlyConfigured(f'無法保存硬體同步紀錄：{exc}') from None
     APP_STATE['capture_timing'] = timing
-    APP_STATE['capture_timing_revision'] = revision
+    APP_STATE['capture_timing_revision'] = sync_record['revision']
+    APP_STATE['capture_timing_sync_record'] = sync_record
     APP_STATE['capture_timing_applied_revision'] = 0
     APP_STATE['capture_timing_applied_at'] = None
     APP_STATE['capture_timing_loaded_path'] = path_key
+
+
+def _hardware_sync_path():
+    return Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).with_name('hardware_sync.json')
+
+
+def _restore_timing_ack_for_boot(boot_id):
+    if not boot_id:
+        return
+    record = APP_STATE.get('capture_timing_sync_record') or {}
+    ack = record.get('ack') or {}
+    matches = (ack.get('boot_id') == boot_id
+               and ack.get('revision') == APP_STATE['capture_timing_revision'])
+    APP_STATE['capture_timing_applied_revision'] = ack['revision'] if matches else 0
+    APP_STATE['capture_timing_applied_at'] = ack['applied_at'] if matches else None
 
 
 def _capture_timing_status():
@@ -4231,8 +4267,20 @@ def _handle_timing_config_applied(data):
         })
 
     was_applied = APP_STATE['capture_timing_applied_revision'] == revision
+    boot_id = data.get('boot_id') or APP_STATE.get('esp32_boot_id')
+    applied_at = _now_string()
+    if boot_id:
+        try:
+            APP_STATE['capture_timing_sync_record'] = capture_timing.acknowledge(
+                _hardware_sync_path(), APP_STATE['capture_timing_sync_record'], boot_id, applied_at,
+            )
+        except OSError as exc:
+            APP_STATE['capture_timing_applied_revision'] = 0
+            APP_STATE['capture_timing_applied_at'] = None
+            raise CaptureCommandError(f'無法保存 ESP32 套用確認：{exc}', status=503,
+                                      reason='hardware_sync_save_failed') from None
     APP_STATE['capture_timing_applied_revision'] = revision
-    APP_STATE['capture_timing_applied_at'] = _now_string()
+    APP_STATE['capture_timing_applied_at'] = applied_at
     if APP_STATE['status'] == 'idle':
         APP_STATE['message'] = f'ESP32 已套用拍攝停穩設定 revision {revision}。'
     if not was_applied:
@@ -4517,6 +4565,7 @@ def _apply_sorter_timeout():
         APP_STATE['motor_command'] = None
     reason = 'esp32_timeout' if previous_status == 'pending' else 'classifier_timeout'
     _disable_auto_run()
+    APP_STATE['auto_run_finishing'] = False
     APP_STATE['auto_run_recovery_reason'] = reason
     APP_STATE['last_error_reason'] = reason
     APP_STATE['last_error_command'] = current_command.get('command')
@@ -4935,6 +4984,14 @@ def _sync_active_state_with_filesystem():
                              and not dataset_store.is_deferred_discard_path(_dataset_root(), path))
             if pending:
                 APP_STATE['active_fruit_id'] = pending[0].name
+        fruit_id = APP_STATE.get('active_fruit_id')
+        if fruit_id and APP_STATE['work_mode'] == 'detection' and not APP_STATE.get('detection_result'):
+            # Recovery must still display saved evidence and the skip action;
+            # loading a result never resumes inference or physical sorting.
+            result = detection.load_result(_detection_output_root(), fruit_id)
+            APP_STATE['detection_result'] = result
+            if result:
+                APP_STATE['detection_status'] = 'completed' if result.get('complete') else 'failed'
         APP_STATE['pending_capture'] = False
         APP_STATE['status'] = 'error'
         return

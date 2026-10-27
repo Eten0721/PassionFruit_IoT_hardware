@@ -291,14 +291,18 @@ class DetectionFlowTests(SimpleTestCase):
         self.assertEqual(len(self._summary_rows()), 1)
         blocked = self._post_json('/api/auto_run/', {'enabled': True})
         self.assertEqual(blocked.status_code, 409)
-        self.assertEqual(blocked.json()['reason'], 'gate3_manual_removal_required')
+        self.assertEqual(blocked.json()['reason'], 'network_recovery_confirmation_required')
 
+        # This legacy flow fixture mocks the device observer; supply its fact.
+        views.APP_STATE['esp32_network_capable'] = True
         recovered = self._post_json('/api/auto_run/', {
             'enabled': True, 'recovery_confirmed': True,
         })
         self.assertEqual(recovered.status_code, 200)
-        self.assertEqual(recovered.json()['motor_command']['command'], 'feed_one')
-        self.assertFalse(views._gate3_recovery_path().exists())
+        self.assertTrue(recovered.json()['recovery_pending'])
+        self.assertEqual(recovered.json()['motor_command']['command'], 'recover_network')
+        self.assertFalse(recovered.json()['auto_run_enabled'])
+        self.assertTrue(views._gate3_recovery_path().exists())
 
     @mock.patch(
         'fruit_app.detection.execute_model_batch', side_effect=_external_result
@@ -353,7 +357,20 @@ class DetectionFlowTests(SimpleTestCase):
         self.assertEqual(switched.json()['reason'], 'gate3_manual_removal_required')
         blocked = self._post_json('/api/auto_run/', {'enabled': True})
         self.assertEqual(blocked.status_code, 409)
-        self.assertEqual(blocked.json()['reason'], 'gate3_manual_removal_required')
+        self.assertEqual(blocked.json()['reason'], 'network_recovery_confirmation_required')
+
+    def test_restart_under_recovery_retains_saved_review_evidence_and_skip(self):
+        fruit_id, before = self._hardware_needs_review_round()
+        views.NETWORK_RECOVERY.lock('esp32_connection_lost', force=True)
+        views.reset_runtime_state()
+        state = self.client.get('/api/state/').json()
+        self.assertEqual(state['active_fruit_id'], fruit_id)
+        self.assertEqual(state['detection_result']['result_id'], before['detection_result']['result_id'])
+        self.assertEqual(state['detection_result']['classification']['status'], 'needs_review')
+        self.assertTrue(state['can_discard'])
+        self.assertFalse(state['can_manual_grade'])
+        self.assertEqual(state['motor_command']['command'], 'none')
+        self.assertFalse(state['auto_run_enabled'])
 
     @mock.patch(
         'fruit_app.detection.execute_model_batch', side_effect=_external_result

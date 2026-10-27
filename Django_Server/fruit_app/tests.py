@@ -415,7 +415,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         views._ensure_dataset_structure()
         self.assertTrue(views.APP_STATE['sorter_recovery_required'])
         self._mark_esp32_online()
-        views.APP_STATE['capture_timing_applied_revision'] = views.APP_STATE['capture_timing_revision']
+        self.assertEqual(self._report('timing_config_applied',
+                                     timing_revision=views.APP_STATE['capture_timing_revision']).status_code, 200)
         views.APP_STATE['camera_last_live_frame_monotonic'] = views.time.monotonic()
 
         blocked = self._post_json('/api/auto_run/', {'enabled': True})
@@ -1647,6 +1648,10 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(alert['reason'], 'esp32_restarted_during_feed')
         self.assertEqual(alert['command_id'], feed_command_id)
 
+        blocked = self._post_json('/api/auto_run/', {'enabled': True})
+        self.assertEqual(blocked.json()['reason'], 'feeder_timing_not_applied')
+        self.assertEqual(self._report('timing_config_applied',
+                                     timing_revision=views.APP_STATE['capture_timing_revision']).status_code, 200)
         recovered = self._post_json('/api/auto_run/', {'enabled': True})
         self.assertEqual(recovered.status_code, 200)
         self.assertTrue(recovered.json()['auto_run_enabled'])
@@ -1696,6 +1701,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(views.APP_STATE['status'], 'waiting_fruit')
         self.assertIsNone(views.APP_STATE['motor_command'])
 
+        self.assertEqual(self._report('timing_config_applied',
+                                     timing_revision=views.APP_STATE['capture_timing_revision']).status_code, 200)
         recovered = self._post_json('/api/auto_run/', {'enabled': True})
         self.assertEqual(recovered.status_code, 200)
         recovery_command_id = recovered.json()['motor_command']['command_id']

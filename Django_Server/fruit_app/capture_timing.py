@@ -8,6 +8,8 @@ import zlib
 from pathlib import Path
 from typing import Any, Iterable
 
+from .dataset_store import write_recovery_payload
+
 
 class TimingValidationError(ValueError):
     def __init__(self, message: str, reason: str):
@@ -89,6 +91,54 @@ def load(path: Path, fields: Iterable[str]) -> tuple[dict[str, Any], int]:
             f'硬體參數檔有未知欄位：{"、".join(unknown)}。', 'hardware_params_unknown_field',
         )
     canonical = json.dumps({field: raw.get(field) for field in fields}, sort_keys=True)
-    # Same values keep the same revision across restarts, so ESP32 only re-applies real changes.
+    # This is a content fingerprint, not an ordered wire revision.
     revision = zlib.crc32(canonical.encode('utf-8')) % 999_999 + 1
     return raw, revision
+
+
+def publish(path: Path, timing: dict[str, int], fingerprint: int) -> dict:
+    """Persist an ordered wire revision and its boot-scoped device receipt.
+
+    Legacy firmware only accepts larger revisions. Seed above its entire old
+    CRC range, then keep the number for unchanged values across Django restarts.
+    """
+    try:
+        record = json.loads(path.read_text(encoding='utf-8'))
+        if record is None:
+            raise ValueError('硬體同步紀錄不得為 null')
+    except FileNotFoundError:
+        record = None
+    except (OSError, ValueError) as exc:
+        raise TimingValidationError(f'無法讀取硬體同步紀錄：{exc}', 'hardware_sync_invalid') from None
+    if record is not None:
+        if (not isinstance(record, dict) or type(record.get('schema_version')) is not int
+                or record['schema_version'] != 1
+                or type(record.get('revision')) is not int
+                or not 1_000_000 < record['revision'] < 2_147_483_647
+                or not isinstance(record.get('timing'), dict)
+                or set(record['timing']) != set(timing)
+                or any(type(value) is not int for value in record['timing'].values())):
+            raise TimingValidationError('硬體同步紀錄格式錯誤。', 'hardware_sync_invalid')
+        ack = record.get('ack')
+        if ack is not None and (
+            not isinstance(ack, dict) or not isinstance(ack.get('boot_id'), str)
+            or not ack['boot_id'] or ack.get('revision') != record['revision']
+            or not isinstance(ack.get('applied_at'), str)
+        ):
+            raise TimingValidationError('硬體套用確認紀錄格式錯誤。', 'hardware_sync_invalid')
+        if record['timing'] == timing:
+            return record
+    revision = max(1_000_000 + fingerprint, record['revision'] + 1 if record else 0)
+    if revision >= 2_147_483_647:
+        raise TimingValidationError('硬體同步版本已達上限。', 'hardware_sync_revision_exhausted')
+    record = {'schema_version': 1, 'timing': dict(timing), 'revision': revision, 'ack': None}
+    write_recovery_payload(path, record)
+    return record
+
+
+def acknowledge(path: Path, record: dict, boot_id: str, applied_at: str) -> dict:
+    """Save only a genuine matching timing_config_applied report before use."""
+    updated = {**record, 'ack': {'boot_id': boot_id, 'revision': record['revision'],
+                                'applied_at': applied_at}}
+    write_recovery_payload(path, updated)
+    return updated

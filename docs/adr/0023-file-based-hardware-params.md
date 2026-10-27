@@ -14,7 +14,7 @@ ADR-0006 讓 Dashboard 在執行中修改三站 timing 與送料脈波，並要�
 
 - 八項硬體參數由 `Django_Server/hardware_params.toml` 提供。檔案只放參數本身，推薦值與範圍寫在註解，並納入 Git。
 - Django 只在啟動時讀取並驗證；檔案遺失、格式錯誤、出現未知欄位或數值不合法時，拒絕啟動並指出原因。執行中不提供修改 API，修改後必須重新啟動 Django。
-- Revision 由參數內容計算：內容不變則 revision 不變，重啟時 ESP32 不會重複套用；內容改變後，ESP32 會在下一次安全閒置時自動套用並回報 ACK。韌體協定沿用 ADR-0006，不需修改。
+- 參數內容對應持久保存的遞增 revision：內容不變則重啟後 revision 不變；參數修改或回復舊值時也必須比前次大，符合既有 Firmware 的比較方式。相符 ACK 綁定 ESP32 boot 保存，Django 重啟後須重新觀察同一 boot 才能恢復同步狀態；新 boot 仍需自行回報。格式、遷移與保存失敗契約只在 [CAPTURE_SPEC.md](../CAPTURE_SPEC.md#硬體參數) 維護，韌體 wire contract 不變。
 - 取消 `feeder_calibrated` 與人工確認 API；正式運轉不再要求送料校正，但仍要求 ESP32 已 ACK 最新 revision。
 - Dashboard 的「停穩設定與送料校正」改為唯讀，與診斷區一起預設隱藏，雙擊頁首標題才會顯示；保留「測試送料一顆」供維護者驗證。
 
