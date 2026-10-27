@@ -100,9 +100,8 @@ PassionFruit_IoT_hardware/
 
 - [快速開始（不含 ESP32）](docs/快速開始.md)
 - [完整部署與操作說明](docs/環境部署說明文件.md)
-- [專案脈絡與架構](docs/PROJECT_CONTEXT.md)
+- [架構、拍攝、檢測與分類規格](docs/CAPTURE_SPEC.md)
 - [目前狀態](docs/CURRENT_STATUS.md)
-- [拍攝、檢測與分類規格](docs/CAPTURE_SPEC.md)
 - [電源供應器接線注意事項](record_image/電源供應器接線注意事項.md)
 - [ADR-0016：硬體平台、送料與分類器重構](docs/adr/0016-hardware-platform-feeder-sorter-redesign.md)
 - [架構決策索引](docs/adr/README.md)

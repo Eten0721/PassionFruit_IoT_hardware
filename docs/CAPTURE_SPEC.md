@@ -2,11 +2,39 @@
 
 ## 目標與範圍
 
-本文涵蓋使用硬體與純拍攝兩種拍攝方式，以及蒐集模式的人工分類、自動檢測模式的 YOLO 檢測、XGBoost 分級與結果保存。本文是拍攝、檢測、分類流程、API、command ID、GPIO、角度與 timing 的唯一規格來源；目標契約不代表已完成實作，進度見 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
+本文是系統架構、拍攝、檢測、分類流程、API、command ID、GPIO、角度與 timing 的唯一規格；涵蓋使用硬體與純拍攝兩種拍攝方式，以及蒐集模式的人工分類與自動檢測模式的 YOLO 檢測、XGBoost 判級。現況見 [CURRENT_STATUS.md](CURRENT_STATUS.md)，決策歷史見 [ADR](adr/README.md)。
 
-使用硬體的蒐集模式由 Django 中央狀態機、ESP32 以 XINHUI `60KG` 連續旋轉伺服執行上游單顆送料、HC-SR04、手機單站拍攝、三段位置型 MG996R 閘門與一顆位置型 MG996R 下置式分類器組成。每顆百香果在三個固定站點各保存一張照片；第 3 張保存後果實停留在 Gate 3，直到人工分類完成、分類器就位並執行 Gate 3 放行。實體分類完成後才允許送入下一顆。
+硬體由 Django 中央狀態機、ESP32、XINHUI `60KG` 分槽送料、HC-SR04、手機單站拍攝、三顆 MG996R 閘門與一顆 MG996R 下置式分類器組成。每顆果實在三個站點各保存一張照片；第 3 張保存後停在 Gate 3，等判級完成、分類器就位才放行，分類完成後才送下一顆。
 
-原始上游送料整合由 GitHub Issue [#1](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/1) 記錄；本文件保存 ADR-0016 接受後的目標契約，實作與實機驗收進度以 [CURRENT_STATUS.md](CURRENT_STATUS.md) 為準。2026-08-22 的平台、分槽盤、下置式分類器與供電決策見 [ADR-0016](adr/0016-hardware-platform-feeder-sorter-redesign.md)。原 Issue [#2](https://github.com/Eten0721/PassionFruit_IoT_hardware/issues/2) 的額外 SG90 擋臂已取消。
+## 架構與不變原則
+
+### 模組分工
+
+- Django 是 capture、送料與分類狀態的唯一來源，負責工作階段、拍攝 token、照片原子保存、單一 motor command slot 與錯誤復原；不主動呼叫硬體。
+- `views.py`：HTTP 整合、模式選擇、狀態機協調與復原決策。
+- `runtime_state.py`、`capture_timing.py`、`capture_session.py`、`api_payloads.py`、`webrtc_signaling.py`：各自獨立的狀態、timing、工作階段、回應格式與預覽 signaling。
+- `dataset_store.py`：Dataset 檔案生命週期與 recovery marker 讀寫驗證。
+- `detection.py`：四模型推論、`result.json`／檢測總表保存與人工接手寫回。`grading.py`：兩階段 XGBoost 特徵與最差視角判級。兩者只回結構化結果，不接觸硬體。
+- `notification.py`：加工果通知文字與合成圖。`notification_delivery.py`：持久待送，背景經 Cloudinary／LINE 發送，失敗不影響本地流程。
+- Firmware 位於 `firmware/Three_Gate_Data_Collection/`；`.ino` 只建立 `CaptureController` 並呼叫 `begin()`／`tick()`，感測、閘門、分類器、HTTPS 與流程控制分屬各模組。ESP32 是 HTTPS client，所有等待與 retry 都有界，不得阻塞主迴圈。
+- 手機頁只負責預覽、相機 readiness、領取單站拍攝請求與上傳；Dashboard 負責運轉控制、狀態、照片檢查、判級與刪除。WebRTC 預覽失敗不得阻塞上傳。
+
+### 不變原則
+
+- 手機與 ESP32 不自行推測流程完成，一律以 Django 為準。
+- 當站照片原子保存成功前，不放行下一閘門。
+- 第 3 張保存後不直接放行 Gate 3；須有 `gate3_sorter_v1` 且分類器完成就位等待。
+- 分類器就位、Gate 3 放行與歸位是同一個 `classify_fruit` 動作；結果不確定時不自動重放。
+- 資料先提交再實體分類；硬體失敗不回滾照片、metadata 或 counter。
+- 未分類資料、active capture 或 sorter 動作存在時，不開始下一顆。
+- 送料由 HC-SR04 回授停止；感測異常或逾時由 ESP32 本機停止；網路 retry 不得重複送料。
+- 優雅暫停只禁止後續送料，已送出的果實照常完成。
+- 首站加速只縮短控制往返，不縮短停穩或照片保存交握。
+- HTTP timeout 視為結果不確定，retry 必須冪等。
+- 正式硬體流程沒有通用 manual capture；重拍只重跑同一顆的三站流程。純拍攝全程不建立 motor command。
+- AI 只輸出結構化結果，不直接控制 GPIO、角度或 PWM。
+- 檢測或判級失敗時不補零硬判；人工結果另記來源，不改寫模型輸出。
+- 供電、邏輯電壓與共地安全優先於持續運轉。
 
 ## 名詞
 

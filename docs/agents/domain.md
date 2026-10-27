@@ -4,12 +4,11 @@
 
 ## Before exploring
 
-- 先讀取 [`docs/PROJECT_CONTEXT.md`](../PROJECT_CONTEXT.md)。
+- 先讀取 [`docs/CAPTURE_SPEC.md`](../CAPTURE_SPEC.md) 的架構、不變原則與現行契約。
 - 依工作範圍讀取 [`docs/adr/`](../adr/) 中相關 ADR。
-- 現行流程與硬體契約讀取 [`docs/CAPTURE_SPEC.md`](../CAPTURE_SPEC.md)。
 - 檔案不存在時直接繼續，不要求預先建立替代文件。
 
-本 Repository 不另建重複的根目錄 `CONTEXT.md`；`docs/PROJECT_CONTEXT.md` 是 single-context 架構來源。
+本 Repository 不另建 `CONTEXT.md`；`docs/CAPTURE_SPEC.md` 是 single-context 架構來源。
 
 ## Consumer rules
 

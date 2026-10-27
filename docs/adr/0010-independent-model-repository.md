@@ -13,4 +13,4 @@
 
 ## Consequences
 
-兩邊分別 commit 與 push。Repository 責任邊界見 [`PROJECT_CONTEXT.md`](../PROJECT_CONTEXT.md)，本機操作見 [模型開發環境](../模型開發環境.md)，正式部署權重見 [ADR-0017](0017-fixed-django-model-assets.md)。
+兩邊分別 commit 與 push。Repository 責任邊界見 [`AGENTS.md`](../../AGENTS.md#repository-邊界)，本機操作見 [模型開發環境](../模型開發環境.md)，正式部署權重見 [ADR-0017](0017-fixed-django-model-assets.md)。

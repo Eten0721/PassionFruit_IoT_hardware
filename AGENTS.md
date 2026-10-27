@@ -2,13 +2,31 @@
 
 開始修改前，依工作範圍閱讀：
 
-1. `docs/PROJECT_CONTEXT.md`：架構、Repository 邊界與核心原則。
-2. `docs/CAPTURE_SPEC.md`：硬體與純拍攝流程、檢測、分類、API、command、GPIO、角度與 timing。
-3. `docs/CURRENT_STATUS.md`：目前穩定功能、問題、實機驗證與里程碑。
-4. `docs/adr/`：與修改範圍相關的架構決策。
-5. `record_image/電源供應器接線注意事項.md`：接線安全、上電前檢查與維修。
+1. `docs/CAPTURE_SPEC.md`：架構、不變原則、拍攝與檢測流程、分類、API、command、GPIO、角度與 timing。
+2. `docs/CURRENT_STATUS.md`：目前功能、已知問題與實機驗收。
+3. `docs/adr/`：與修改範圍相關的架構決策。
+4. `record_image/電源供應器接線注意事項.md`：接線安全、上電前檢查與維修。
 
 未完成工作以 GitHub Issues 為準，不在本文件維護待辦或版本進度。
+
+## 文件維護
+
+### 放在哪裡
+
+- 一項事實只寫在一處，其他文件只放一句摘要加連結。
+- `AGENTS.md`：長期規則與 Repository 邊界。
+- `CAPTURE_SPEC.md`：架構、不變原則、流程、硬體參數與協定的唯一規格。`CURRENT_STATUS.md`：可整份覆寫的現況快照。
+- `docs/adr/`：架構與機構決策。`電源供應器接線注意事項.md`：接線安全、上電前檢查與維修。
+- 未完成工作放 GitHub Issues；完成歷史交給 Git，文件不寫「曾經」「舊版」。
+
+### 怎麼寫
+
+- 先寫結論或現況，必要時再補一句原因。
+- 條列為主，一條只講一件事，句子短。
+- 寫具體數值、日期、檔名與 Issue 編號，不寫「相關」「大致」「適當」。
+- 狀態只寫已確認的事實並附日期；沒驗證就直接寫「未驗證」。
+- 不寫開場、過渡、總結、客套，也不重述其他段落或文件已有的內容。
+- 修改時優先重寫、合併、刪除，不在檔尾追加；過時內容直接刪。
 
 ## Repository 邊界
 
@@ -62,16 +80,6 @@ C:\Users\qoqoo\anaconda3\envs\PF\python.exe -s manage.py test fruit_app
 - early return 不得跳過 cleanup；優先使用 context manager 或 `try/finally`。
 - 硬體狀態異常時，以安全停止為優先。
 - 硬體電壓、外部供電與共地要求不得以軟體容錯取代。
-
-## 文件維護
-
-- 優先重寫、合併與刪除，不預設在檔尾追加。
-- 一項事實只保留一個 authoritative source；其他文件只放摘要與連結，不為「保持同步」複製內容。
-- `AGENTS.md` 只保存長期規則；`PROJECT_CONTEXT.md` 只保存架構與責任邊界。
-- `CAPTURE_SPEC.md` 是拍攝、檢測、分類流程、硬體參數與協定的唯一規格；`CURRENT_STATUS.md` 是可覆寫快照。
-- 機構決策寫入相關 ADR，演進歷史由 Git 保存；接線安全與維修檢查寫入 `電源供應器接線注意事項.md`。
-- 未完成工作用 GitHub Issues；完成歷史由 Git 保存；架構決策使用獨立 ADR。
-- 文件超過既定篇幅時，先精簡再加入內容。
 
 ## Agent skills
 
