@@ -71,6 +71,7 @@ const remoteVideo = document.getElementById('remote-video');
     const operationToggle = document.getElementById('btn-operation-toggle');
     const optionsGuidance = document.getElementById('options-guidance');
     const autoRunButton = document.getElementById('btn-auto-run');
+    const finishFeederWaitButton = document.getElementById('btn-finish-feeder-wait');
     const recaptureButton = document.getElementById('btn-recapture');
     const discardButton = document.getElementById('btn-discard');
     const resetDatasetButton = document.getElementById('btn-reset-dataset');
@@ -121,7 +122,9 @@ const remoteVideo = document.getElementById('remote-video');
     let controlActionInFlight = null;
     let lastTraceFingerprint = '';
     let messageClearTimer = null;
-    const messageVisibleMs = 10000;
+    let activeStatusMessage = '';
+    let lastStatusEventKey = '';
+    const messageVisibleMs = 5000;
     const stateIdlePollMs = 1000;
     const stateActivePollMs = 500;
     const webrtcPollMs = 1000;
@@ -236,14 +239,41 @@ const remoteVideo = document.getElementById('remote-video');
         }
     }
 
-    // Only operator-action feedback appears here; run status lives in the
-    // operation bar, stage chips and result card, so it is not repeated.
+    function clearMessage() {
+        activeStatusMessage = '';
+        setTextIfChanged(messageEl, '');
+        messageEl.dataset.state = '';
+    }
+
+    // Runtime alerts take priority during their five-second display window.
     function setMessage(message) {
+        if (activeStatusMessage) return;
         window.clearTimeout(messageClearTimer);
         setTextIfChanged(messageEl, message || '');
         if (message) {
-            messageClearTimer = window.setTimeout(() => setTextIfChanged(messageEl, ''), messageVisibleMs);
+            messageClearTimer = window.setTimeout(clearMessage, messageVisibleMs);
         }
+    }
+
+    function renderStatusMessage(data) {
+        const reason = data.last_error_reason || data.auto_run_recovery_reason;
+        const eventKey = reason ? JSON.stringify([
+            reason, data.operator_alert?.command_id ?? data.last_error_command_id ?? null,
+        ]) : '';
+        if (eventKey === lastStatusEventKey) return;
+        lastStatusEventKey = eventKey;
+        if (!reason) {
+            if (activeStatusMessage) {
+                window.clearTimeout(messageClearTimer);
+                clearMessage();
+            }
+            return;
+        }
+        activeStatusMessage = reasonText(reason);
+        window.clearTimeout(messageClearTimer);
+        setTextIfChanged(messageEl, activeStatusMessage);
+        messageEl.dataset.state = 'error';
+        messageClearTimer = window.setTimeout(clearMessage, messageVisibleMs);
     }
 
     // Maintainer-only panels; double-clicking the title shows or hides them together.
@@ -512,6 +542,7 @@ const remoteVideo = document.getElementById('remote-video');
     });
 
     function renderState(data) {
+        renderStatusMessage(data);
         renderNetwork(data.network || {});
         const images = data.latest_images || [];
         const status = data.status || 'idle';
@@ -626,6 +657,11 @@ const remoteVideo = document.getElementById('remote-video');
                     ? '刪除未保存成功的本輪檢測'
                 : '跳過／刪除目前資料',
         );
+        finishFeederWaitButton.hidden = photoOnly
+            || data.auto_run_recovery_reason !== 'feeder_max_run_timeout' || Boolean(data.active_fruit_id);
+        finishFeederWaitButton.disabled = Boolean(controlActionInFlight) || !data.can_finish_feeder_wait;
+        finishFeederWaitButton.title = data.can_finish_feeder_wait
+            ? '結束等待後可切換模式與網路' : reasonText(data.finish_feeder_wait_disabled_reason);
         if (photoOnly) {
             setTextIfChanged(autoRunButton, '開始拍攝');
             autoRunButton.dataset.mode = 'photo';
@@ -758,6 +794,11 @@ const remoteVideo = document.getElementById('remote-video');
     }
 
     function autoRunGuidanceText(data) {
+        if (data.hardware_mode !== 'photo_only' && data.network_recovery?.resume_auto_run === false) {
+            return data.network_recovery_confirm_disabled_reason === 'network_recovery_in_progress'
+                ? '正在結束送料等待；ESP32 歸位與清鎖完成後可切換模式或網路，不會自動送料。'
+                : '請按「確認安全復原」完成送料等待的清鎖；完成後不會自動送料。';
+        }
         if (data.network_recovery && data.network_recovery_confirm_disabled_reason !== 'network_recovery_not_required') {
             const recoveryReason = data.network_recovery_confirm_disabled_reason;
             return recoveryReason
@@ -785,18 +826,20 @@ const remoteVideo = document.getElementById('remote-video');
         if (data.auto_run_finishing) {
             return '正在完成目前果實，完成後不會送入下一顆。';
         }
-        const reason = data.auto_run_disabled_reason;
+        const reason = data.auto_run_start_disabled_reason ?? (data.can_start_auto_run ? null : data.auto_run_disabled_reason);
+        if (data.can_start_auto_run && data.auto_run_recovery_reason === 'feeder_max_run_timeout') {
+            return '可按「開始拍攝」重新送料，或按「結束送料等待」後切換模式與網路。';
+        }
         return reason
             ? `目前無法開始：${reasonText(reason)}`
             : '所有啟動條件已就緒，可以開始正式自動運轉。';
     }
 
-    // The operation bar is the single error surface; it keeps the alert's handling
-    // instruction because some (e.g. Gate 3 removal) carry safety steps.
+    // The operation bar and global status share handling instructions and timing.
     function errorReasonText(data) {
         const alert = data.operator_alert;
         if (!alert) {
-            return reasonText(data.last_error_reason);
+            return reasonText(data.last_error_reason || data.auto_run_recovery_reason);
         }
         const feederMetrics = [
             Number.isFinite(alert.feeder_elapsed_ms) ? `實際 ${alert.feeder_elapsed_ms} ms` : '',
@@ -1837,6 +1880,22 @@ const remoteVideo = document.getElementById('remote-video');
         }
     }
 
+    async function finishFeederWait() {
+        if (!lastState?.can_finish_feeder_wait || !confirm(
+            '是否確認送料已停止、本輪已清空且手已離開？確認後 ESP32 會歸位並結束等待，不會送料。',
+        )) return;
+        if (!beginControlAction('finish-feeder-wait', finishFeederWaitButton)) return;
+        try {
+            const payload = await postJson('/api/feeder/finish_wait/', { recovery_confirmed: true });
+            lastState = payload;
+            renderState(payload);
+        } catch (error) {
+            setMessage(`結束送料等待失敗：${error.message}`);
+        } finally {
+            endControlAction(finishFeederWaitButton);
+        }
+    }
+
     async function toggleAutoRun() {
         if (!beginControlAction('auto-run', autoRunButton)) {
             return;
@@ -2170,6 +2229,7 @@ const remoteVideo = document.getElementById('remote-video');
     trendAlertForm.addEventListener('input', () => { trendAlertForm.dataset.dirty = 'true'; });
     recaptureButton.addEventListener('click', recaptureCurrent);
     document.getElementById('btn-open-folder').addEventListener('click', openDatasetFolder);
+    finishFeederWaitButton.addEventListener('click', finishFeederWait);
     discardButton.addEventListener('click', discardCurrent);
     resetDatasetButton.addEventListener('click', resetDataset);
     document.getElementById('btn-reconnect').addEventListener('click', () => {

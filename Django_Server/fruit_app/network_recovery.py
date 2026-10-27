@@ -108,6 +108,7 @@ class Policy:
             'boot_id': self.state.get('esp32_boot_id'),
             'server_run_id': network['server_run_id'], 'network_revision': network['network_revision'],
             'command_id': command.get('command_id'), 'command': command.get('command'),
+            'resume_auto_run': reason != 'feeder_wait_cancelled' and (recovery or {}).get('resume_auto_run', True),
             **kinds,
         }
         if not device_only or kinds['data_locked']:
@@ -283,6 +284,7 @@ class Policy:
 
     def finish(self, receipt=None, *, data_only=False):
         retained = None
+        pause_trigger = not (self.state.get('network_recovery') or {}).get('resume_auto_run', True)
         if data_only and self.kinds()['motor_locked']:
             retained = {**self.state['network_recovery'], 'data_locked': False,
                         'motor_locked': True, 'phase': 'locked', 'deadline': None}
@@ -292,6 +294,7 @@ class Policy:
                 self.runtime._clear_gate3_recovery_marker()
             self.runtime._write_recovery_payload(self.path(), retained or {
                 'phase': 'clear', 'generation': self.state.get('recovery_generation', 0), 'receipt': receipt,
+                'auto_trigger_paused': pause_trigger,
             })
         except OSError:
             self.state['network_persist_failed'] = True
@@ -306,6 +309,8 @@ class Policy:
         self.state['status'] = 'idle'
         self.state['esp32_feeder_state'] = 'idle'
         self.state['auto_run_finishing'] = False
+        if pause_trigger:
+            self.state['auto_trigger_paused'] = True
         if receipt is not None:
             self.state['esp32_interlocked'] = False
         if retained is None:
@@ -336,12 +341,15 @@ class Policy:
         response = self.finish(receipt)
         if response is not None:
             return response
-        if (recovery.get('reason') != 'gate3_manual_removal_required'
+        if (recovery.get('resume_auto_run', True)
+                and recovery.get('reason') != 'gate3_manual_removal_required'
                 and self.runtime._auto_run_disabled_reason() is None):
             self.state['auto_run_enabled'] = True
             self.runtime._queue_production_feed()
         elif recovery.get('reason') == 'gate3_manual_removal_required':
             self.state['message'] = '本輪已跳過，ESP32 已完成歸位交握；請按「開始拍攝」開始下一顆。'
+        elif not recovery.get('resume_auto_run', True):
+            self.state['message'] = '送料等待已結束，可切換模式或網路；需要送料時請再按「開始拍攝」。'
         return JsonResponse({'ok': True, 'recovery_committed': True})
 
     def restore(self):
@@ -359,6 +367,7 @@ class Policy:
         if payload.get('phase') == 'clear':
             self.state['recovery_generation'] = payload['generation']
             self.state['network_recovery_receipt'] = payload.get('receipt')
+            self.state['auto_trigger_paused'] = payload.get('auto_trigger_paused') is True
             return
         self.state['network_recovery'] = {**payload, **self.kinds(payload), 'phase': 'locked', 'deadline': None}
         self.state['recovery_generation'] = payload['generation']

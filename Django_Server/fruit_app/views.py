@@ -202,6 +202,7 @@ APP_STATE = RuntimeState({
     'auto_feed_pending': False,
     'auto_run_finishing': False,
     'auto_run_recovery_reason': None,
+    'auto_trigger_paused': False,
     'camera_last_live_frame_at': None,
     'camera_last_live_frame_monotonic': None,
     'camera_diagnostics': None,
@@ -1055,6 +1056,56 @@ def auto_run_api(request):
             return _json_error(exc.message, status=exc.status, reason=exc.reason)
         _record_transition('auto_run_started')
         return JsonResponse(_state_payload(extra={'ok': True}))
+
+
+def _finish_feeder_wait_disabled_reason():
+    if APP_STATE.get('hardware_mode') != 'hardware':
+        return 'hardware_mode_required'
+    if NETWORK_RECOVERY.locked:
+        return 'network_recovery_required'
+    if APP_STATE.get('auto_run_recovery_reason') != 'feeder_max_run_timeout':
+        return 'feeder_wait_not_required'
+    if APP_STATE.get('auto_run_enabled') or APP_STATE.get('auto_run_finishing') or APP_STATE.get('auto_feed_pending'):
+        return 'auto_run_active'
+    if APP_STATE.get('detection_status') in ('pending', 'running'):
+        return 'detection_in_progress'
+    if APP_STATE.get('dataset_operation'):
+        return 'dataset_operation_in_progress'
+    if APP_STATE.get('gate3_waiting_fruit_id'):
+        return 'gate3_manual_removal_required'
+    if APP_STATE.get('sorter_recovery_required'):
+        return 'sorter_recovery_required'
+    if _sorter_busy():
+        return 'classifier_busy'
+    if APP_STATE.get('pending_capture'):
+        return 'capture_incomplete'
+    return NETWORK_RECOVERY.confirm_disabled_reason() or _network_hardware_disabled_reason()
+
+
+@csrf_exempt
+@require_POST
+@network_required(operation='start')
+def finish_feeder_wait_api(request):
+    _ensure_dataset_structure()
+    data = _request_data(request)
+    with STATE_LOCK:
+        _check_network_safety()
+        mode_error = _request_dataset_mode_error(request)
+        if mode_error is not None:
+            return mode_error
+        if data.get('recovery_confirmed') is not True:
+            return _json_error('請先確認送料已停止、本輪已清空且手已離開。', status=409,
+                               reason='network_recovery_confirmation_required')
+        recovery = APP_STATE.get('network_recovery') or {}
+        if recovery.get('reason') == 'feeder_wait_cancelled':
+            if NETWORK_RECOVERY.handshake_active:
+                return JsonResponse(_state_payload(extra={'ok': True, 'recovery_pending': True}))
+            return _confirm_network_recovery(data)
+        reason = _finish_feeder_wait_disabled_reason()
+        if reason:
+            return _json_error('目前無法結束送料等待。', status=409, reason=reason)
+        NETWORK_RECOVERY.lock('feeder_wait_cancelled', force=True)
+        return _confirm_network_recovery(data)
 
 
 @csrf_exempt
@@ -3354,6 +3405,8 @@ def _create_capture_session(source):
         raise CaptureCommandError('相機尚未就緒。', reason='camera_not_ready')
     if APP_STATE.get('hardware_mode') == 'photo_only':
         raise CaptureCommandError('純拍攝不接受硬體觸發。', reason='hardware_mode_required')
+    if APP_STATE.get('auto_trigger_paused'):
+        raise CaptureCommandError('送料等待已結束，請先按開始拍攝。', reason='auto_trigger_disabled')
     _sync_active_state_with_filesystem()
     if APP_STATE.get('sorter_recovery_required'):
         raise CaptureCommandError(
@@ -4296,6 +4349,8 @@ def _handle_timing_config_applied(data):
 
 
 def _auto_trigger_enabled():
+    if APP_STATE.get('auto_trigger_paused'):
+        return False
     if APP_STATE.get('hardware_mode') == 'photo_only':
         return False
     if APP_STATE.get('dataset_operation'):
@@ -4483,6 +4538,7 @@ def _camera_is_ready():
 
 def _queue_production_feed():
     command = _set_motor_command('feed_one', feed_context='production')
+    APP_STATE['auto_trigger_paused'] = False
     APP_STATE['auto_feed_pending'] = False
     APP_STATE['status'] = 'waiting_feeder'
     APP_STATE['message'] = 'ESP32 正在送入下一顆百香果。'
@@ -4837,6 +4893,9 @@ def _state_payload(extra=None):
         'can_start_auto_run': _auto_run_disabled_reason(allow_recovery=True) is None,
         'network_recovery_confirm_disabled_reason': _network_recovery_ui_reason(),
         'auto_run_disabled_reason': _auto_run_disabled_reason(),
+        'auto_run_start_disabled_reason': _auto_run_disabled_reason(allow_recovery=True),
+        'can_finish_feeder_wait': _finish_feeder_wait_disabled_reason() is None,
+        'finish_feeder_wait_disabled_reason': _finish_feeder_wait_disabled_reason(),
         'last_esp32_poll_at': APP_STATE.get('last_esp32_poll_at'),
         'last_esp32_report_at': APP_STATE.get('last_esp32_report_at'),
         'motor_command': APP_STATE.get('motor_command') or _esp32_command_payload(),
