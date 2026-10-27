@@ -364,6 +364,12 @@ h1 {
     background: var(--surface);
 }
 
+.global-message[data-state="error"] {
+    color: var(--danger);
+    border-color: var(--danger);
+    background: var(--danger-soft);
+}
+
 .workspace-grid {
     display: grid;
     grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.8fr);

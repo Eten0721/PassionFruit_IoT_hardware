@@ -288,7 +288,7 @@ ESP32 command polling 必須附帶本次開機唯一的 `boot_id`、送料能力
 
 正式送料發生 `feeder_max_run_timeout` 時，Django 清除 command slot、關閉自動運轉並顯示「進料未確認」；ESP32 維持 HC-SR04 待命，但不得自動補轉；原因也可能是料斗已空或果實卡住。
 
-逾時與有效觸發落在同一次控制迴圈時，以逾時優先。若果實之後才觸發 HC-SR04，仍接手既有三站拍攝與分類，但自動送料保持關閉，完成後由操作員檢查送料區域並重新按「開始拍攝」。
+逾時與有效觸發落在同一次控制迴圈時，以逾時優先；結束等待前若果實才觸發 HC-SR04，仍完成三站拍攝與分類，自動送料保持關閉。操作員也可按「結束送料等待」，以 `POST /api/feeder/finish_wait/` 明確提交 `recovery_confirmed=true`：僅限硬體模式的送料逾時、無 active／暫存果實、拍攝、檢測、分類、Gate 3 待處理或待執行命令，且 ESP32 在線、網路可控制時接受，不要求相機就緒。Django 建立原因 `feeder_wait_cancelled` 的復原鎖，沿用 `recover_network` 歸位與雙端提交；完整 ACK 前阻擋切換，重複請求不重建命令。政策保存 `resume_auto_run=false`，失敗重試與重啟皆保留；完成後回 `idle`、清除送料等待與錯誤、保持自動運轉關閉，並持久保存 `auto_trigger_paused=true`，禁止重新觸發。此時開放模式、Django 選網與 ESP32 配網（後者仍等本機 safe-idle 回報）；下一次明確開始才解除觸發暫停並建立新送料。決策見 [ADR-0024](adr/0024-explicit-feeder-wait-finish.md)。
 
 送料前的 `0 cm`／Echo timeout 直接拒絕命令；送料中的相同錯誤立即停止馬達並關閉自動運轉。Dashboard 必須指示操作者檢查 HC-SR04 線材、供電、Echo 分壓與感測方向，不得將無回音解讀為感測區清空。
 
@@ -316,7 +316,7 @@ Django 重新啟動後，依 ESP32 polling 的 `feeder_state` 與 `last_feed_com
 
 ### Dashboard 錯誤提示
 
-Blocking error 必須以可存取的 `role="alert"` 區塊顯示發生位置、具體 reason、目前 fruit／command 與操作指引。Reason 至少區分 `feeder_max_run_timeout`、`feeder_sensor_not_clear`、`feeder_sensor_unavailable`、`camera_upload_timeout`、`classifier_timeout`、`feeder_capability_missing`、`feeder_calibration_required` 與 `esp32_restarted_during_feed`。送料錯誤的 alert 與送料結果都必須顯示 `feeder_elapsed_ms`、`feeder_max_run_ms` 與停止原因。標準操作文字為「暫停 → 排除／重新拍攝／刪除 → 開始拍攝」；存在 active fruit 時，「開始拍攝」保持停用。
+Blocking error 在全域 `role="status"` 訊息列顯示簡短中文原因，顯示時間依 Dashboard 契約；狀態徽章提示與診斷區保留原因、操作指引、fruit／command 與送料實際／上限時間及停止原因。Reason 至少區分 `feeder_max_run_timeout`、`feeder_sensor_not_clear`、`feeder_sensor_unavailable`、`camera_upload_timeout`、`classifier_timeout`、`feeder_capability_missing` 與 `esp32_restarted_during_feed`。存在 active fruit 時，「開始拍攝」保持停用；送料逾時另可依上述契約明確結束等待。
 
 ## 觸發與三站流程
 
@@ -527,7 +527,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 - 手機即時畫面移至右側原流程操作位置；整顆分類結果也放在檢測區右手邊，以醒目級距文字區分等待、有效結果與待覆核，不只靠顏色表示。
 - 底部摺疊區依序為「LINE 通知 → 資料管理 → ESP32 網路設定 → 停穩設定與送料校正 → 診斷與流程紀錄」。ESP32 網路設定收合時仍以既有連線狀態顯示文字徽章。停穩設定與送料校正只唯讀顯示參數檔數值與同步狀態，摘要列右側依序提供「完全重置Django狀態以及ESP32網路設定」與「測試送料一顆」，兩者執行前都須確認對話框；它與診斷區皆為維護資訊，預設隱藏，雙擊頁首標題一起切換顯示／隱藏並清除文字選取；狀態保存在瀏覽器 `localStorage`，讀寫失敗不影響頁面操作，讀不到時預設隱藏，顯示時仍可用鍵盤展開摺疊區。
 - 主畫面的停用、停止與錯誤原因一律只顯示 `fruit_app/reason_text.py` 的中文說明，未收錄的代碼顯示「其他狀態，詳見診斷區」；原始 reason 代碼只列在診斷區的「原因代碼」。新增操作員可見的代碼時必須同時補上中文。
-- 全域訊息列沒有內容時整列隱藏；開啟 Dataset 資料夾成功不顯示路徑訊息，其他錯誤與提醒保留。切換維護區時短暫提示「已顯示維護資訊」／「已隱藏維護資訊」，時間沿用既有訊息慣例。阻擋原因、安全復原提示與串流失敗原因直接可見；檢測展示重用真實前處理產物，既有橢圓 ROI 遮罩演算法不因版面調整而更改。
+- 全域訊息列沒有內容時整列隱藏；操作回饋與異常提示皆顯示 `5 秒` 後隱藏。`last_error_reason`／`auto_run_recovery_reason` 出現或對應 command 改變時，優先顯示簡短中文原因；相同異常不因輪詢而重新顯示或延長時間，解除後再次發生則重新提示。送料逾時固定顯示「送料機構運轉超時；桶內可能已空料。」，不附處理指引與運轉時間；詳細資訊仍可從狀態徽章提示與診斷區查看。開啟 Dataset 資料夾成功不顯示路徑；切換維護區短暫提示顯示／隱藏。阻擋原因、安全復原與串流失敗原因直接可見；檢測展示重用真實產物，既有橢圓 ROI 遮罩演算法不因版面調整而更改。
 
 ## 驗收
 

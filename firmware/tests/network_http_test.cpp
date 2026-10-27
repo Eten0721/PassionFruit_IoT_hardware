@@ -24,6 +24,7 @@ int main(int argc, char** argv) {
   Fake::reset();
   Fake::nvs.clear();
   const bool provision = argc > 1 && std::string(argv[1]) == "--setup";
+  const bool finishWait = argc > 1 && std::string(argv[1]) == "--finish-wait";
   Fake::seedWifi = !provision;
   Fake::wifiNvs.clear();
   std::atomic<int> action{0};
@@ -82,6 +83,12 @@ int main(int argc, char** argv) {
         lost = true;
       }
       const int feeds = count(23, 1300);
+      if (finishWait && Fake::ap) {
+        assert(committed && feeds == 1 && "Finishing the wait must not feed again");
+        assert(count(25, 45) == 2 && "The existing recovery must home exactly once");
+        std::cout << "PASS" << std::endl;
+        break;
+      }
       if (feeds == 3) {
         assert(lost && committed && "New feed must follow both commits");
         assert(count(25, 45) == 2 && "Recovery must home exactly once");
@@ -89,7 +96,7 @@ int main(int argc, char** argv) {
         break;
       }
       assert(feeds <= 2 || committed);
-      if (!lost && feeds > observedFeeds) fruitAt = millis() + 100;
+      if (!finishWait && !lost && feeds > observedFeeds) fruitAt = millis() + 100;
       observedFeeds = feeds;
       if (fruitAt && static_cast<int32_t>(millis() - fruitAt) >= 0) {
         Fake::echoUS = 290;
@@ -99,7 +106,8 @@ int main(int argc, char** argv) {
       controller.tick();
       std::this_thread::sleep_for(std::chrono::milliseconds(4));
     }
-    assert(count(23, 1300) == 3);
+    assert(count(23, 1300) == (finishWait ? 1 : 3));
+    if (finishWait) assert(Fake::ap);
   }
   for (auto& worker : Fake::workers) worker.join();
 }
