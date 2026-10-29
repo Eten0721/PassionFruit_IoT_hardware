@@ -176,6 +176,8 @@ class DetectionStatsTests(SimpleTestCase):
 
         weekly = detection_stats.query(self.data.root, bucket='week')
         self.assertEqual([point['period'] for point in weekly['series']], ['2026-09-28 週'])
+        single = detection_stats.query(self.data.root, bucket='week', group_by='defect')['chart']
+        self.assertEqual((single['type'], single['title']), ('bar', '瑕疵出現比例'))
         monthly = detection_stats.query(self.data.root, bucket='month', group_by='grade')
         self.assertEqual([point['period'] for point in monthly['series']], ['2026-09', '2026-10'])
         self.assertTrue(monthly['chart']['stacked'])
