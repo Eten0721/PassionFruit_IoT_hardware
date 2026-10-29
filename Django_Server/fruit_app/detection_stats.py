@@ -195,7 +195,7 @@ def chart_spec(summary: dict, *, group_by: str) -> dict:
                 for label in GRADE_ORDER
             ],
         }
-    if not series:
+    if len(series) < 2:  # one period draws a line of lone dots
         return {
             'type': 'bar', 'title': '瑕疵出現比例', 'unit': '%', 'stacked': False, 'y_max': 100,
             'labels': [d['label'] for d in summary['defects']],
