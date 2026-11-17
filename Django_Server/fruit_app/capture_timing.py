@@ -71,8 +71,15 @@ def normalise(
     return timing
 
 
-def load(path: Path, fields: Iterable[str]) -> tuple[dict[str, Any], int]:
-    """Read the maintainer-edited TOML file; the revision is derived from its values."""
+def load(
+    path: Path, fields: Iterable[str], extra_fields: Iterable[str] = (),
+) -> tuple[dict[str, Any], int]:
+    """Read the maintainer-edited TOML file; the revision is derived from its values.
+
+    ``extra_fields`` are allowed in the file but stay out of the revision, so
+    Django-only settings never make the ESP32 re-apply unchanged timing.
+    """
+    fields = tuple(fields)
     path = Path(path)
     try:
         with path.open('rb') as params_file:
@@ -85,7 +92,7 @@ def load(path: Path, fields: Iterable[str]) -> tuple[dict[str, Any], int]:
         raise TimingValidationError(
             f'硬體參數檔格式錯誤：{exc}。', 'hardware_params_invalid_toml',
         ) from None
-    unknown = sorted(set(raw) - set(fields))
+    unknown = sorted(set(raw) - set(fields) - set(extra_fields))
     if unknown:
         raise TimingValidationError(
             f'硬體參數檔有未知欄位：{"、".join(unknown)}。', 'hardware_params_unknown_field',
@@ -94,6 +101,28 @@ def load(path: Path, fields: Iterable[str]) -> tuple[dict[str, Any], int]:
     # This is a content fingerprint, not an ordered wire revision.
     revision = zlib.crc32(canonical.encode('utf-8')) % 999_999 + 1
     return raw, revision
+
+
+def camera_capture(
+    raw: dict[str, Any], *, recommended: dict[str, Any], resolutions: Iterable[str],
+) -> dict[str, Any]:
+    """Validate the phone capture keys; a missing key uses its recommended value."""
+    resolutions = tuple(resolutions)
+    resolution = raw.get('camera_capture_resolution', recommended['camera_capture_resolution'])
+    if resolution not in resolutions:
+        raise TimingValidationError(
+            f'camera_capture_resolution 必須是 {"、".join(resolutions)} 之一。',
+            'camera_capture_invalid_resolution',
+        )
+    quality = raw.get('camera_jpeg_quality', recommended['camera_jpeg_quality'])
+    if (isinstance(quality, bool) or not isinstance(quality, (int, float))
+            or not 0.5 <= quality <= 1.0 or abs(quality * 100 - round(quality * 100)) > 1e-9):
+        raise TimingValidationError(
+            'camera_jpeg_quality 必須介於 0.50 到 1.00，且為 0.01 的倍數。',
+            'camera_capture_invalid_quality',
+        )
+    width, height = (int(value) for value in resolution.split('x'))
+    return {'width': width, 'height': height, 'jpeg_quality': round(float(quality), 2)}
 
 
 def publish(path: Path, timing: dict[str, int], fingerprint: int) -> dict:

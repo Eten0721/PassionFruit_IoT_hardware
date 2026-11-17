@@ -103,6 +103,15 @@ CAPTURE_TIMING_RECOMMENDED = {
     **GATE_STEP_RECOMMENDED,
 }
 CAPTURE_TIMING_FIELDS = tuple(CAPTURE_TIMING_RECOMMENDED)
+# Django-only phone capture keys in hardware_params.toml; never sent to the ESP32.
+CAMERA_CAPTURE_RECOMMENDED = {
+    'camera_capture_resolution': '3840x2160',
+    'camera_jpeg_quality': 0.92,
+}
+CAMERA_CAPTURE_RESOLUTIONS = ('1280x720', '1920x1080', '2560x1440', '3840x2160')
+CAMERA_CAPTURE_DEFAULT = capture_timing.camera_capture(
+    {}, recommended=CAMERA_CAPTURE_RECOMMENDED, resolutions=CAMERA_CAPTURE_RESOLUTIONS,
+)
 CAPTURE_TIMING_STEP_MS = 50
 CAPTURE_TIMING_MIN_MS = 50
 CAPTURE_TIMING_MAX_MS = 3000
@@ -204,6 +213,7 @@ APP_STATE = RuntimeState({
     'trace_sequence': 0,
     'transition_trace': [],
     'capture_timing': dict(CAPTURE_TIMING_RECOMMENDED),
+    'camera_capture': dict(CAMERA_CAPTURE_DEFAULT),
     'capture_timing_revision': 1,
     'capture_timing_applied_revision': 0,
     'capture_timing_sync_record': None,
@@ -569,7 +579,8 @@ def _asset_version(assets):
 @network_required(cleanup=True, operation='observation')
 def camera_view(request):
     _ensure_dataset_structure()
-    context = {'asset_version': _asset_version(CAMERA_ASSETS)}
+    context = {'asset_version': _asset_version(CAMERA_ASSETS),
+               'camera_capture': APP_STATE['camera_capture']}
     return _no_store_response(render(request, 'camera.html', context))
 
 
@@ -3040,6 +3051,7 @@ def reset_runtime_state():
             'trace_sequence': 0,
             'transition_trace': [],
             'capture_timing': dict(CAPTURE_TIMING_RECOMMENDED),
+            'camera_capture': dict(CAMERA_CAPTURE_DEFAULT),
             'capture_timing_revision': 1,
             'capture_timing_applied_revision': 0,
             'capture_timing_sync_record': None,
@@ -3323,8 +3335,14 @@ def _ensure_capture_timing_config():
     if APP_STATE.get('capture_timing_loaded_path') == path_key:
         return
     try:
-        raw, fingerprint = capture_timing.load(path, CAPTURE_TIMING_FIELDS)
+        raw, fingerprint = capture_timing.load(
+            path, CAPTURE_TIMING_FIELDS, extra_fields=CAMERA_CAPTURE_RECOMMENDED,
+        )
         timing = _normalise_capture_timing(raw, require_all=True)
+        camera_capture = capture_timing.camera_capture(
+            raw, recommended=CAMERA_CAPTURE_RECOMMENDED,
+            resolutions=CAMERA_CAPTURE_RESOLUTIONS,
+        )
         sync_record = capture_timing.publish(_hardware_sync_path(), timing, fingerprint)
     except (capture_timing.TimingValidationError, CaptureCommandError) as exc:
         raise ImproperlyConfigured(
@@ -3333,6 +3351,7 @@ def _ensure_capture_timing_config():
     except OSError as exc:
         raise ImproperlyConfigured(f'無法保存硬體同步紀錄：{exc}') from None
     APP_STATE['capture_timing'] = timing
+    APP_STATE['camera_capture'] = camera_capture
     APP_STATE['capture_timing_revision'] = sync_record['revision']
     APP_STATE['capture_timing_sync_record'] = sync_record
     APP_STATE['capture_timing_applied_revision'] = 0

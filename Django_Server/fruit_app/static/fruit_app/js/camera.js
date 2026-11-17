@@ -7,6 +7,11 @@ const localVideo = document.getElementById('local-video');
     const rtcStatusEl = document.getElementById('rtc-status');
     const lensBar = document.getElementById('lens-bar');
     const lensSelect = document.getElementById('camera-lens');
+    const resolutionBar = document.getElementById('resolution-bar');
+    const resolutionSelect = document.getElementById('camera-resolution');
+    const actualResolutionEl = document.getElementById('actual-resolution');
+    const qualityBar = document.getElementById('quality-bar');
+    const qualitySelect = document.getElementById('camera-quality');
 
     let localStream = null;
     let peerConnection = null;
@@ -29,7 +34,22 @@ const localVideo = document.getElementById('local-video');
     const captureStateRequestTimeoutMs = 1000;
     const captureStartedTelemetryTimeoutMs = 750;
     const webrtcPollMs = 1000;
-    const CAPTURE_SIZE = { width: { ideal: 1920 }, height: { ideal: 1080 } };
+    const RESOLUTION_LABELS = {
+        '1280x720': '720p', '1920x1080': '1080p', '2560x1440': '1440p', '3840x2160': '4K',
+    };
+    const RESOLUTION_STORAGE_KEY = 'pf-camera-capture-resolution';
+    const QUALITY_STORAGE_KEY = 'pf-camera-jpeg-quality';
+    // hardware_params.toml 經頁面提供預設值；手機上選過的值記在該手機並優先使用。
+    const captureConfig = canvas.dataset || {};
+    const defaultQuality = Number(captureConfig.jpegQuality) || 0.92;
+    const QUALITY_OPTIONS = [...new Set([0.8, 0.85, 0.92, 0.97, defaultQuality])].sort((a, b) => a - b);
+    let captureResolution = pickStored(
+        RESOLUTION_STORAGE_KEY, Object.keys(RESOLUTION_LABELS),
+        `${captureConfig.captureWidth || 3840}x${captureConfig.captureHeight || 2160}`,
+    );
+    let jpegQuality = Number(pickStored(
+        QUALITY_STORAGE_KEY, QUALITY_OPTIONS.map(String), String(defaultQuality),
+    ));
     const ULTRA_WIDE_LABEL = /ultra\s*wide|超廣角|超广角|超広角/i;
     const FRONT_LABEL = /front|前置|前鏡頭|前镜头/i;
     const LENS_STORAGE_KEY = 'pf-camera-device-id';
@@ -152,11 +172,12 @@ const localVideo = document.getElementById('local-video');
             }
             const rearStream = await openRearCamera();
             const cameras = await listCameras();
-            const preferred = pickDefaultCamera(cameras, readSavedDeviceId());
+            const preferred = pickDefaultCamera(cameras, readStored(LENS_STORAGE_KEY));
             attachStream(await switchStream(rearStream, preferred?.deviceId));
             renderLensOptions(cameras);
+            renderCaptureOptions();
             startPanel.classList.add('hidden');
-            setStatus(`相機已開啟（${activeLensLabel()}），等待正式拍攝請求；RTC 預覽另行連線。`);
+            setStatus(`相機已開啟（${activeLensLabel()}，${actualResolutionText()}），等待正式拍攝請求；RTC 預覽另行連線。`);
             currentOfferId = 0;
             knownAnswerId = 0;
             restartWebrtcPolling(0);
@@ -170,7 +191,7 @@ const localVideo = document.getElementById('local-video');
     async function openRearCamera() {
         try {
             return await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: { ideal: 'environment' }, ...CAPTURE_SIZE },
+                video: { facingMode: { ideal: 'environment' }, ...captureSize() },
                 audio: false,
             });
         } catch (environmentError) {
@@ -194,15 +215,25 @@ const localVideo = document.getElementById('local-video');
         )) || null;
     }
 
-    async function switchStream(stream, deviceId) {
-        if (!deviceId || deviceIdOf(stream) === deviceId) {
+    // ideal 讓手機在不支援所選解析度時改給較低解析度。
+    function captureSize() {
+        const [width, height] = captureResolution.split('x').map(Number);
+        return { width: { ideal: width }, height: { ideal: height } };
+    }
+
+    // restart 用於同一顆鏡頭改解析度。
+    async function switchStream(stream, deviceId, restart = false) {
+        if (!restart && (!deviceId || deviceIdOf(stream) === deviceId)) {
             return stream;
         }
         // iOS 同時只能開一顆鏡頭，須先停止舊串流。
         stopStream(stream);
+        if (!deviceId) {
+            return openRearCamera();
+        }
         try {
             return await navigator.mediaDevices.getUserMedia({
-                video: { deviceId: { exact: deviceId }, ...CAPTURE_SIZE },
+                video: { deviceId: { exact: deviceId }, ...captureSize() },
                 audio: false,
             });
         } catch (switchError) {
@@ -222,7 +253,68 @@ const localVideo = document.getElementById('local-video');
             sender.replaceTrack(track).catch((error) => console.warn('RTC 預覽切換鏡頭失敗', error));
         }
         track?.addEventListener('ended', () => reportCameraDiagnostics('track_ended'), { once: true });
+        actualResolutionEl.textContent = `實際 ${actualResolutionText()}`;
         reportCameraDiagnostics('camera_started', 'granted');
+    }
+
+    function actualResolutionText() {
+        const settings = localStream?.getVideoTracks()[0]?.getSettings?.() || {};
+        const width = settings.width || localVideo.videoWidth;
+        const height = settings.height || localVideo.videoHeight;
+        return width && height ? `${width}×${height}` : '未知';
+    }
+
+    function renderCaptureOptions() {
+        resolutionSelect.replaceChildren(...Object.entries(RESOLUTION_LABELS).map(([value, label]) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            return option;
+        }));
+        resolutionSelect.value = captureResolution;
+        qualitySelect.replaceChildren(...QUALITY_OPTIONS.map((quality) => {
+            const option = document.createElement('option');
+            option.value = String(quality);
+            option.textContent = quality.toFixed(2);
+            return option;
+        }));
+        qualitySelect.value = String(jpegQuality);
+        resolutionBar.classList.remove('hidden');
+        qualityBar.classList.remove('hidden');
+    }
+
+    async function selectResolution() {
+        if (!localStream || isCapturing) {
+            resolutionSelect.value = captureResolution;
+            setStatus('拍攝中無法切換解析度，請稍後再試。');
+            return;
+        }
+        captureResolution = resolutionSelect.value;
+        storeValue(RESOLUTION_STORAGE_KEY, captureResolution);
+        resolutionSelect.disabled = true;
+        try {
+            attachStream(await switchStream(localStream, deviceIdOf(localStream), true));
+            setStatus(`已切換解析度（${actualResolutionText()}），等待正式拍攝請求。`);
+        } catch (error) {
+            failStreamSwitch(error, '解析度');
+        } finally {
+            resolutionSelect.disabled = false;
+        }
+    }
+
+    // 只影響下一次 toBlob，不需重開串流。
+    function selectQuality() {
+        jpegQuality = Number(qualitySelect.value);
+        storeValue(QUALITY_STORAGE_KEY, qualitySelect.value);
+    }
+
+    function failStreamSwitch(error, what) {
+        localStream = null;
+        [lensBar, resolutionBar, qualityBar].forEach((bar) => bar.classList.add('hidden'));
+        startPanel.classList.remove('hidden');
+        startButton.disabled = false;
+        setStatus(`切換${what}失敗：${error.name || 'Error'}，請重新開啟相機。`);
+        reportCameraFailure(error);
     }
 
     function renderLensOptions(cameras) {
@@ -247,16 +339,11 @@ const localVideo = document.getElementById('local-video');
         lensSelect.disabled = true;
         try {
             attachStream(await switchStream(localStream, deviceId));
-            saveDeviceId(deviceIdOf(localStream));
+            storeValue(LENS_STORAGE_KEY, deviceIdOf(localStream));
             lensSelect.value = deviceIdOf(localStream);
-            setStatus(`已切換鏡頭（${activeLensLabel()}），等待正式拍攝請求。`);
+            setStatus(`已切換鏡頭（${activeLensLabel()}，${actualResolutionText()}），等待正式拍攝請求。`);
         } catch (error) {
-            localStream = null;
-            lensBar.classList.add('hidden');
-            startPanel.classList.remove('hidden');
-            startButton.disabled = false;
-            setStatus(`切換鏡頭失敗：${error.name || 'Error'}，請重新開啟相機。`);
-            reportCameraFailure(error);
+            failStreamSwitch(error, '鏡頭');
         } finally {
             lensSelect.disabled = false;
         }
@@ -270,19 +357,25 @@ const localVideo = document.getElementById('local-video');
         stream.getTracks().forEach((track) => track.stop());
     }
 
-    function readSavedDeviceId() {
+    function readStored(key) {
         try {
-            return window.localStorage.getItem(LENS_STORAGE_KEY) || '';
+            return window.localStorage.getItem(key) || '';
         } catch (storageError) {
             return '';
         }
     }
 
-    function saveDeviceId(deviceId) {
+    // 已不在選項內的舊值直接忽略。
+    function pickStored(key, allowed, fallback) {
+        const saved = readStored(key);
+        return allowed.includes(saved) ? saved : fallback;
+    }
+
+    function storeValue(key, value) {
         try {
-            window.localStorage.setItem(LENS_STORAGE_KEY, deviceId);
+            window.localStorage.setItem(key, value);
         } catch (storageError) {
-            console.warn('無法記住鏡頭選擇', storageError);
+            console.warn('無法記住相機選擇', storageError);
         }
     }
 
@@ -611,7 +704,7 @@ const localVideo = document.getElementById('local-video');
                 } else {
                     reject(new Error('瀏覽器無法產生照片 blob。'));
                 }
-            }, 'image/jpeg', 0.92);
+            }, 'image/jpeg', jpegQuality);
         });
     }
 
@@ -674,6 +767,9 @@ const localVideo = document.getElementById('local-video');
             getUserMediaAvailable: Boolean(navigator.mediaDevices?.getUserMedia),
             browserOnline: navigator.onLine,
             videoSize: [localVideo.videoWidth, localVideo.videoHeight],
+            requestedResolution: captureResolution,
+            trackResolution: actualResolutionText(),
+            jpegQuality,
             videoTracks: (localStream?.getVideoTracks() || []).map((track) => ({
                 label: track.label, readyState: track.readyState, enabled: track.enabled, muted: track.muted,
             })),
@@ -691,5 +787,7 @@ const localVideo = document.getElementById('local-video');
     updateDiagnostic();
     startButton.addEventListener('click', startCamera);
     lensSelect.addEventListener('change', selectLens);
+    resolutionSelect.addEventListener('change', selectResolution);
+    qualitySelect.addEventListener('change', selectQuality);
     restartWebrtcPolling(0);
     restartCapturePolling(0);

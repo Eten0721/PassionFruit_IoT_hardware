@@ -80,7 +80,7 @@
 
 ### 手機加入與斷線恢復
 
-- 相機的操作目標為：Django 顯示依所選介面目前位址產生的相機 QR Code → iPhone 使用 Chrome 開啟 → 允許相機 → 傳送影像。維持 HTTPS 與既有相機頁；不把安裝手機信任憑證預設為必要步驟。三站間距 `19 cm` 時主鏡頭視角不足，相機頁取得權限後列出所有鏡頭供操作員選擇，選擇以 `localStorage` 記在該手機；未選過時自動選標籤含「Ultra Wide／超廣角」且不含「Front／前置」的鏡頭，找不到或開啟失敗時退回 `facingMode: environment`。拍攝中不允許切換；實際鏡頭名稱顯示於相機狀態與診斷 `videoTracks[].label`。
+- 相機的操作目標為：Django 顯示依所選介面目前位址產生的相機 QR Code → iPhone 使用 Chrome 開啟 → 允許相機 → 傳送影像。維持 HTTPS 與既有相機頁；不把安裝手機信任憑證預設為必要步驟。三站間距 `19 cm` 時主鏡頭視角不足，相機頁取得權限後列出所有鏡頭供操作員選擇，選擇以 `localStorage` 記在該手機；未選過時自動選標籤含「Ultra Wide／超廣角」且不含「Front／前置」的鏡頭，找不到或開啟失敗時退回 `facingMode: environment`。拍攝中不允許切換；實際鏡頭名稱顯示於相機狀態與診斷 `videoTracks[].label`。拍攝解析度與 JPEG 品質見[手機相機參數](#手機相機參數)。
 - 電腦所選介面的 IP 改變後，Django 更新相機 QR Code，ESP32 重新探索控制端；手機由操作員重新掃碼加入，不要求跨位址自動遷移。若已觸發失聯復原鎖，仍須處理本輪並人工重新開始。
 - 接受首次使用新位址可能出現憑證警告並需額外確認，以實機結果為準；目前 Chrome 成功經驗不代表新 IP、新電腦或新手機均可用。憑證策略與 Safari 支援尚未定案。
 - 短暫請求失敗沿用既有有界、冪等重試；一次 HTTPS timeout 不直接判定裝置失聯。只有連續失敗超過失聯門檻後，才鎖定人工復原並跳過未完成的本輪；各裝置採下述本期門檻。
@@ -247,6 +247,19 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 | Sorter pending／running deadline | 各 `30 s` |
 
 伺服移動、果實停穩與 report pending 階段不輪詢 command。Wi-Fi、HTTPS、感測、伺服 phase 與 retry 必須使用 deadline；timeout 或 `Connection: close` 後關閉並安全重建 client。
+
+### 手機相機參數
+
+| 設定 | 推薦值 | 允許值 |
+|---|---:|---:|
+| `camera_capture_resolution` | `"3840x2160"` | `"1280x720"`、`"1920x1080"`、`"2560x1440"`、`"3840x2160"` |
+| `camera_jpeg_quality` | `0.92` | `0.50～1.00`，`0.01` 的倍數 |
+
+- 只給相機頁使用：Django 以 `capture-canvas` 的 `data-*` 屬性提供，不送 ESP32、不計入 wire revision；修改後重新啟動 Django 並重新整理相機頁。
+- toml 值只是預設。相機頁「解析度」（720p／1080p／1440p／4K）與「JPEG 品質」（0.80／0.85／0.92／0.97，另含 toml 值）選單的選擇以 `localStorage` 記在該手機並優先使用；記錄值不在選項內時改用 toml 值。
+- 改解析度時以同一顆鏡頭的 `deviceId` 重開串流，失敗時沿用鏡頭切換的備援；拍攝中不允許切換。JPEG 品質只影響下一次 `toBlob`，不重開串流。
+- 缺少欄位時用推薦值；數值不合法時拒絕啟動，回報 `camera_capture_invalid_resolution` 或 `camera_capture_invalid_quality`。
+- 解析度以 `getUserMedia` 的 `ideal` 約束要求，手機不支援時給較低解析度；實際值顯示於選單旁（「實際 寬×高」）、相機狀態與診斷 `video_width`／`video_height`。JPEG 品質用於 `canvas.toBlob`。
 
 ## API
 
@@ -477,7 +490,12 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 ### 檢測與判級
 
 - 自動檢測在三張原圖全部保存後，由 Django 本地推論處理；部署不得依賴外部模型 Repository 或資料。ROI 處理後分別執行 color、wrinkle 與 local defect，再將各張特徵送入兩階段 XGBoost。
-- 超廣角鏡頭下偏離畫面中心的果實會被拉長成蛋形；ROI 前先以 `fruit_app/wide_angle.py` 做立體投影（stereographic）重投影還原圓形，ROI 與後續產物共用校正後影像，保存的原圖不變。外側站點離鏡頭較遠而顯得較小，`fruit_area_ratio` 依 ROI 中心位置乘上補償倍率，換算成果實位於畫面中心時的比例；再乘 `settings.DETECTION_FRUIT_AREA_SCALE` 換算回訓練資料的拍攝尺度（同一校定腳本算出，相機位置改變須重算）。局部瑕疵比例以果實 ROI 為分母，不需補償。`settings.DETECTION_WIDE_ANGLE_FOCAL_RATIO`＝焦距像素÷畫面長邊像素，預設 `0.38`（2026-11-17 以 17 顆實機果實校定），`None` 為不校正；以 `scripts/calibrate_wide_angle.py` 用實機照片校定，`scripts/preview_wide_angle.py` 預覽單張。
+- 超廣角校正（`fruit_app/wide_angle.py`）只在推論時套用，保存的原圖不變：
+  - 形狀：ROI 前以立體投影（stereographic）重投影整張影像，偏離中心的果實由蛋形還原為圓形；ROI 與後續產物共用校正後影像。`settings.DETECTION_WIDE_ANGLE_FOCAL_RATIO`＝焦距像素÷畫面長邊像素，描述鏡頭廣角程度；目前 `0.38`（2026-11-17 以 17 顆實機果實校定，約對應長邊視角 105°），`None` 為不校正。
+  - 站點位置面積補償：外側站點離鏡頭較遠而顯得較小。依 ROI 中心離畫面中心的距離 r 算出偏離光軸角 θ＝2·arctan(r÷2f)，`fruit_area_ratio` 乘 ((1+cosθ)÷(2cosθ))²，換算成果實位於畫面中心時的比例；第 2 站約 `1`，第 1、3 站約 `1.4～1.5`。前提為手機正對平台且三站果實在同一平面，不需鏡頭高度。
+  - 整體尺度：再乘 `settings.DETECTION_FRUIT_AREA_SCALE`（目前 `1.98`），把新平台的比例換算回 XGBoost 訓練資料尺度（訓練中位數 `0.0879`）。
+  - 局部瑕疵比例以果實 ROI 為分母，color／wrinkle／defect 模型輸入為裁切後縮放的 ROI，皆不需大小補償。
+  - 相機位置、高度或鏡頭改變後，以 `scripts/calibrate_wide_angle.py` 重新校定兩個值；`scripts/preview_wide_angle.py` 預覽單張。
 - 沿用本次交付模型的 13 個原始特徵與 3 個衍生特徵，包括 confidence；不得套用舊研究 baseline 的 7 特徵限制，決策見 [ADR-0019](adr/0019-deployed-two-stage-xgboost-grading.md)。特徵名稱與順序以模型檔為準並於載入時核對；數值須為有限值且落在 `0～1`，二元特徵只接受 `0／1`。交付模型存檔不等於分類結果 JSON。
 - 每張先判斷加工／非加工，再將非加工分為其餘三級；整顆取三張預測最低級距，`0／1／2／3` 對應加工／下等／中等／上等，再轉為既有 canonical code。沿用 [ADR-0012](adr/0012-defect-ratio-ai-contract.md)：未偵測瑕疵為 `0`，必要 ROI／推論失敗為 `null` 並待覆核，不補零硬判級距。
 - 部分失敗仍保留已取得原圖、成功產物與具體原因；無法產生的裁切或標示圖不建立，保存失敗不得顯示存檔成功。硬體尚未取得有效分類或資料尚未提交時，不得放行 Gate 3 或開始下一顆。

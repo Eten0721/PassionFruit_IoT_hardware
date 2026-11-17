@@ -64,3 +64,12 @@ sorter_low_angle = 170
 
 # 分類器「加工」角度｜推薦 180
 sorter_processing_angle = 180
+
+# 手機相機設定：只給相機頁使用，不送 ESP32；改完重新啟動 Django 後重新整理手機相機頁。
+
+# 拍攝解析度（寬x高）｜推薦 "3840x2160"｜"1280x720"、"1920x1080"、"2560x1440"、"3840x2160"
+# 手機不支援時會自動改用較低解析度；實際解析度見相機診斷的 video_width／video_height。
+camera_capture_resolution = "3840x2160"
+
+# JPEG 壓縮品質｜推薦 0.92｜0.50～1.00，0.01 的倍數
+camera_jpeg_quality = 0.92

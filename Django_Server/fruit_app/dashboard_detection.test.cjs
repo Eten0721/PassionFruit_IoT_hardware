@@ -22,11 +22,15 @@ function element(id) {
 const buttons = ['high', 'medium', 'low', 'processing'].map(element);
 element('reason-text').textContent = JSON.stringify({
     fixture_reason: '頁面提供的原因',
+    motor_failed: '測試馬達失敗說明',
+    fixture_delivery_uncertain: '無法確認是否已送達',
+    fixture_line_disconnected: 'LINE 連線中斷，送達狀態待確認',
     line_credentials_missing: '測試缺檔說明',
     line_credentials_unreadable: '測試讀取說明',
     line_credentials_invalid: '測試格式說明',
     line_credentials_incomplete: '測試缺欄位說明',
 });
+element('status-text').textContent = JSON.stringify({ idle: '待機', unknown: '未知狀態' });
 const dashboardScript = fs.readFileSync(`${__dirname}/static/fruit_app/js/dashboard.js`, 'utf8');
 function loadDashboard(storage = { getItem() { return null; }, setItem() {} }) {
     const context = vm.createContext({
@@ -57,16 +61,16 @@ let diagnosticsContext = loadDashboard(storage);
 assert.equal(element('diagnostics').hidden, true);
 element('dashboard-title').dblclick();
 assert.equal(element('diagnostics').hidden, false);
-assert.equal(element('message').textContent, '已顯示診斷資訊');
+assert.equal(element('message').textContent, '已顯示維護資訊');
 assert.equal(diagnosticsContext.window.selectionCleared, true);
-assert.equal(diagnosticsContext.window.timers.at(-1).delay, 10000);
+assert.equal(diagnosticsContext.window.timers.at(-1).delay, 5000);
 diagnosticsContext.window.timers.at(-1).handler();
 assert.equal(element('message').textContent, '');
 diagnosticsContext = loadDashboard(storage);
 assert.equal(element('diagnostics').hidden, false);
 element('dashboard-title').dblclick();
 assert.equal(element('diagnostics').hidden, true);
-assert.equal(element('message').textContent, '已隱藏診斷資訊');
+assert.equal(element('message').textContent, '已隱藏維護資訊');
 loadDashboard(storage);
 assert.equal(element('diagnostics').hidden, true);
 element('diagnostics').hidden = false;
@@ -77,14 +81,14 @@ loadDashboard({
 assert.equal(element('diagnostics').hidden, true);
 assert.doesNotThrow(() => element('dashboard-title').dblclick());
 assert.equal(element('diagnostics').hidden, false);
-assert.equal(element('message').textContent, '已顯示診斷資訊');
+assert.equal(element('message').textContent, '已顯示維護資訊');
 assert.doesNotThrow(() => element('dashboard-title').dblclick());
 assert.equal(element('diagnostics').hidden, true);
 console.log('PASS: hidden diagnostics toggle, reload persistence, selection cleanup and blocked storage.');
 
 const context = loadDashboard();
-assert.equal(vm.runInContext("reasonText('fixture_reason')", context), '頁面提供的原因（fixture_reason）');
-assert.equal(vm.runInContext("reasonText('unknown_reason')", context), 'unknown_reason');
+assert.equal(vm.runInContext("reasonText('fixture_reason')", context), '頁面提供的原因');
+assert.equal(vm.runInContext("reasonText('unknown_reason')", context), '其他狀態，詳見診斷區');
 assert.equal(vm.runInContext("reasonText('')", context), '');
 element('message').textContent = '';
 
@@ -104,7 +108,7 @@ assert.equal(render(grade, { status: 'pending' }), '已判級 → 已保存 → 
 assert.equal(render(grade, { status: 'running' }), '已判級 → 已保存 → 分槽中：控制流程執行中');
 assert.equal(render(grade, { status: 'completed' }), '已判級 → 已保存 → 分槽完成：控制流程已回報');
 assert.match(render(grade, { status: 'failed', recovery_required: true, reason: 'motor_failed' }),
-             /已保存 → 分槽失敗 → 需復原：motor_failed/);
+             /已保存 → 分槽失敗 → 需復原：測試馬達失敗說明/);
 assert.match(render(grade, { status: 'timeout', recovery_required: true, reason: 'classifier_timeout' }),
              /分槽失敗：回報逾時 → 需復原/);
 assert.match(render(grade, { status: 'not_started' }, 'failed'), /已判級 → 保存失敗 → 尚未分槽/);
@@ -145,7 +149,7 @@ badge = renderDashboard({ network: { esp32: { online: false } }, last_error_reas
 assert.equal(badge.textContent, '未連線');
 assert.equal(badge.dataset.state, 'error');
 // The reason moved from the removed #error-reason line to the state badge tooltip.
-assert.equal(element('state-badge').title, 'motor_failed');
+assert.equal(element('state-badge').title, '測試馬達失敗說明');
 renderDashboard({ work_mode: 'collection', last_error_reason: '' });
 assert.equal(element('dataset-scope').textContent, '目前模式：蒐集');
 assert.equal(element('state-badge').title, '');
@@ -176,21 +180,21 @@ notificationText = renderNotification({
     mode: 'hardware', enabled: true, configured: false,
     config_reason: 'line_credentials_missing', config_missing_fields: [],
     counts: { ...counts, pending: 1, uncertain: 1 }, paused: 0,
-    current: { status: 'uncertain', reason: '無法確認是否已送達' },
-    last_error: 'LINE 連線中斷，送達狀態待確認',
+    current: { status: 'uncertain', reason: 'fixture_delivery_uncertain' },
+    last_error: 'fixture_line_disconnected',
 });
 assert.equal(element('notification-summary-status').textContent, 'LINE 通知：開啟・待送 1');
 assert.equal(element('notification-summary-status').dataset.state, 'error');
 assert.equal(element('btn-notification-toggle').textContent, '關閉通知');
 assert.equal(element('btn-notification-toggle')['aria-pressed'], 'true');
-assert.match(notificationText, /尚未完成設定：測試缺檔說明（line_credentials_missing）/);
+assert.match(notificationText, /尚未完成設定：測試缺檔說明\n/);
 assert.match(notificationText, /本輪：送達不明，請到群組確認（無法確認是否已送達）/);
 assert.match(notificationText, /最近錯誤：LINE 連線中斷/);
 for (const [reason, description] of Object.entries(JSON.parse(element('reason-text').textContent))
     .filter(([reason]) => reason.startsWith('line_credentials_'))) {
     const missing = reason === 'line_credentials_incomplete' ? ['line_group_id', 'cloudinary_api_key'] : [];
     const configuration = { configured: false, config_reason: reason, config_missing_fields: missing };
-    const expected = `${description}（${reason}）` + (missing.length ? '；缺少欄位：line_group_id、cloudinary_api_key' : '');
+    const expected = description + (missing.length ? '；缺少欄位：line_group_id、cloudinary_api_key' : '');
     notificationText = renderNotification({ mode: 'hardware', counts, ...configuration });
     assert.ok(notificationText.includes(`尚未完成設定：${expected}`));
     context.trendState = { settings: { enabled: false, categories: {} }, line: configuration };

@@ -21,6 +21,8 @@ const context = vm.createContext({
     navigator: { userAgent: 'Test iPhone', onLine: true },
     performance: { now: () => 5000 },
 });
+// 相機頁以 data 屬性提供 hardware_params.toml 的拍攝設定。
+element('capture-canvas').dataset = { captureWidth: '3840', captureHeight: '2160', jpegQuality: '0.85' };
 vm.runInContext(fs.readFileSync(`${__dirname}/static/fruit_app/js/camera.js`, 'utf8'), context);
 
 // Exercise the same refresh action available before camera permission is granted.
@@ -107,6 +109,11 @@ assert.equal(pickDefaultCamera([{ deviceId: 'main', label: 'Back Camera' }], '')
     const fallback = await switchStream(fakeStream('back-ultra'), 'front-ultra');
     assert.equal(fallback.track.label, 'back-main');
     assert.equal(requests.at(-1).facingMode.ideal, 'environment');
+    for (const video of requests) {
+        assert.equal(video.width.ideal, 3840);
+        assert.equal(video.height.ideal, 2160);
+    }
+    assert.equal(vm.runInContext('jpegQuality', context), 0.85);
     console.log('Camera diagnostics: unavailable, live camera with failed RTC, stale frame, and lens selection checks passed.');
 })().catch((error) => { console.error(error); process.exit(1); });
 

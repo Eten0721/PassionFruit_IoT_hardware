@@ -10,7 +10,9 @@
 <body>
 <main>
     <video id="local-video" autoplay playsinline muted></video>
-    <canvas id="capture-canvas"></canvas>
+    <canvas id="capture-canvas" data-capture-width="{{ camera_capture.width }}"
+            data-capture-height="{{ camera_capture.height }}"
+            data-jpeg-quality="{{ camera_capture.jpeg_quality }}"></canvas>
 
     <div id="start-panel" class="start-panel">
         <div class="start-box">
@@ -22,6 +24,13 @@
     <div class="bottom-stack">
         <label id="lens-bar" class="lens-bar hidden">鏡頭
             <select id="camera-lens"></select>
+        </label>
+        <label id="resolution-bar" class="lens-bar hidden">解析度
+            <select id="camera-resolution"></select>
+            <span id="actual-resolution"></span>
+        </label>
+        <label id="quality-bar" class="lens-bar hidden">JPEG 品質
+            <select id="camera-quality"></select>
         </label>
         <div id="status" class="status">等待開啟相機。</div>
     </div>

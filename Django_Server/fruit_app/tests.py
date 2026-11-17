@@ -897,6 +897,21 @@ class DataCollectionFlowTests(SimpleTestCase):
         duplicate = self._upload_station(fruit_id, token, 1)
         self.assertEqual(duplicate.status_code, 409)
 
+    def test_4k_size_photo_upload_is_saved_whole(self):
+        station_payload = self._start_capture_and_ready_station_1()
+        photo = bytes(range(256)) * (4 * 1024 * 1024 // 256)
+
+        response = self.client.post('/api/upload_images/', {
+            'fruit_id': station_payload['active_fruit_id'],
+            'capture_token': str(station_payload['capture_token']),
+            'station_index': '1',
+            'image': SimpleUploadedFile('source_01.jpg', photo, content_type='image/jpeg'),
+        })
+
+        self.assertEqual(response.status_code, 200)
+        saved = self.dataset_root / 'temp' / station_payload['active_fruit_id'] / 'img_01.jpg'
+        self.assertEqual(saved.read_bytes(), photo)
+
     def test_capture_started_is_repeatable_and_returns_debug_on_conflict(self):
         station_payload = self._start_capture_and_ready_station_1()
         fruit_id = station_payload['active_fruit_id']
@@ -1169,6 +1184,31 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertNotEqual(views.APP_STATE['capture_timing_revision'], revision)
         self.assertEqual(views.APP_STATE['capture_timing']['fruit_settle_ms'], 500)
 
+    def test_camera_capture_params_reach_camera_page_without_esp32_resync(self):
+        views.reset_runtime_state()
+        views._ensure_dataset_structure()
+        revision = views.APP_STATE['capture_timing_revision']
+        page = self.client.get('/camera/').content.decode('utf-8')
+        self.assertIn('data-capture-width="3840"', page)
+        self.assertIn('data-capture-height="2160"', page)
+        self.assertIn('data-jpeg-quality="0.92"', page)
+
+        write_hardware_params(
+            self.hardware_params_path,
+            camera_capture_resolution='"2560x1440"', camera_jpeg_quality=0.85,
+        )
+        views.reset_runtime_state()
+        views._ensure_dataset_structure()
+
+        self.assertEqual(views.APP_STATE['capture_timing_revision'], revision)
+        self.assertEqual(views.APP_STATE['camera_capture'],
+                         {'width': 2560, 'height': 1440, 'jpeg_quality': 0.85})
+        page = self.client.get('/camera/').content.decode('utf-8')
+        self.assertIn('data-capture-width="2560"', page)
+        self.assertIn('data-capture-height="1440"', page)
+        self.assertIn('data-jpeg-quality="0.85"', page)
+        self.assertNotIn('camera_capture_resolution', self._esp32_command_text())
+
     def test_invalid_hardware_params_refuse_to_load(self):
         invalid_files = {
             'feeder_drive_matches_stop': {'feeder_drive_us': 1500},
@@ -1178,6 +1218,9 @@ class DataCollectionFlowTests(SimpleTestCase):
             'gate_home_matches_release': {'gate3_home_angle': 90},
             'gate_step_angle 必須以 10': {'gate_step_angle': 15},
             'gate_step_interval_ms 必須介於 20 到 200': {'gate_step_interval_ms': 250},
+            'camera_capture_invalid_resolution': {'camera_capture_resolution': '"4000x3000"'},
+            'camera_jpeg_quality 必須介於 0.50 到 1.00': {'camera_jpeg_quality': 0.4},
+            'camera_capture_invalid_quality': {'camera_jpeg_quality': 0.925},
         }
         for reason, overrides in invalid_files.items():
             with self.subTest(reason=reason):
