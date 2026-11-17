@@ -89,6 +89,14 @@ class HardwareSyncTests(SimpleTestCase):
         again = capture_timing.publish(path, {'servo_settle_ms': 250}, 100000)
         self.assertEqual(again['revision'], second['revision'])
 
+    def test_record_saved_before_a_new_parameter_is_republished(self):
+        path = views._hardware_sync_path().with_name('added-field-test.json')
+        first = capture_timing.publish(path, {'servo_settle_ms': 200}, 900000)
+        second = capture_timing.publish(
+            path, {'servo_settle_ms': 200, 'gate_step_angle': 10}, 100000)
+        self.assertGreater(second['revision'], first['revision'])
+        self.assertIsNone(second['ack'])
+
     def test_old_ack_does_not_approve_current_configuration(self):
         self.prepare()
         response = self.post('/api/esp32/report/', self.device(

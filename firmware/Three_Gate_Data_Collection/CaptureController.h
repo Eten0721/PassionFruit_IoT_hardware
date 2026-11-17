@@ -148,6 +148,7 @@ class CaptureController {
   bool triggerArmed_ = true;
   bool autoTriggerEnabled_ = false;
   String lastServerStatus_;
+  uint8_t droppedRoundPolls_ = 0;
   struct InterlockRecord {
     uint32_t schema = 1;
     uint32_t generation = 0;
@@ -228,6 +229,8 @@ class CaptureController {
   void queueClassifierFailure(const MotorCommand& command, const String& reason);
   void logCommandRejected(const MotorCommand& command, const String& reason) const;
   void queueMotorError(const MotorCommand& command, const String& reason);
+  void endSequenceAtHome();
+  bool abandonDroppedRound(const MotorCommand& command);
   void setAutoTriggerEnabled(bool enabled, const String& serverStatus);
   void registerCommandFailure(int httpCode);
   void resetCommandFailures();

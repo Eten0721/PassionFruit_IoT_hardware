@@ -52,6 +52,8 @@ void CaptureController::begin() {
 
 void CaptureController::tick() {
   uint32_t currentTime = millis();
+  // Settle waits count from the gate's arrival, so a stepped move holds the phase deadline.
+  phaseDeadlineAt_ += gates_.tick(currentTime);
 
   if (api_.setupPending()) {
     HttpResult discarded;
@@ -1054,6 +1056,13 @@ static bool servoAnglesAreValid(const TimingConfig& timing) {
   return servoAngleIsValid(timing.sorterHomeAngle);
 }
 
+static bool gateStepProfileIsValid(const TimingConfig& timing) {
+  return timing.gateStepAngle >= 10 && timing.gateStepAngle <= FirmwareConfig::kReleaseAngle &&
+         timing.gateStepAngle % 10 == 0 &&
+         timing.gateStepIntervalMS >= 20UL && timing.gateStepIntervalMS <= 200UL &&
+         timing.gateStepIntervalMS % 10UL == 0;
+}
+
 static bool servoAnglesEqual(const TimingConfig& left, const TimingConfig& right) {
   for (uint8_t index = 0; index < FirmwareConfig::kGateCount; index += 1) {
     if (left.gateHomeAngles[index] != right.gateHomeAngles[index]) return false;
@@ -1067,7 +1076,7 @@ static bool servoAnglesEqual(const TimingConfig& left, const TimingConfig& right
 bool CaptureController::timingConfigIsValid(const TimingConfig& timing) const {
   constexpr uint32_t kMinimumSettleMS = 50UL;
   constexpr uint32_t kMaximumSettleMS = 3000UL;
-  return servoAnglesAreValid(timing) &&
+  return servoAnglesAreValid(timing) && gateStepProfileIsValid(timing) &&
          timing.firstStationSettleMS >= kMinimumSettleMS &&
          timing.firstStationSettleMS <= kMaximumSettleMS &&
          timing.servoSettleMS >= kMinimumSettleMS &&
@@ -1124,6 +1133,7 @@ bool CaptureController::applyPendingTimingConfig(uint32_t currentTime) {
   appliedTiming_ = pendingTiming_;
   hasPendingTiming_ = false;
   gates_.setHomeAngles(appliedTiming_.gateHomeAngles);
+  gates_.setStepProfile(appliedTiming_.gateStepAngle, appliedTiming_.gateStepIntervalMS);
   classifier_.setAngles(appliedTiming_.sorterHomeAngle, appliedTiming_.sorterBinAngles);
   if (!saveInterlock(networkInterlocked_ ? 1 : 0)) {
     lockNetwork("recovery_persist_failed");
@@ -1147,7 +1157,11 @@ bool CaptureController::applyPendingTimingConfig(uint32_t currentTime) {
   Serial.print(" final=");
   Serial.print(appliedTiming_.finalGateReturnDelayMS);
   Serial.print(" idle_poll=");
-  Serial.println(appliedTiming_.idleCommandPollIntervalMS);
+  Serial.print(appliedTiming_.idleCommandPollIntervalMS);
+  Serial.print(" gate_step=");
+  Serial.print(appliedTiming_.gateStepAngle);
+  Serial.print("deg/");
+  Serial.println(appliedTiming_.gateStepIntervalMS);
   queueReport(
       "timing_config_applied",
       0,
@@ -1219,6 +1233,9 @@ void CaptureController::handleCommandResult(
   const MotorCommand command = api_.parseCommandText(result.body);
   if (networkInterlocked_) {
     if (command.command == "recover_network") recoverNetwork(command, currentTime);
+    return;
+  }
+  if (abandonDroppedRound(command)) {
     return;
   }
   if (command.hasAutoTriggerEnabled) {
@@ -1531,16 +1548,44 @@ void CaptureController::queueMotorError(
     const String& reason) {
   Serial.print("Motor command rejected: ");
   Serial.println(reason);
-  gates_.moveAllHome();
   setAutoTriggerEnabled(false, "motor_error");
+  endSequenceAtHome();
+  executingCommandId_ = command.commandId;
+  queueReport("motor_error", command.stationIndex, command.commandId, reason);
+}
+
+void CaptureController::endSequenceAtHome() {
+  gates_.moveAllHome();
   sequenceActive_ = false;
   clearActiveTiming();
   activeStationIndex_ = 0;
   activeCommand_ = MotorCommand();
-  executingCommandId_ = command.commandId;
+  droppedRoundPolls_ = 0;
   motionPhase_ = MotionPhase::kBootHomeSettling;
   phaseDeadlineAt_ = millis() + appliedTiming_.servoSettleMS;
-  queueReport("motor_error", command.stationIndex, command.commandId, reason);
+}
+
+bool CaptureController::abandonDroppedRound(const MotorCommand& command) {
+  // The server deleted or skipped the round this board is still holding between
+  // gates. No command will ever arrive for it, so close the gates and return to
+  // idle; otherwise the next feed is refused. Polls only follow acknowledged
+  // reports, and several answers must agree, so a round being created is never dropped.
+  const bool dropped =
+      command.hasRoundActive && !command.roundActive &&
+      (command.command == "none" || command.commandId <= 0) &&
+      sequenceActive_ && !classifierCommandActive_ && !classifier_.busy() &&
+      motionPhase_ == MotionPhase::kWaitingForCommand && !pendingReport_.active;
+  if (!dropped) {
+    droppedRoundPolls_ = 0;
+    return false;
+  }
+  droppedRoundPolls_ += 1;
+  if (droppedRoundPolls_ < FirmwareConfig::kDroppedRoundPollCount) {
+    return false;
+  }
+  Serial.println("Server dropped the active round; gates return home.");
+  endSequenceAtHome();
+  return true;
 }
 
 void CaptureController::setAutoTriggerEnabled(

@@ -101,6 +101,8 @@ def publish(path: Path, timing: dict[str, int], fingerprint: int) -> dict:
 
     Legacy firmware only accepts larger revisions. Seed above its entire old
     CRC range, then keep the number for unchanged values across Django restarts.
+    A record saved before a parameter was added differs from ``timing`` and is
+    republished like any other change.
     """
     try:
         record = json.loads(path.read_text(encoding='utf-8'))
@@ -116,7 +118,6 @@ def publish(path: Path, timing: dict[str, int], fingerprint: int) -> dict:
                 or type(record.get('revision')) is not int
                 or not 1_000_000 < record['revision'] < 2_147_483_647
                 or not isinstance(record.get('timing'), dict)
-                or set(record['timing']) != set(timing)
                 or any(type(value) is not int for value in record['timing'].values())):
             raise TimingValidationError('硬體同步紀錄格式錯誤。', 'hardware_sync_invalid')
         ack = record.get('ack')

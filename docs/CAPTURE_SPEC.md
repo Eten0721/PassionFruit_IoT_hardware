@@ -109,7 +109,7 @@
 - BOOT 以 active-low 與 `50 ms` 去抖判定，每次按下只提出一次配網請求；開機後須先放開按鍵；使用 `esp32:esp32:esp32` 的 GPIO `0`。只在無送料、Capture、Gate 3 待處理、sorter、命令或未清理果實的安全閒置開 AP；無已存設定且正常初始化完成時自動開 AP。已發生帶果實的安全鎖不能用 BOOT 繞過；從未進入實體流程、僅舊 Wi-Fi 不可達的閒置裝置仍可重新配網。
 - 進入設定模式先停用自動 trigger／新命令，使用 AP+STA 非阻塞嘗試新 Wi-Fi。已連線時以 heartbeat 的 `motion=setup` 請求中央保留安全閒置；中央回 `setup_allowed=1` 後才開 AP，期間拒絕新硬體操作，配網完成後以一般狀態回報解除保留。離線只在本機安全閒置且未保留中央阻擋時允許 BOOT 配網。拒絕時 Serial 印 `setup_blocked: <原因>`（中央拒絕為 `central_setup_blocked`），請求帶 `setup_block_reason`，Dashboard 顯示 `esp32_not_idle:<原因>`。Dashboard「開啟 ESP32 設定熱點」（`POST /api/network/setup_request/`，僅本機 Dashboard）只在配網狀態為 allowed 時接受，於 `15 s` 內以控制欄位 `setup_requested=1` 交給 ESP32；ESP32 視同按 BOOT，仍做本機安全閒置檢查與 `motion=setup` 中央許可，回報 `motion=setup` 或不可配網時中央即清除請求。頁面提供非阻塞 SSID 掃描、SSID／密碼、可選手動 Django HTTPS origin 與連線結果；允許直接輸入 SSID。設定頁所有 endpoint 只接受從設定熱點介面進來的請求，目標區網來源回 `403 setup_ap_only`。AP 跟隨 STA 頻道，開 AP 時停止 STA 的背景重連，連線新 Wi-Fi 時以掃描結果的頻道為提示，減少手機被切出熱點；設定頁斷線時提示重新連上熱點。POST 驗證 SSID 長度與 Wi-Fi 密碼格式，密碼不用 query string、回應、log 或 QR；手動 origin 只接受有效 IPv4、HTTPS 與合法 port，不接受 userinfo、任意 API path 或外網位址。
 - 候選設定先留 RAM，送出後須收到新的 STA `GOT_IP` 事件並取得目標 Wi-Fi 的有效 IP，才以一筆帶 schema version 的 Preferences 設定記錄保存；不以送出前殘留的舊連線狀態判定成功。檢查寫入結果，失敗不覆蓋上一份可用設定、不關 AP。Wi-Fi 嘗試 `15000 ms` 逾時，成功且保存完成後持續顯示結果與保留 AP，直到設定頁以 `POST /exit` 手動退出；僅在保存完成且目標 Wi-Fi 仍連線、有有效 IP 時接受，否則回 `409 setup_exit_unavailable`。退出回應後只關 AP、保留 STA，等待退出期間不恢復硬體控制。已保存後掉線回 `connecting` 與 `wifi_connection_lost`，保留 AP 與 NVS 並主動重連已保存設定。`POST /cancel` 或 BOOT 隨時取消設定：取消回應後關 AP，丟棄未保存的候選設定，恢復已保存 Wi-Fi，重複請求回 `409 setup_cancel_unavailable`；已有保存設定且設定頁 `600000 ms` 無請求時以 `setup_idle_timeout` 自動取消。無已存設定時不因閒置自動關閉。錯誤回 `wifi_connect_timeout`、`wifi_auth_failed`、`wifi_ssid_not_found`、`wifi_configuration_invalid`、`wifi_config_save_failed` 或 `setup_ap_failed`，允許修正再試；認證失敗與找不到 SSID 依 STA 斷線原因立即結束嘗試，其他原因等滿逾時。保存不以 Django／Internet 上線為條件。
-- 設定熱點密碼由 ignored `setup.local.h` 提供，範本為 `setup.example.h`；缺少有效密碼或 softAP 啟動失敗回 `setup_ap_failed`，不開放無密碼 AP；之後的 Django 請求帶 `setup_failure=setup_ap_failed`，Dashboard 配網狀態顯示此原因，直到下一次成功開 AP。無已存設定時每 `30000 ms` 重試自動開 AP。不把實際值放進 Firmware example、文件、Issue 或 log；禁止會輸出 WebServer POST 內容的 Verbose debug build。目標 Wi-Fi 密碼保存在裝置 NVS，第一版不聲稱具備抵抗實體 Flash 讀取的加密保護。一般重試不清空 NVS；更換網路不需重新燒錄。
+- 設定熱點密碼只由 ignored `setup.local.h` 提供，範本為 `setup.example.h`；缺少該檔時編譯以 `#error` 中止，不以空密碼備援。密碼無效或 softAP 啟動失敗回 `setup_ap_failed`，不開放無密碼 AP；之後的 Django 請求帶 `setup_failure=setup_ap_failed`，Dashboard 配網狀態顯示此原因，直到下一次成功開 AP。無已存設定時每 `30000 ms` 重試自動開 AP。不把實際值放進 Firmware example、文件、Issue 或 log；禁止會輸出 WebServer POST 內容的 Verbose debug build。目標 Wi-Fi 密碼保存在裝置 NVS，第一版不聲稱具備抵抗實體 Flash 讀取的加密保護。一般重試不清空 NVS；更換網路不需重新燒錄。
 - 每次啟動、Wi-Fi 重新加入或控制端確認失聯後，先用 mDNS 找 `_pf-iot._tcp`，再查詢網路資訊確認版本／身分與 URL。首輪探索最多 `15000 ms`，期間不啟動動作；找不到才試已存手動 origin，仍持續有界背景探索。多個有效控制端回 `multiple_controllers_found` 而不任選；已選定健康控制端不因背景發現別台而遷移。
 - 指向本次探索或手動驗證的 HTTPS origin 加上既有 command／report routes，移除編譯時固定 Wi-Fi 與完整 API URL 的依賴。本期沿用既有 ESP32 `setInsecure()`，不宣稱驗證 HTTPS 伺服器憑證或抵抗區網偽冒，僅適用可信任、隔離區網；正式裝置驗證另案設計。控制端、網路 revision 或 `boot_id` 改變使舊 lease 與舊動作失效；未完成流程須人工復原，不能將 report 或 command 重送到另一控制端後繼續。
 
@@ -138,8 +138,8 @@
 - Django 獨立監測即使 Dashboard 關閉仍執行，並在開始、trigger、command、report、照片保存及分類等既有入口共同以 `STATE_LOCK` 檢查安全狀態。純拍攝只依相機與所選網路判斷，不因 ESP32 缺席鎖定；WebRTC 預覽狀態不刷新／撤銷拍攝 readiness。
 - 確認失聯時：關閉 auto run／auto trigger、取消未執行命令與後續 phase、撤銷 capture token，保持已保存暫存照片供人工刪除；ESP32 先寫校正停止脈波，再取消分類器／閘門 phase，禁止 timeout 的 HomeAll。中斷命令只能回報 aborted，不回 completed，不因重連重新執行；舊 report 可被冪等確認但不能建立新拍攝、放行或送料。
 - 沿用既有原子 recovery marker 的寫入方式，保存網路失聯的 fruit／command／boot／控制端身分、reason 與 recovery generation；Django 重啟恢復鎖，ESP32 在確認失聯時以 NVS 保存 interlock 與當次校正停止脈波，重啟先恢復鎖及停止值，不能自行解除或自動歸位。保存失敗保持記憶體鎖與動作停用並回 `recovery_persist_failed`，不得宣稱復原完成。
-- 人工先刪除／隔離本輪暫存資料，再依斷電程序移除果實、確認手已離開，最後於既有主操作區明確確認復原。沿用 `recovery_confirmed=true`，新增同一 command slot 的 `recover_network` 安全歸位交握，附當前 recovery generation；ESP32 只接受人工授權後的新交握，保持送料停止，依既有停穩時序歸位並回 `network_recovery_completed`。Django 在歸位／提交階段回 `recovery_allowed=true`，僅授權復原且 `control_allowed=false`。收到相符完成 ACK 後，Django 原子保存提交階段並回 `recovery_commit=true`；ESP32 先保存本機提交狀態且維持鎖，再回 `network_recovery_committed`。Django 原子保存清鎖與 generation／完成 receipt，回 `recovery_committed=true`；ESP32 收到此回應且清鎖保存成功後才可送料，Django 也只在全部開始條件成立時建立新的 `feed_one`。重複 ACK 只重送結果、不重做歸位；失敗／再次失聯／舊 ACK 維持鎖，撤銷交握後可接受新的人工授權。資料鎖在任何模式都須先清理本輪暫存資料並明確確認；純拍攝沿用拍攝開始入口確認，且不建立 motor command。馬達鎖可保留並切到純拍攝工作，切回硬體後仍須歸位交握；硬體復原只要求清理資料、已選網、ESP32 在線與人工安全確認，不要求手機相機、HC-SR04 或設定同步，正式開始仍檢查這些條件。復原確認原因由 `network_recovery_confirm_disabled_reason` 提供，正式開始原因由 `auto_run_disabled_reason`／`photo_capture_disabled_reason` 提供。每次有效裝置請求含鎖中的命令輪詢、heartbeat 與 report 都更新其回報的能力、感測、feeder state 與 interlock；這些裝置狀態不保存，Django 重啟後視為未知。鎖種類與集中政策見 [ADR-0020](adr/0020-single-network-recovery-policy.md)。
-- 無 active fruit 不代表沒有待移除實體果實；中斷分類時已提交資料維持不回滾，仍須人工移除。檔案刪除失敗沿用既有隔離／deferred cleanup，阻擋原因顯示清楚。資料鎖期間只開放刪除／跳過暫存資料與 LINE 通知開關，阻擋停穩設定、送料校正與模式切換；馬達鎖只限制硬體操作，允許切到純拍攝並保留鎖。鎖住但沒有進行中的操作，且不在 `homing`／`committing` 交握中時，允許重新選網，供 Django 重啟後復原；選網不改變鎖種類、phase 或 generation，網路身分變更仍依既有安全檢查處理，不得解鎖。任何鎖存在時仍禁止 Dashboard 開熱點請求；連線觀察、診斷與相符復原 ACK 仍可用，復原須明確人工確認。
+- 人工先刪除／隔離本輪暫存資料，再依斷電程序移除果實、確認手已離開，最後於既有主操作區明確確認復原。沿用 `recovery_confirmed=true`，新增同一 command slot 的 `recover_network` 安全歸位交握，附當前 recovery generation；ESP32 只接受人工授權後的新交握，保持送料停止，依既有停穩時序歸位並回 `network_recovery_completed`。Django 在歸位／提交階段回 `recovery_allowed=true`，僅授權復原且 `control_allowed=false`。收到相符完成 ACK 後，Django 原子保存提交階段並回 `recovery_commit=true`；ESP32 先保存本機提交狀態且維持鎖，再回 `network_recovery_committed`。Django 原子保存清鎖與 generation／完成 receipt，回 `recovery_committed=true`；ESP32 收到此回應且清鎖保存成功後才可送料，Django 也只在全部開始條件成立時建立新的 `feed_one`。重複 ACK 只重送結果、不重做歸位；已清鎖後重送的 `network_recovery_committed` 取得與首次相同的 `recovery_committed=true` 與 `control_allowed=true`，不因該請求仍帶 interlock 而重新上鎖；失敗／再次失聯／舊 ACK 維持鎖，撤銷交握後可接受新的人工授權。資料鎖在任何模式都須先清理本輪暫存資料並明確確認；純拍攝沿用拍攝開始入口確認，且不建立 motor command。馬達鎖可保留並切到純拍攝工作，切回硬體後仍須歸位交握；硬體復原只要求清理資料、已選網、ESP32 在線與人工安全確認，不要求手機相機、HC-SR04 或設定同步，正式開始仍檢查這些條件。復原確認原因由 `network_recovery_confirm_disabled_reason` 提供，正式開始原因由 `auto_run_disabled_reason`／`photo_capture_disabled_reason` 提供。每次有效裝置請求含鎖中的命令輪詢、heartbeat 與 report 都更新其回報的能力、感測、feeder state 與 interlock；這些裝置狀態不保存，Django 重啟後視為未知。網路身分相符的 ESP32 回報較大的 recovery generation 時，Django 一律跟上並保存：ESP32 自稱鎖定時依其上鎖；未鎖定且 Django 也未鎖時只同步 generation；未鎖定但 Django 已鎖時回覆再加一，使 ESP32 上鎖後走歸位交握。保存失敗時不採用，維持 `network_identity_mismatch`。鎖種類與集中政策見 [ADR-0020](adr/0020-single-network-recovery-policy.md)。
+- 無 active fruit 不代表沒有待移除實體果實；中斷分類時已提交資料維持不回滾，仍須人工移除。檔案刪除失敗沿用既有隔離／deferred cleanup，阻擋原因顯示清楚。資料鎖期間只開放刪除／跳過暫存資料與 LINE 通知開關，阻擋停穩設定、送料校正與模式切換；馬達鎖只限制硬體操作，允許切到純拍攝並保留鎖。例外：資料鎖與馬達鎖並存、ESP32 離線，且本輪暫存資料已清理、沒有 dataset 操作與待執行命令時，允許切到純拍攝，兩種鎖都保留；資料鎖仍由純拍攝的開始入口確認，馬達鎖留到切回硬體時交握。ESP32 在線時維持阻擋。鎖住或尚未選網時，只要不在 `homing`／`committing` 交握中，一律允許重新選網，包含仍有暫存果實、分類器或 Gate 3 待復原時，供斷線與 Django 重啟後復原；使用硬體且 ESP32 離線時，未上鎖也允許重新選網，供選錯介面時修正；進行中的回合仍由網路身分變更觸發失聯鎖。選網不改變鎖種類、phase 或 generation，網路身分變更仍依既有安全檢查處理，不得解鎖。任何鎖存在時仍禁止 Dashboard 開熱點請求；連線觀察、診斷與相符復原 ACK 仍可用，復原須明確人工確認。
 - 所有門檻先於本輪下一個實體輸出檢查。分類正常時序短於失聯門檻，確認失聯前已完成的動作不能倒轉或宣稱被阻止；本期保證的是確認失聯後不再下達後續動作，須在各 phase 分別驗收。
 
 #### 手機與離線驗收前提
@@ -191,13 +191,26 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 
 | 設定 | 推薦值 | 允許範圍 |
 |---|---:|---:|
-| `first_station_settle_ms` | `500 ms` | `50～3000 ms` |
-| `servo_settle_ms` | `500 ms` | `50～3000 ms` |
-| `fruit_settle_ms` | `500 ms` | `50～3000 ms` |
-| `final_gate_return_delay_ms` | `500 ms` | `0～3000 ms` |
+| `first_station_settle_ms` | `1000 ms` | `50～3000 ms` |
+| `servo_settle_ms` | `1000 ms` | `50～3000 ms` |
+| `fruit_settle_ms` | `1000 ms` | `50～3000 ms` |
+| `final_gate_return_delay_ms` | `1000 ms` | `0～3000 ms` |
 | `idle_command_poll_interval_ms` | `250 ms` | `100～5000 ms` |
 
-上述拍攝值必須為 `50 ms` 的倍數。送料參數與拍攝值放在同一份檔案、共用 revision：
+上述拍攝值必須為 `50 ms` 的倍數。
+
+三站閘門分段轉動，避免一次轉到底造成卡果：
+
+| 設定 | 推薦值 | 允許範圍 | 間距 |
+|---|---:|---:|---:|
+| `gate_step_angle` | `10°` | `10～90°` | `10°` |
+| `gate_step_interval_ms` | `100 ms` | `20～200 ms` | `10 ms` |
+
+- 三站閘門放行與歸位都每隔 `gate_step_interval_ms` 轉 `gate_step_angle`，最後一步補足剩餘角度；同時移動的閘門同步前進。`90°` 一次到位，等同不分段，也是 Firmware 預設。
+- `servo_settle_ms`、分類流程的落果保持與共同歸位等待，都從閘門到達目標角度後才開始計時。
+- 開機後第一次歸位因起始角度未知，不分段。分類器馬達不分段。
+
+送料參數與上述參數放在同一份檔案、共用 revision：
 
 | 設定 | 推薦值 | 允許範圍 | 間距 |
 |---|---:|---:|---:|
@@ -207,7 +220,7 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 
 `feeder_drive_us` 不得等於 `feeder_stop_us`，但不限制兩者差值或驅動脈波位於停止值的哪一側。`feeder_max_run_ms` 是唯一運轉上限；Dashboard 與 Firmware 不得另設隱藏上限或靜默截斷。參數檔在該欄位註解中保留「若設定過長將導致連續送料之情形發生」警告。
 
-八項參數只來自 `Django_Server/hardware_params.toml`（決策見 [ADR-0023](adr/0023-file-based-hardware-params.md)）。Django 只在啟動時讀取並驗證上表範圍、間距與脈波規則；檔案遺失、TOML 格式錯誤、出現未知欄位或數值不合法時拒絕啟動，分別回報 `hardware_params_missing`、`hardware_params_invalid_toml`、`hardware_params_unknown_field` 或對應的 `capture_timing_*` reason。執行中沒有修改 API；修改後必須重新啟動 Django。ESP32 只在 idle、沒有 sequence／pending report、三閘門 Home 且送料馬達停止時套用，再回報 `timing_config_applied`。
+所有硬體參數只來自 `Django_Server/hardware_params.toml`（決策見 [ADR-0023](adr/0023-file-based-hardware-params.md)）。Django 只在啟動時讀取並驗證上表範圍、間距與脈波規則；檔案遺失、TOML 格式錯誤、出現未知欄位或數值不合法時拒絕啟動，分別回報 `hardware_params_missing`、`hardware_params_invalid_toml`、`hardware_params_unknown_field` 或對應的 `capture_timing_*` reason。執行中沒有修改 API；修改後必須重新啟動 Django。ESP32 只在 idle、沒有 sequence／pending report、三閘門 Home 且送料馬達停止時套用，再回報 `timing_config_applied`。
 
 `runtime_config/hardware_sync.json` 原子保存已驗證參數、wire revision 與該版本的 ACK；它是同步紀錄，不取代 TOML 設定來源。首次遷移以 `1000000 + 舊內容 CRC revision` 建立高於舊範圍的新版本；後續內容相同則保持版本，內容修改或回復舊值則取前版加一與新內容初始版本兩者較大值。版本必須小於 `2147483647`，紀錄損壞或版本耗盡時拒絕啟動，不靜默降回較小版本。只有相符的真實 `timing_config_applied` 才保存 `{boot_id, revision, applied_at}`；保存失敗回 `503 hardware_sync_save_failed`，維持未確認並讓 ESP32 重試。Django 重啟先視為未知，收到通過既有網路身分檢查且 boot 相符的裝置請求後才恢復 ACK；不同 boot 或新版本須重新回報。此紀錄不得用來恢復自動運轉、解除復原鎖或建立 motor command。
 
@@ -253,9 +266,9 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 | `POST` | `/api/esp32/report/` | ESP32 回報 trigger、station、完成或失敗 |
 | `POST` | `/api/discard/` | 跳過／刪除目前暫存果實 |
 
-分類、刪除、重置、人工判級與檢測的資料鎖（`dataset_operation`）不論成功、預期失敗或未預期例外都必須釋放。進入 `uploading` 後寫檔超過 `30 s` 轉為 `upload_timeout` error，保留已存照片並開放刪除；遲到的上傳完成回 `409 capture_state_changed_during_upload`。
+分類、刪除、重置、人工判級與檢測的資料鎖（`dataset_operation`）不論成功、預期失敗或未預期例外都必須釋放。進入 `uploading` 後寫檔超過 `30 s` 轉為 `upload_timeout` error，保留已存照片並開放刪除；遲到的上傳完成回 `409 capture_state_changed_during_upload`。每個 command poll 回應帶 `round_active`：Django 確定不會再為板端序列送出任何命令時為 `0`（沒有進行中果實、motor command、dataset 操作、分類器動作、分類器／Gate 3 待復原或 `auto_run_recovery_reason`，且 status 為 `idle`／`waiting_fruit`／`waiting_feeder`），其餘為 `1`。ESP32 在三站序列等待命令時連續 `3` 次收到 `round_active=0` 且 `command=none`，即關閉所有閘門並回到 idle，不送 report、不開啟任何閘門；回應缺少此欄位時維持等待。沒有進行中果實且分類器未動作時收到 `motor_error`（ESP32 拒絕命令並已自行歸位），Django 關閉 auto run、不進入收尾等待，並以 `auto_run_recovery_reason=motor_error` 等待下一次「開始拍攝」清除；有進行中果實時維持 error 並由刪除本輪處理。
 
-`POST /api/runtime/reset/` 只接受本機 Dashboard（否則 `409 network_local_dashboard_required`），用於狀態卡死時的開發者逃生：清空記憶體中的 capture、command、資料鎖、自動運轉與 ESP32 裝置狀態，取消已選網路並刪除 `network_recovery.json`；照片、Dataset、檢測結果、counter 與 sorter／Gate 3 復原紀錄保留，並如同 Django 啟動般從檔案恢復。不送出任何 motor command；ESP32 的 NVS 失聯鎖不受影響，仍鎖定時下一次回報會讓 Django 重新上鎖。刪除復原紀錄失敗回 `503 recovery_persist_failed`。
+`POST /api/runtime/reset/` 只接受本機 Dashboard（否則 `409 network_local_dashboard_required`），用於狀態卡死時的開發者逃生：清空記憶體中的 capture、command、資料鎖、自動運轉與 ESP32 裝置狀態，取消已選網路、解除失聯鎖並刪除 `sorter_recovery.json` 與 `gate3_recovery.json`，操作前須人工確認 Gate 3 與分類器沒有果實；recovery generation 不歸零，`network_recovery.json` 改寫為 `phase: clear` 並保留原 generation（從未上鎖過則刪除），因為 ESP32 的 generation 存於 NVS 且拒絕較小的值；照片、Dataset、檢測結果與 counter 保留，並如同 Django 啟動般從檔案恢復。不送出任何 motor command；ESP32 的 NVS 失聯鎖不受影響，仍鎖定時下一次回報會讓 Django 重新上鎖。刪除復原紀錄失敗回 `503 recovery_persist_failed`。
 
 `/api/camera/state/` 禁止快取且只讀記憶體狀態與套用 session timeout，不得掃描 Dataset 或同步 metadata／counter。手機 polling 必須 single in-flight；頁面進入背景時停止，回到前景才重啟。只有相機 stream 存在、video track 為 live、已有可擷取影格與有效尺寸時，手機才在 polling query 回報 `camera_ready=1`；Django 只在記憶體保存最後 ready 時間。每次 upload 必須帶 `fruit_id`、`capture_token` 與 `station_index`。
 
@@ -464,6 +477,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 ### 檢測與判級
 
 - 自動檢測在三張原圖全部保存後，由 Django 本地推論處理；部署不得依賴外部模型 Repository 或資料。ROI 處理後分別執行 color、wrinkle 與 local defect，再將各張特徵送入兩階段 XGBoost。
+- 超廣角鏡頭下偏離畫面中心的果實會被拉長成蛋形；ROI 前先以 `fruit_app/wide_angle.py` 做立體投影（stereographic）重投影還原圓形，ROI 與後續產物共用校正後影像，保存的原圖不變。外側站點離鏡頭較遠而顯得較小，`fruit_area_ratio` 依 ROI 中心位置乘上補償倍率，換算成果實位於畫面中心時的比例；再乘 `settings.DETECTION_FRUIT_AREA_SCALE` 換算回訓練資料的拍攝尺度（同一校定腳本算出，相機位置改變須重算）。局部瑕疵比例以果實 ROI 為分母，不需補償。`settings.DETECTION_WIDE_ANGLE_FOCAL_RATIO`＝焦距像素÷畫面長邊像素，預設 `0.38`（2026-11-17 以 17 顆實機果實校定），`None` 為不校正；以 `scripts/calibrate_wide_angle.py` 用實機照片校定，`scripts/preview_wide_angle.py` 預覽單張。
 - 沿用本次交付模型的 13 個原始特徵與 3 個衍生特徵，包括 confidence；不得套用舊研究 baseline 的 7 特徵限制，決策見 [ADR-0019](adr/0019-deployed-two-stage-xgboost-grading.md)。特徵名稱與順序以模型檔為準並於載入時核對；數值須為有限值且落在 `0～1`，二元特徵只接受 `0／1`。交付模型存檔不等於分類結果 JSON。
 - 每張先判斷加工／非加工，再將非加工分為其餘三級；整顆取三張預測最低級距，`0／1／2／3` 對應加工／下等／中等／上等，再轉為既有 canonical code。沿用 [ADR-0012](adr/0012-defect-ratio-ai-contract.md)：未偵測瑕疵為 `0`，必要 ROI／推論失敗為 `null` 並待覆核，不補零硬判級距。
 - 部分失敗仍保留已取得原圖、成功產物與具體原因；無法產生的裁切或標示圖不建立，保存失敗不得顯示存檔成功。硬體尚未取得有效分類或資料尚未提交時，不得放行 Gate 3 或開始下一顆。

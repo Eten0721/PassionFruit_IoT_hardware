@@ -93,6 +93,41 @@ class StandaloneInferenceTests(SimpleTestCase):
         self.assertEqual(self.loader.call_count, 4)
         self.assertEqual(reports[0]['models']['defect']['area_ratios']['abrasion'], 0)
 
+    def test_wide_angle_setting_rectifies_before_roi_and_scales_fruit_area(self):
+        plain, _ = detection.execute_model_batch(self.paths, self.weights)
+        rectified = np.full((24, 32, 3), 7, dtype=np.uint8)
+        with mock.patch.object(
+            detection.wide_angle, 'rectify', return_value=rectified,
+        ) as rectify, mock.patch.object(
+            detection.wide_angle, 'station_area_scale', return_value=1.5,
+        ):
+            reports, artifacts = detection.execute_model_batch(
+                self.paths, self.weights, wide_angle_focal_ratio=0.376,
+            )
+
+        self.assertEqual(rectify.call_args.args[1], 0.376)
+        self.assertIs(self.models['roi'].predict.call_args.kwargs['source'][0], rectified)
+        self.assertIs(artifacts[0]['original'], rectified)
+        self.assertAlmostEqual(
+            reports[0]['roi']['roi_area_ratio'],
+            plain[0]['roi']['roi_area_ratio'] * 1.5, places=6,
+        )
+
+    def test_fruit_area_scale_maps_ratio_to_training_setup(self):
+        plain, _ = detection.execute_model_batch(self.paths, self.weights)
+        scaled, _ = detection.execute_model_batch(
+            self.paths, self.weights, fruit_area_scale=1.5,
+        )
+
+        self.assertAlmostEqual(
+            scaled[0]['roi']['roi_area_ratio'],
+            plain[0]['roi']['roi_area_ratio'] * 1.5, places=6,
+        )
+        with self.assertRaisesRegex(ValueError, 'fruit_area_scale'):
+            detection.execute_model_batch(
+                self.paths, self.weights, fruit_area_scale=0,
+            )
+
     def test_missing_weight_does_not_download_or_load_a_model(self):
         Path(self.weights['defect']).unlink()
         with self.assertRaises(FileNotFoundError):

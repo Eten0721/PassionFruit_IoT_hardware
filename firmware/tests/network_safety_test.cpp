@@ -251,6 +251,43 @@ static void classifierLossCancelsEveryRemainingPhase() {
     assert(Fake::outputs.size() == stopped);
   }
 }
+static void droppedRoundReturnsBoardToIdle() {
+  // The server deleted the round after station 1; it answers round_active=0 from then on.
+  for (const std::string answer : {"round_active=0\n", "round_active=1\n", ""}) {
+    reset();
+    std::atomic<bool> stationReported{false};
+    std::atomic<int> idleAnswers{0};
+    std::atomic<bool> offerFeed{false};
+    Fake::bridge = [&](const Fake::Request& request) {
+      std::string payload = "command=none\n";
+      if (request.method == "POST") {
+        if (request.body.find("event=station_1_ready") == 0) stationReported = true;
+      } else if (!stationReported) {
+        payload = "command=start_sequence\ncommand_id=1\n";
+      } else if (offerFeed) {
+        payload = "command=feed_one\ncommand_id=2\nfeed_context=calibration\n" + answer;
+      } else {
+        payload += answer;
+        ++idleAnswers;
+      }
+      return controlReply(request, payload, true, false, 0);
+    };
+    CaptureController controller;
+    controller.begin();
+    pump(controller, [&] { return idleAnswers >= 1; });
+    const auto before = Fake::outputs.size();
+    pump(controller, [&] { return idleAnswers >= 8; });
+    for (int i = 0; i < 30; ++i) tick(controller, millis() + 10);
+    const bool abandoned = Fake::outputs.size() > before;
+    assert(abandoned == (answer == "round_active=0\n") && "Only an explicit round_active=0 ends the sequence");
+    for (size_t i = before; i < Fake::outputs.size(); ++i) {
+      assert(Fake::outputs[i].value != 90 && "Abandoning a round may only close gates");
+    }
+    offerFeed = true;
+    for (int i = 0; i < 80; ++i) tick(controller, millis() + 10);
+    assert(outputs(23, 1300) == (abandoned ? 1 : 0) && "The next feed runs only after the board is idle again");
+  }
+}
 static void timingProfileAppliesServoAngles() {
   reset();
   const std::string profile = "timing_revision=2\nfirst_station_settle_ms=300\nservo_settle_ms=200\nfruit_settle_ms=350\nfinal_gate_return_delay_ms=300\nidle_command_poll_interval_ms=250\nfeeder_stop_us=1500\nfeeder_drive_us=1300\nfeeder_max_run_ms=5000\ngate1_home_angle=10\ngate2_home_angle=20\ngate3_home_angle=30\nsorter_home_angle=80\nsorter_high_angle=60\nsorter_medium_angle=75\nsorter_low_angle=105\nsorter_processing_angle=120\n";
@@ -318,6 +355,7 @@ int main() {
   classifierLossCancelsEveryRemainingPhase();
   idleDeviceAdoptsServerRecoveryGeneration();
   timingProfileAppliesServoAngles();
+  droppedRoundReturnsBoardToIdle();
   for (auto& worker : Fake::workers) worker.join();
   std::cout << "Firmware network safety contracts passed.\n";
 }

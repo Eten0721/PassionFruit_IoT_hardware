@@ -84,6 +84,11 @@ SERVO_ANGLE_RECOMMENDED = {
     'sorter_low_angle': 60,
     'sorter_processing_angle': 75,
 }
+# 90° equals the release travel, so the default moves each gate in one write.
+GATE_STEP_RECOMMENDED = {
+    'gate_step_angle': RELEASE_ANGLE,
+    'gate_step_interval_ms': 100,
+}
 GATE_HOME_ANGLE_FIELDS = ('gate1_home_angle', 'gate2_home_angle', 'gate3_home_angle')
 CAPTURE_TIMING_RECOMMENDED = {
     'first_station_settle_ms': FIRST_STATION_SETTLE_MS,
@@ -95,6 +100,7 @@ CAPTURE_TIMING_RECOMMENDED = {
     'feeder_drive_us': FEEDER_DRIVE_US,
     'feeder_max_run_ms': FEEDER_MAX_RUN_MS,
     **SERVO_ANGLE_RECOMMENDED,
+    **GATE_STEP_RECOMMENDED,
 }
 CAPTURE_TIMING_FIELDS = tuple(CAPTURE_TIMING_RECOMMENDED)
 CAPTURE_TIMING_STEP_MS = 50
@@ -106,17 +112,22 @@ CAPTURE_TIMING_FIELD_LIMITS = {
     'feeder_drive_us': (1000, 2000),
     'feeder_max_run_ms': (1000, 20000),
     **{field: (0, 180) for field in SERVO_ANGLE_RECOMMENDED},
+    'gate_step_angle': (10, RELEASE_ANGLE),
+    'gate_step_interval_ms': (20, 200),
 }
 CAPTURE_TIMING_FIELD_STEPS = {
     'feeder_stop_us': 5,
     'feeder_drive_us': 10,
     'feeder_max_run_ms': 500,
     **{field: 1 for field in SERVO_ANGLE_RECOMMENDED},
+    'gate_step_angle': 10,
+    'gate_step_interval_ms': 10,
 }
 CAPTURE_TIMING_FIELD_UNITS = {
     'feeder_stop_us': 'us',
     'feeder_drive_us': 'us',
     **{field: '°' for field in SERVO_ANGLE_RECOMMENDED},
+    'gate_step_angle': '°',
 }
 ESP32_ONLINE_WINDOW_SECONDS = 6
 ESP32_START_TIMEOUT_SECONDS = 10
@@ -723,18 +734,23 @@ def feeder_test_api(request):
 def runtime_reset_api(request):
     """Developer escape hatch: forget every in-memory state and the Django network setup.
 
-    Photos, dataset files and the sorter/Gate 3 markers stay on disk and are
-    restored as at startup; the ESP32 keeps its own NVS interlock and relocks
-    Django on its next report if it is still interlocked.
+    Photos and dataset files stay on disk and are restored as at startup. The
+    network lock and the sorter and Gate 3 recovery markers are cleared, so the
+    operator must have checked Gate 3 and the sorter. The recovery generation
+    survives because the ESP32 keeps it in NVS and refuses a lower one; the
+    ESP32 also keeps its own interlock and relocks Django on its next report
+    if it is still interlocked.
     """
     reason = local_network.NETWORK.request_reason(request, local_only=True)
     if reason:
         return local_network.network_error(reason)
     with STATE_LOCK:
         try:
-            dataset_store.clear_recovery_marker(NETWORK_RECOVERY.path())
+            NETWORK_RECOVERY.forget_lock()
+            for marker in (_sorter_recovery_path(), _gate3_recovery_path()):
+                dataset_store.clear_recovery_marker(marker)
         except OSError as exc:
-            return _json_error(f'無法清除網路復原紀錄：{exc}', status=503, reason='recovery_persist_failed')
+            return _json_error(f'無法清除復原紀錄：{exc}', status=503, reason='recovery_persist_failed')
         local_network.NETWORK.clear_selection()
         reset_runtime_state()
         _ensure_dataset_structure()
@@ -827,7 +843,8 @@ def collection_options_api(request):
         APP_STATE['detection_progress'] = None
         APP_STATE['detection_error'] = None
         APP_STATE['discard_cleanup_last_monotonic'] = None
-        APP_STATE['status'] = 'idle'
+        # A data lock carried into photo-only still waits for its confirmation.
+        APP_STATE['status'] = 'error' if NETWORK_RECOVERY.needs_confirmation else 'idle'
         _ensure_dataset_structure()
         _sync_active_state_with_filesystem()
         APP_STATE['message'] = (
@@ -1375,6 +1392,16 @@ def esp32_report_api(request):
         if event == 'motor_error':
             message = data.get('message') or 'ESP32 回報馬達動作失敗。'
             _set_error_state('motor_error', message)
+            if not APP_STATE.get('active_fruit_id') and not _sorter_busy():
+                # No round exists to delete, and the board has already homed itself, so
+                # the next explicit start is the acknowledgement that clears this error.
+                _disable_auto_run()
+                APP_STATE['auto_run_finishing'] = False
+                APP_STATE['auto_run_recovery_reason'] = 'motor_error'
+                APP_STATE['message'] = (
+                    f'ESP32 拒絕指令並已自行歸位（{message}）。'
+                    '請確認導槽內沒有果實，再按「開始拍攝」繼續。'
+                )
             return JsonResponse(_compact_esp32_payload(
                 _state_payload(extra={'ok': True, 'event': event}),
             ))
@@ -1660,6 +1687,10 @@ def _finish_detection_job(operation_token, fruit_id, fruit_dir, session):
             model_options=dict(
                 getattr(settings, 'DETECTION_MODEL_OPTIONS', {})
             ),
+            wide_angle_focal_ratio=getattr(
+                settings, 'DETECTION_WIDE_ANGLE_FOCAL_RATIO', None,
+            ),
+            fruit_area_scale=getattr(settings, 'DETECTION_FRUIT_AREA_SCALE', 1.0),
             progress=lambda stage, images: _publish_detection_progress(
                 operation_token, fruit_id, stage, images,
             ),
@@ -4146,6 +4177,20 @@ def _station_from_ready_event(event):
     return _safe_int(match.group(1))
 
 
+def _board_round_expected():
+    """False only when Django is certain it will send nothing more for a board sequence.
+
+    A board still waiting between gates then closes them and returns to idle
+    instead of refusing the next feed. Anything unresolved keeps it waiting.
+    """
+    return bool(
+        APP_STATE.get('active_fruit_id') or APP_STATE.get('motor_command')
+        or APP_STATE.get('dataset_operation') or _sorter_busy()
+        or APP_STATE.get('sorter_recovery_required') or APP_STATE.get('auto_run_recovery_reason')
+        or APP_STATE.get('status') not in ('idle', 'waiting_fruit', 'waiting_feeder')
+    )
+
+
 def _esp32_command_payload():
     auto_trigger_enabled = _auto_trigger_enabled()
     timing = APP_STATE['capture_timing']
@@ -4153,6 +4198,7 @@ def _esp32_command_payload():
         'status': 'success',
         'auto_trigger_enabled': 1 if auto_trigger_enabled else 0,
         'server_status': APP_STATE['status'],
+        'round_active': 1 if _board_round_expected() else 0,
     }
     command = None if APP_STATE.get('dataset_operation') else APP_STATE.get('motor_command')
     if command and command['command'] in ('start_sequence', 'feed_one') and not _camera_is_ready():
@@ -4214,7 +4260,7 @@ def _esp32_command_payload():
         'feeder_stop_us': timing['feeder_stop_us'],
         'feeder_drive_us': timing['feeder_drive_us'],
         'feeder_max_run_ms': timing['feeder_max_run_ms'],
-        **{field: timing[field] for field in SERVO_ANGLE_RECOMMENDED},
+        **{field: timing[field] for field in (*SERVO_ANGLE_RECOMMENDED, *GATE_STEP_RECOMMENDED)},
         'message': APP_STATE['message'],
     }
 
@@ -4430,6 +4476,7 @@ def _format_command_text(payload):
     keys = [
         'status',
         'server_status',
+        'round_active',
         'auto_trigger_enabled',
         'command',
         'command_id',
@@ -4452,6 +4499,7 @@ def _format_command_text(payload):
             'feeder_drive_us',
             'feeder_max_run_ms',
             *SERVO_ANGLE_RECOMMENDED,
+            *GATE_STEP_RECOMMENDED,
         ])
         if payload.get('command') == 'feed_one':
             keys.append('feed_context')

@@ -3,11 +3,12 @@
 #include <cstring>
 #include <esp_wifi.h>
 #include "Config.h"
-#if __has_include("setup.local.h")
-#include "setup.local.h"
-#else
-const char* setupApPassword = "";
+// The hotspot password lives only in setup.local.h. A missing file stops the build
+// here, so a misnamed copy (setup.local.h.txt) cannot silently flash an empty password.
+#if !__has_include("setup.local.h")
+#error "setup.local.h not found: copy setup.example.h to setup.local.h in this folder (not setup.local.h.txt) and set setupApPassword there. Do not edit WifiSetup.cpp."
 #endif
+#include "setup.local.h"
 
 namespace {
 const char kPage[] PROGMEM = R"HTML(<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ESP32 網路設定</title>

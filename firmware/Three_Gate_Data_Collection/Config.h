@@ -14,6 +14,10 @@ constexpr uint8_t kBootPin = 0;  // Candidate for this FQBN; physical board veri
 
 constexpr int kHomeAngle = 0;
 constexpr int kReleaseAngle = 90;
+// Largest step a station gate takes per interval; kReleaseAngle moves in one write.
+// Django hardware_params.toml overrides both.
+constexpr int kGateStepAngle = 90;
+constexpr uint32_t kGateStepIntervalMS = 100UL;
 constexpr int kSorterHomeAngle = 45;
 // Basket order: high, medium, low, processing. Django hardware_params.toml overrides these.
 constexpr uint8_t kSorterBinCount = 4;
@@ -34,6 +38,8 @@ constexpr uint32_t kFeederDriveUS = 1300UL;
 constexpr uint32_t kFeederMaxRunMS = 5000UL;
 constexpr uint32_t kStartSequenceCommandPollIntervalMS = 100UL;
 constexpr uint32_t kAwaitReleaseCommandPollIntervalMS = 50UL;
+// Consecutive polls answering round_active=0 before a waiting sequence is abandoned.
+constexpr uint8_t kDroppedRoundPollCount = 3;
 
 constexpr uint32_t kServoSettleMS = 200UL;
 constexpr uint32_t kFruitSettleMS = 350UL;

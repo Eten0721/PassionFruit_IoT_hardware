@@ -30,7 +30,9 @@ notepad firmware/Three_Gate_Data_Collection/setup.local.h
 
 將 `setupApPassword` 的空字串改為自己的 `8～63` 字元可列印 ASCII 密碼。這是手機連入 ESP32 設定熱點時使用的密碼；目標 Wi-Fi 的 SSID、密碼與 Django 備援網址在燒錄後由設定頁填入。
 
-`setup.local.h` 已被 Git 忽略，不加入 Git；缺少有效密碼時韌體會回報 `setup_ap_failed`。正常使用不需要 `secrets.h` 或 `network.local.h`。完整設定與安全限制見 [配網規格](CAPTURE_SPEC.md#esp32-配網與控制端識別)。
+熱點密碼只寫在 `setup.local.h` 這一處，不需要修改 `WifiSetup.cpp` 或其他檔案。缺少 `setup.local.h` 時編譯會停在 `setup.local.h not found`；用記事本另存時確認檔名不是 `setup.local.h.txt`（檔案總管開啟「副檔名」顯示）。
+
+`setup.local.h` 已被 Git 忽略，不加入 Git；檔案存在但密碼不是 `8～63` 字元時韌體會回報 `setup_ap_failed`。正常使用不需要 `secrets.h` 或 `network.local.h`。完整設定與安全限制見 [配網規格](CAPTURE_SPEC.md#esp32-配網與控制端識別)。
 
 ## 3. 編譯與上傳
 

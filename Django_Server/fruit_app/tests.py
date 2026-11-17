@@ -1134,6 +1134,7 @@ class DataCollectionFlowTests(SimpleTestCase):
             feeder_drive_us=1310,
             gate2_home_angle=15,
             sorter_low_angle=105,
+            gate_step_angle=30,
         )
         views.reset_runtime_state()
         views._ensure_dataset_structure()
@@ -1151,6 +1152,8 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(command['gate2_home_angle'], '15')
         self.assertEqual(command['sorter_low_angle'], '105')
         self.assertEqual(command['sorter_home_angle'], '45')
+        self.assertEqual(command['gate_step_angle'], '30')
+        self.assertEqual(command['gate_step_interval_ms'], '100')
 
         acknowledged = self._report('timing_config_applied', timing_revision=revision)
         self.assertEqual(acknowledged.status_code, 200)
@@ -1173,6 +1176,8 @@ class DataCollectionFlowTests(SimpleTestCase):
             'capture_timing_out_of_range': {'idle_command_poll_interval_ms': 50},
             'capture_timing_invalid_value': {'servo_settle_ms': '"fast"'},
             'gate_home_matches_release': {'gate3_home_angle': 90},
+            'gate_step_angle 必須以 10': {'gate_step_angle': 15},
+            'gate_step_interval_ms 必須介於 20 到 200': {'gate_step_interval_ms': 250},
         }
         for reason, overrides in invalid_files.items():
             with self.subTest(reason=reason):

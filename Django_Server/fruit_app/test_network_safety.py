@@ -260,7 +260,7 @@ class NetworkSafetyTests(SimpleTestCase):
         self.assertEqual(self.client.get('/api/esp32/command/', self.device()).json()['command'], 'none')
         self.assertEqual(views.APP_STATE['network_recovery']['generation'], locked['generation'])
 
-    def test_locked_network_reselection_rejects_active_fruit(self):
+    def test_locked_network_reselection_allowed_with_active_fruit_and_keeps_lock(self):
         self.prepare()
         self.lock()
         fruit_dir = self.dataset_root / 'temp/fruit_001'
@@ -268,13 +268,13 @@ class NetworkSafetyTests(SimpleTestCase):
         (fruit_dir / 'img_01.jpg').write_bytes(b'partial photo fixture')
         views.APP_STATE['active_fruit_id'] = 'fruit_001'
         state = self.client.get('/api/state/').json()
-        self.assertFalse(state['network']['selection_allowed'])
-        self.assertEqual(state['network']['selection_disabled_reason'], 'esp32_connection_lost')
-        response = self.select()
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()['reason'], 'esp32_connection_lost')
-        self.assertEqual(self.network.snapshot()['network_revision'], state['network']['network_revision'])
-        self.assertEqual(views.APP_STATE['network_recovery'], state['network_recovery'])
+        self.assertTrue(state['network']['selection_allowed'])
+        self.assertEqual(self.select().status_code, 200)
+        self.assertEqual(views.APP_STATE['network_recovery']['phase'], 'locked')
+        self.assertTrue(views.APP_STATE['network_recovery']['data_locked'])
+        self.assertEqual(views.APP_STATE['active_fruit_id'], 'fruit_001')
+        self.assertEqual(self.network.snapshot()['network_revision'], state['network']['network_revision'] + 1)
+        self.assertEqual(self.client.get('/api/state/').json()['network_recovery'], state['network_recovery'])
 
     def test_locked_network_reselection_rejects_both_handshake_phases(self):
         self.prepare()

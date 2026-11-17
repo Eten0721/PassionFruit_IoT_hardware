@@ -15,6 +15,8 @@ struct TimingConfig {
   uint32_t feederDriveUS;
   uint32_t feederMaxRunMS;
   int gateHomeAngles[FirmwareConfig::kGateCount];
+  int gateStepAngle;
+  uint32_t gateStepIntervalMS;
   int sorterHomeAngle;
   int sorterBinAngles[FirmwareConfig::kSorterBinCount];
 
@@ -29,6 +31,8 @@ struct TimingConfig {
         feederDriveUS(0),
         feederMaxRunMS(0),
         gateHomeAngles{FirmwareConfig::kHomeAngle, FirmwareConfig::kHomeAngle, FirmwareConfig::kHomeAngle},
+        gateStepAngle(FirmwareConfig::kGateStepAngle),
+        gateStepIntervalMS(FirmwareConfig::kGateStepIntervalMS),
         sorterHomeAngle(FirmwareConfig::kSorterHomeAngle),
         sorterBinAngles{
             FirmwareConfig::kSorterBinAngles[0],
@@ -48,6 +52,8 @@ struct MotorCommand {
   TimingConfig timing;
   bool hasTimingConfig;
   String serverStatus;
+  bool hasRoundActive;
+  bool roundActive;
   String classificationCode;
   String feedContext;
 
@@ -62,6 +68,8 @@ struct MotorCommand {
         timing(),
         hasTimingConfig(false),
         serverStatus(""),
+        hasRoundActive(false),
+        roundActive(true),
         classificationCode(""),
         feedContext("") {}
 };

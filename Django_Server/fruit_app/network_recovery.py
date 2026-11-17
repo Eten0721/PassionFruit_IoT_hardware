@@ -50,10 +50,28 @@ class Policy:
 
     def ignores_motor_lock(self, operation, target_mode=None):
         kinds = self.kinds()
-        return (self.locked and not kinds['data_locked'] and kinds['motor_locked']
-                and not self.handshake_active and not self.state.get('network_persist_failed')
-                and (self.state.get('hardware_mode') == 'photo_only'
-                     or operation == 'options' and target_mode == 'photo_only'))
+        if (not self.locked or not kinds['motor_locked'] or self.handshake_active
+                or self.state.get('network_persist_failed')):
+            return False
+        leaving_hardware = operation == 'options' and target_mode == 'photo_only'
+        if kinds['data_locked']:
+            # An absent board can never acknowledge homing, so it must not trap the operator
+            # in hardware mode: once the round is cleaned up, photo-only may be chosen. Both
+            # locks stay; the data lock still needs the photo-only confirmation and the motor
+            # lock waits for hardware. A reachable board keeps the normal homing recovery.
+            return (leaving_hardware and self.state.get('hardware_mode') != 'photo_only'
+                    and not self.runtime._esp32_is_online()
+                    and self.cleanup_pending_reason() is None)
+        return self.state.get('hardware_mode') == 'photo_only' or leaving_hardware
+
+    def cleanup_pending_reason(self):
+        if self.state.get('dataset_operation'):
+            return 'dataset_operation_in_progress'
+        if self.state.get('active_fruit_id') or self.runtime._has_unclassified_temp_fruit():
+            return 'temp_fruit_exists'
+        if self.state.get('motor_command'):
+            return 'pending_motor_command'
+        return None
 
     def path(self):
         return Path(settings.MOTOR_COMMAND_SEQUENCE_PATH).with_name('network_recovery.json')
@@ -176,6 +194,9 @@ class Policy:
             self.state['recovery_generation'] = reported_generation
             self.state['network_recovery']['generation'] = reported_generation
             self.persist()
+        elif (reported_generation is not None and reported_generation > current_generation
+                and self.runtime._device_identity_matches({**dict(data.items()), 'recovery_generation': current_generation})):
+            self._adopt_device_generation(reported_generation)
         if not self.runtime._device_identity_matches(data):
             return 'network_identity_mismatch'
         previous_boot = self.state.get('esp32_boot_id')
@@ -212,10 +233,49 @@ class Policy:
         )
         # Photo-only never commands motors, so the device's own NVS lock waits until hardware mode
         # is selected again; relocking here would undo every photo-only recovery on the next poll.
+        if completing_receipt and not self.locked:
+            # A resent ACK of the handshake that already cleared the lock gets the same
+            # answer as the first one; the board unlocks when that answer arrives.
+            self.state['esp32_interlocked'] = False
         if (self.state['esp32_interlocked'] and not completing_receipt and not self.kinds()['motor_locked']
                 and (self.locked or self.state.get('hardware_mode') != 'photo_only')):
             self.lock('esp32_network_interlocked', force=True)
         return 'network_recovery_required' if restarted else None
+
+    def _adopt_device_generation(self, reported_generation):
+        """Follow a board whose NVS generation outlived this server's marker.
+
+        The board ignores any generation below its own, so refusing it would never
+        end. The generation only orders handshakes; adopting it grants nothing the
+        board's own unlocked state did not already have.
+        """
+        recovery = self.state.get('network_recovery')
+        previous = self.state.get('recovery_generation', 0)
+        # A locked server answers one above, so the unlocked board locks itself and can home.
+        generation = reported_generation + 1 if recovery else reported_generation
+        try:
+            self.runtime._write_recovery_payload(
+                self.path(), {**recovery, 'generation': generation} if recovery else self._clear_payload(generation))
+        except OSError:
+            self.state['last_error_reason'] = 'recovery_persist_failed'
+            return
+        self.state['recovery_generation'] = generation
+        if recovery:
+            recovery['generation'] = generation
+        self.runtime._record_transition('recovery_generation_adopted',
+                                        details={'previous': previous, 'generation': generation})
+
+    def _clear_payload(self, generation, receipt=None, auto_trigger_paused=False):
+        return {'phase': 'clear', 'generation': generation, 'receipt': receipt,
+                'auto_trigger_paused': auto_trigger_paused}
+
+    def forget_lock(self):
+        """Runtime reset: drop the lock but keep the generation the board still holds in NVS."""
+        generation = self.state.get('recovery_generation', 0)
+        if generation < 1:
+            self.path().unlink(missing_ok=True)
+            return
+        self.runtime._write_recovery_payload(self.path(), self._clear_payload(generation))
 
     def record_device_facts(self, data):
         # Terminal reports omit unchanged facts; omission must not erase a valid poll.
@@ -231,12 +291,9 @@ class Policy:
             self.state['esp32_feeder_sensor_state'] = sensor if sensor in ('clear', 'blocked', 'unavailable') else None
 
     def confirm_disabled_reason(self):
-        if self.state.get('dataset_operation'):
-            return 'dataset_operation_in_progress'
-        if self.state.get('active_fruit_id') or self.runtime._has_unclassified_temp_fruit():
-            return 'temp_fruit_exists'
-        if self.state.get('motor_command'):
-            return 'pending_motor_command'
+        reason = self.cleanup_pending_reason()
+        if reason:
+            return reason
         if not local_network.NETWORK.snapshot()['selected']:
             return 'network_selection_required'
         if self.state.get('hardware_mode') == 'photo_only':
@@ -292,10 +349,8 @@ class Policy:
             if retained is None:
                 self.runtime._clear_sorter_recovery_marker()
                 self.runtime._clear_gate3_recovery_marker()
-            self.runtime._write_recovery_payload(self.path(), retained or {
-                'phase': 'clear', 'generation': self.state.get('recovery_generation', 0), 'receipt': receipt,
-                'auto_trigger_paused': pause_trigger,
-            })
+            self.runtime._write_recovery_payload(self.path(), retained or self._clear_payload(
+                self.state.get('recovery_generation', 0), receipt, pause_trigger))
         except OSError:
             self.state['network_persist_failed'] = True
             self.state['last_error_reason'] = 'recovery_persist_failed'
@@ -392,8 +447,15 @@ class Policy:
         if operation == 'network':
             if self.handshake_active:
                 return 'network_recovery_in_progress'
-            if self.locked:
-                return self.reason() if self.runtime._network_operation_active() else None
+            # A lost or locked network has already stopped the round, and every recovery
+            # needs the ESP32 back online, so nothing may block choosing a network then.
+            # Selecting never releases a lock.
+            if self.locked or not local_network.NETWORK.snapshot()['selected']:
+                return None
+            # A board that is not answering may simply be on another interface; only
+            # reselecting can bring it back. A running round still trips the network lock.
+            if self.state.get('hardware_mode') != 'photo_only' and not self.runtime._esp32_is_online():
+                return None
             return self.runtime._options_disabled_reason()
         if operation in ('device', 'observation', 'start', 'options_request', 'discard', 'notification',
                          'assistant', 'counter', 'reset'):

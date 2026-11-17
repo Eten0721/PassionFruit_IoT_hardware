@@ -16,7 +16,7 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
-from . import dataset_store, grading
+from . import dataset_store, grading, wide_angle
 
 
 ARTIFACT_NAMES = (
@@ -97,7 +97,9 @@ def _predict_batch(model, role, images, device, model_options):
     return results, round((perf_counter() - started) * 1000 / len(images), 2)
 
 
-def _prepare_roi(image, result, elapsed_ms):
+def _prepare_roi(
+    image, result, elapsed_ms, wide_angle_focal_ratio=None, fruit_area_scale=1.0,
+):
     boxes = getattr(result, 'boxes', None)
     if boxes is None or not len(boxes):
         return {
@@ -125,13 +127,17 @@ def _prepare_roi(image, result, elapsed_ms):
         0, 0, 360, 255, -1,
     )
     masked = cv2.bitwise_and(crop, crop, mask=mask)
+    # Outer stations are farther from the lens; size every fruit as if centred.
+    area_scale = fruit_area_scale * wide_angle.station_area_scale(
+        image.shape, wide_angle_focal_ratio, (dx1 + dx2) / 2, (dy1 + dy2) / 2,
+    )
     roi = {
         'bbox': [round(value, 2) for value in (dx1, dy1, dx2, dy2)],
         'crop_bbox': [x1, y1, x2, y2],
         'confidence': round(float(confidences[best]), 6),
-        'roi_area_ratio': round(
-            max(0.0, dx2 - dx1) * max(0.0, dy2 - dy1) / (width * height), 8,
-        ),
+        'roi_area_ratio': round(min(1.0, area_scale * (
+            max(0.0, dx2 - dx1) * max(0.0, dy2 - dy1) / (width * height)
+        )), 8),
         'status': 'ok', 'reason': None, 'elapsed_ms': elapsed_ms,
     }
     annotated = image.copy()
@@ -275,13 +281,21 @@ def execute_model_batch(
     model_paths: dict[str, str],
     *,
     model_options: dict[str, dict] | None = None,
+    wide_angle_focal_ratio: float | None = None,
+    fruit_area_scale: float = 1.0,
     on_stage: Callable[[str, list[dict], list[dict]], None] | None = None,
 ):
     """Run the fixed deployment pipeline using installed YOLO and local weights.
 
     ``on_stage`` receives the reports and artifacts after ROI and after each
     later model, so callers can show real progress instead of guessing it.
+    ``wide_angle_focal_ratio`` restores round fruit in ultra-wide frames
+    before ROI; every artifact then shares the rectified geometry and the
+    fruit area ratio is sized as if the fruit sat at the image centre.
+    ``fruit_area_scale`` then maps that ratio onto the training camera setup.
     """
+    if not 0.1 <= float(fruit_area_scale) <= 20.0:
+        raise ValueError(f'fruit_area_scale 必須介於 0.1 與 20，目前為 {fruit_area_scale}。')
     paths = {}
     for role in MODEL_ROLES:
         path = model_paths.get(role, '')
@@ -317,7 +331,7 @@ def execute_model_batch(
         image = cv2.imdecode(np.fromfile(source, dtype=np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError(f'無法讀取圖片：{source}')
-        source_images.append(image)
+        source_images.append(wide_angle.rectify(image, wide_angle_focal_ratio))
     reports = [{
         'ok': False, 'source': str(source), 'mode': 'pipeline_batch',
         'device': device, 'model_paths': {role: str(path) for role, path in paths.items()},
@@ -340,7 +354,10 @@ def execute_model_batch(
     else:
         for index, (image, result) in enumerate(zip(source_images, results, strict=True)):
             try:
-                roi, artifacts = _prepare_roi(image, result, elapsed_ms)
+                roi, artifacts = _prepare_roi(
+                    image, result, elapsed_ms, wide_angle_focal_ratio,
+                    fruit_area_scale,
+                )
                 reports[index]['roi'] = roi
                 artifacts_list[index].update(artifacts)
                 if roi['status'] == 'ok':
@@ -671,6 +688,8 @@ def run_and_save(
     capture_time: str | None = None,
     hardware_mode: str = 'photo_only',
     model_options: dict[str, dict] | None = None,
+    wide_angle_focal_ratio: float | None = None,
+    fruit_area_scale: float = 1.0,
     progress: Callable[[str, dict], None] | None = None,
 ) -> dict:
     """Run one three-image batch, grade it and save one durable fruit result.
@@ -750,6 +769,8 @@ def run_and_save(
             image_paths,
             model_paths,
             model_options=model_options,
+            wide_angle_focal_ratio=wide_angle_focal_ratio,
+            fruit_area_scale=fruit_area_scale,
             on_stage=on_stage,
         )
         if len(reports) != len(image_paths) or len(artifacts_list) != len(image_paths):

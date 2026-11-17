@@ -587,6 +587,9 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
   command.autoTriggerEnabled = autoTriggerValue == "1" || autoTriggerValue == "true";
   command.hasAutoTriggerEnabled = autoTriggerValue.length() > 0;
   command.serverStatus = readTextValue(body, "server_status");
+  const String roundActiveValue = readTextValue(body, "round_active");
+  command.hasRoundActive = roundActiveValue.length() > 0;
+  command.roundActive = roundActiveValue != "0";
   command.classificationCode = readTextValue(body, "classification_code");
   command.feedContext = readTextValue(body, "feed_context");
 
@@ -641,6 +644,15 @@ MotorCommand DjangoApiClient::parseCommandText(const String& body) const {
       for (uint8_t index = 0; index < FirmwareConfig::kGateCount; index += 1) {
         const String value = readTextValue(body, kGateHomeKeys[index]);
         if (value.length() > 0) command.timing.gateHomeAngles[index] = value.toInt();
+      }
+      const String gateStepAngleValue = readTextValue(body, "gate_step_angle");
+      if (gateStepAngleValue.length() > 0) command.timing.gateStepAngle = gateStepAngleValue.toInt();
+      const String gateStepIntervalValue = readTextValue(body, "gate_step_interval_ms");
+      if (gateStepIntervalValue.length() > 0) {
+        const long gateStepIntervalMS = gateStepIntervalValue.toInt();
+        // Zero fails validation, so a negative value cannot wrap into range.
+        command.timing.gateStepIntervalMS =
+            gateStepIntervalMS > 0 ? static_cast<uint32_t>(gateStepIntervalMS) : 0;
       }
       const String sorterHomeValue = readTextValue(body, "sorter_home_angle");
       if (sorterHomeValue.length() > 0) command.timing.sorterHomeAngle = sorterHomeValue.toInt();

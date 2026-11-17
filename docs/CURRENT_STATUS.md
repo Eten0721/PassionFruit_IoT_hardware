@@ -1,6 +1,6 @@
 # 目前狀態
 
-更新日期：2026-10-27
+更新日期：2026-11-17
 
 本文件是可覆寫的目前快照。完成歷史由 Git、tag 與 release 保存；未完成工作的詳細規格與討論以 GitHub Issues 為準。
 
@@ -20,6 +20,7 @@
 - Capture 與 sorter 共用單一 motor command slot，command ID 跨 Django 重啟遞增；ESP32／Django 重啟或 terminal report retry 不重送實體動作，結果不確定時須於 Dashboard 確認人工安全復原。
 - 第 3 張保存後 Gate 3 保持 Home；分類先提交資料，再以 `classify_fruit` 依序完成分類器就位、Gate 3 放行與共同歸位，硬體失敗不回滾資料。
 - 送料由 HC-SR04 回授停止，另有 ESP32 本機逾時與感測失效保護；分類完成後才送下一顆，並支援優雅暫停。送料逾時可按「結束等待」結束本輪，雙端歸位後開放模式與網路設定；果實若仍經過感測器，照常觸發三站拍攝。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#安全逾時感測異常與延遲抵達)。
+- 三站閘門放行與歸位分段慢轉，預設每步 `10°`、間隔 `100 ms`，停穩與歸位等待皆為 `1000 ms` 且從閘門到位後才計時；開機第一次歸位與分類器不分段。參數在 `hardware_params.toml`，契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#硬體參數)。
 - 純拍攝完全隔離 ESP32：一次手動觸發自動拍三張，不建立 motor command。
 
 ### 裝置網路
@@ -35,6 +36,7 @@
 ### 自動檢測
 
 - 三張照片保存後，本地依序執行 ROI、color、wrinkle、defect 四個 YOLO 模型，再以兩階段 XGBoost 逐張判級，整顆取三張最低級；無法判級時由操作員人工判級或放棄本輪。
+- 手機使用超廣角鏡頭，ROI 前先以立體投影重投影校正外側站點果實的拉長，`fruit_area_ratio` 依站點位置與拍攝尺度補償；2026-11-17 以 17 顆實機果實校定 `DETECTION_WIDE_ANGLE_FOCAL_RATIO=0.38`、`DETECTION_FRUIT_AREA_SCALE=1.98`；範例照片中第三站果實長短軸比由約 `1.44` 降至 `1.06`。換相機位置須依 [部署說明 9.3](環境部署說明文件.md#93-更換相機位置後重新校定超廣角) 重校，契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#檢測與判級)。
 - 每顆保存原圖、處理圖與 `result.json`，`detection_summary.csv` 每顆一列；硬體模式保存後經 `classify_fruit` 分槽。
 - 加工果經 Cloudinary／LINE 發送圖文通知；檢測統計、三層趨勢提醒（預設關閉）與檢測報告 ZIP 匯出可用。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#檢測資料與-line-通知)。
 - 奶蛋博士唯讀 Gemini 助手可查詢統計與系統狀態。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#奶蛋博士)。
@@ -55,6 +57,7 @@
 - 交付 XGBoost 的訓練 CSV、YOLO 權重與前處理紀錄不在本機；以交付範例重算 48 顆、144 張全數一致，但不宣稱部署輸入分布與訓練一致。
 - 現有 metadata note 尚未正規化，不能直接作為模型特徵。
 - 趨勢提醒門檻尚待以實際檢測資料校正。
+- 超廣角校正後的整條判級結果尚未與人工判級比對；校正參數只適用目前相機位置。
 - 系統僅供可信任、隔離的實驗室區網使用。
 
 ## 下一步

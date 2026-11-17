@@ -107,6 +107,13 @@ DETECTION_MODEL_OPTIONS = {
     'wrinkle': {'imgsz': 320},
     'defect': {'imgsz': 1024},
 }
+# 超廣角鏡頭的邊緣拉伸校正，在 ROI 之前套用；None 表示不校正（主鏡頭）。
+# 數值 = 鏡頭焦距（像素）÷ 畫面長邊像素。
+# 由 scripts/calibrate_wide_angle.py 以實機照片校定。
+DETECTION_WIDE_ANGLE_FOCAL_RATIO = 0.38
+# 把新平台的 fruit_area_ratio 換算回訓練資料的拍攝尺度（訓練中位數 0.088）；
+# 由 scripts/calibrate_wide_angle.py 以實機照片算出，換相機位置要重算。
+DETECTION_FRUIT_AREA_SCALE = 1.98
 
 # 維護者手動編輯的硬體參數；只在 Django 啟動時讀取。
 HARDWARE_PARAMS_PATH = BASE_DIR / 'hardware_params.toml'

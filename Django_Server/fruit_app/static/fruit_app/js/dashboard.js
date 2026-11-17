@@ -1726,8 +1726,8 @@ const remoteVideo = document.getElementById('remote-video');
     async function resetRuntime(event) {
         // The button sits inside <summary>; clicking it must not fold the panel.
         event.preventDefault();
-        if (!confirm('將清空 Django 所有執行狀態並取消已選網路；照片與 dataset 會保留。'
-            + '請先確認機台停止、Gate 3 與分類器沒有果實，再繼續。')) {
+        if (!confirm('將清空 Django 所有執行狀態、取消已選網路，並清除失聯、分類器與 Gate 3 的復原紀錄；'
+            + '照片與 dataset 會保留。請先確認機台停止、Gate 3 與分類器沒有果實，再繼續。')) {
             return;
         }
         if (!beginControlAction('runtime-reset', runtimeResetButton)) {

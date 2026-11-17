@@ -234,6 +234,63 @@ static void captureAndSorterKeepExistingPhases() {
   assert(outputCount(25, 15) == 1 && outputCount(21, 90) == 1);
 }
 
+static std::vector<Fake::Output> outputsOn(int pin, uint32_t since) {
+  std::vector<Fake::Output> matches;
+  for (const auto& output : Fake::outputs) if (output.pin == pin && output.at >= since) matches.push_back(output);
+  return matches;
+}
+
+static void assertSteps(int pin, uint32_t startedAt, const std::vector<int>& angles, uint32_t intervalMS) {
+  const auto steps = outputsOn(pin, startedAt);
+  assert(steps.size() == angles.size());
+  for (size_t index = 0; index < angles.size(); ++index) {
+    assert(steps[index].value == angles[index]);
+    assert(steps[index].at == startedAt + index * intervalMS);
+  }
+}
+
+static void steppedGatesHoldSettleUntilArrival() {
+  Fake::nvs.clear();
+  Fake::reset();
+  Fake::enqueue({200, "command=none\ntiming_revision=1\nfirst_station_settle_ms=300\nservo_settle_ms=200\nfruit_settle_ms=350\nfinal_gate_return_delay_ms=300\nidle_command_poll_interval_ms=250\nfeeder_stop_us=1500\nfeeder_drive_us=1300\nfeeder_max_run_ms=5000\ngate_step_angle=30\ngate_step_interval_ms=100\n"});
+  Fake::enqueue({200, "{}"});
+  Fake::enqueue({200, command("start_sequence", 1)});
+  Fake::enqueue({200, "{}"});
+  Fake::enqueue({200, command("release_gate", 2, "station_index=1\n")});
+  Fake::enqueue({200, "{}"});
+  Fake::enqueue({200, command("release_gate", 3, "station_index=2\n")});
+  Fake::enqueue({200, "{}"});
+  Fake::enqueue({200, command("classify_fruit", 4, "classification_code=high\n")});
+  Fake::enqueue({200, "{}"});
+  CaptureController controller;
+  controller.begin();
+  pumpUntil(controller, [] { return !reports("timing_config_applied").empty(); });
+
+  pumpUntil(controller, [] { return outputCount(18, 30) == 1; });
+  const auto released = lastOutputAt(18, 30);
+  for (uint32_t time = millis() + 10; time <= released + 740; time += 10) tickAt(controller, time);
+  assertSteps(18, released, {30, 60, 90}, 100);
+  assert(reports("station_2_ready").empty());
+  // Arrival at +200, then servo_settle 200 and fruit_settle 350.
+  tickAt(controller, released + 750);
+  pumpUntil(controller, [] { return !reports("station_2_ready").empty(); });
+
+  pumpUntil(controller, [] { return outputCount(25, 15) == 1; });
+  const auto sorterStarted = lastOutputAt(25, 15);
+  for (uint32_t time = millis() + 10; time <= sorterStarted + 1690; time += 10) tickAt(controller, time);
+  assertSteps(21, sorterStarted + 500, {30, 60, 90}, 100);
+  assert(outputCount(25, 45) == 1);
+  // The drop hold counts 1000 ms from Gate 3 arriving at +700.
+  tickAt(controller, sorterStarted + 1700);
+  assert(lastOutputAt(25, 45) == sorterStarted + 1700);
+  for (uint32_t time = millis() + 10; time <= sorterStarted + 2390; time += 10) tickAt(controller, time);
+  for (int pin : {18, 19, 21}) assertSteps(pin, sorterStarted + 1700, {60, 30, 0}, 100);
+  assert(reports("classification_sorter_completed").empty());
+  // Home arrival at +1900, then the joint home settle 500.
+  tickAt(controller, sorterStarted + 2400);
+  pumpUntil(controller, [] { return !reports("classification_sorter_completed").empty(); });
+}
+
 static void sensorLatencyCannotExpireNewLegacyWait(bool timeout) {
   Fake::nvs.clear();
   Fake::reset();
@@ -274,9 +331,10 @@ int main() {
   lateFruitWhileTerminalReportIsHeld();
   unavailableWorkerDoesNotStartMotion();
   captureAndSorterKeepExistingPhases();
+  steppedGatesHoldSettleUntilArrival();
   sensorLatencyCannotExpireNewLegacyWait(false);
   sensorLatencyCannotExpireNewLegacyWait(true);
   Fake::nvs.clear();
   Fake::reset();
-  std::cout << "PASS: 14 control/network scenarios; sensor latency, exact max-run, rollover, retries, gate/sorter phases and actuator ownership\n";
+  std::cout << "PASS: 15 control/network scenarios; sensor latency, exact max-run, rollover, retries, gate/sorter phases, stepped gates and actuator ownership\n";
 }

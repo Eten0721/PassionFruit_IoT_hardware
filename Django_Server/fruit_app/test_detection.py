@@ -350,6 +350,8 @@ class DetectionFlowTests(SimpleTestCase):
             state['auto_run_recovery_reason'], 'gate3_manual_removal_required'
         )
         self.assertEqual(state['motor_command']['command'], 'none')
+        # A reachable board keeps the homing recovery mandatory.
+        views.APP_STATE['last_esp32_poll_monotonic'] = views.time.monotonic()
         switched = self._post_json('/api/collection_options/', {
             'work_mode': 'detection', 'hardware_mode': 'photo_only',
         })

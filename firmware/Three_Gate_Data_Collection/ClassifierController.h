@@ -62,6 +62,7 @@ class ClassifierController {
   String activeClassificationCode_;
   Result result_;
 
+  uint32_t sequenceTime(uint32_t currentTime) const;
   void applyStep(const ClassificationSequence::Step& step);
   void finishOperation(
       bool success,

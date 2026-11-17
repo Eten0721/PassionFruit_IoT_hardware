@@ -124,14 +124,15 @@ class NetworkOnboardingTests(SimpleTestCase):
             self.assertEqual(info['camera_url'], 'https://192.168.50.11:8443/camera/')
             self.assertEqual(self.post('/api/photo_capture/').json()['reason'], 'network_recovery_confirmation_required')
         result = self.post('/api/network/', {'interface_id': '7', 'ipv4': '192.168.50.11'})
-        self.assertEqual(result.status_code, 409)
+        self.assertEqual(result.status_code, 200)  # Reselecting stays possible with a temp fruit; the lock remains.
+        self.assertEqual(self.post('/api/photo_capture/').json()['reason'], 'network_recovery_confirmation_required')
         self.assertTrue((self.dataset_root / 'temp' / 'fruit_001' / 'img_01.jpg').exists())
         token = self.client.get('/api/state/').json()['capture_token']
         self.assertEqual(self.post('/api/discard/', {'fruit_id': 'fruit_001', 'capture_token': token}).status_code, 200)
         recovery = self.client.get('/api/state/').json()['network_recovery']
         response = self.post('/api/network/', {'interface_id': '7', 'ipv4': '192.168.50.11'})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.network.snapshot()['network_revision'], info['network_revision'] + 1)
+        self.assertEqual(self.network.snapshot()['network_revision'], info['network_revision'] + 2)
         self.assertEqual(self.client.get('/api/state/').json()['network_recovery'], recovery)
 
     def test_selected_network_photo_only_saves_three_images_and_classifies(self):

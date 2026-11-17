@@ -56,7 +56,7 @@ void ClassifierController::tick(uint32_t currentTime) {
   if (state_ != State::kRunning) {
     return;
   }
-  applyStep(sequence_.tick(currentTime));
+  applyStep(sequence_.tick(sequenceTime(currentTime)));
 }
 
 bool ClassifierController::start(
@@ -80,7 +80,7 @@ bool ClassifierController::start(
   const ClassificationSequence::Step step = sequence_.start(
       commandId,
       classificationCode.c_str(),
-      currentTime,
+      sequenceTime(currentTime),
       binAngles_);
   if (step.action == ClassificationSequence::Action::kIgnored) {
     reason = step.reason;
@@ -99,6 +99,11 @@ bool ClassifierController::start(
       : State::kRunning;
   applyStep(step);
   return true;
+}
+
+// The sequence's holds count from the gate's arrival, so its clock stops while a gate steps.
+uint32_t ClassifierController::sequenceTime(uint32_t currentTime) const {
+  return currentTime - gates_->motionMS();
 }
 
 bool ClassifierController::busy() const {
