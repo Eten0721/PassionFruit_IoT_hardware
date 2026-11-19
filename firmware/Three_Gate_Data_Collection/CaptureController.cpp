@@ -52,6 +52,7 @@ void CaptureController::begin() {
 
 void CaptureController::tick() {
   uint32_t currentTime = millis();
+  checkLocalResetButton(currentTime);
   // Settle waits count from the gate's arrival, so a stepped move holds the phase deadline.
   phaseDeadlineAt_ += gates_.tick(currentTime);
 
@@ -160,11 +161,10 @@ bool CaptureController::saveInterlock(uint8_t phase) {
   return saved;
 }
 
-void CaptureController::lockNetwork(const String& reason) {
+void CaptureController::stopAllMotion() {
   // The calibrated stop must precede cancellation and flash I/O.
   feeder_.writeMicroseconds(hasActiveTiming_ ? activeTiming_.feederStopUS : appliedTiming_.feederStopUS);
   classifier_.abort();
-  networkInterlocked_ = true;
   recoveryRunning_ = false;
   operationStarted_ = false;
   sequenceActive_ = false;
@@ -180,6 +180,11 @@ void CaptureController::lockNetwork(const String& reason) {
   lastAcceptedSentAt_ = millis();
   hasAcceptedSentAt_ = true;
   recoveryPermission_ = false;
+}
+
+void CaptureController::lockNetwork(const String& reason) {
+  stopAllMotion();
+  networkInterlocked_ = true;
   const int abortedId = activeCommand_.commandId;
   saveInterlock(1);
   pendingReport_ = PendingReport();
@@ -299,6 +304,44 @@ bool CaptureController::setupButtonPressed(uint32_t currentTime) {
   if (!bootReleased_ || bootConsumed_) return false;
   bootConsumed_ = true;
   return true;
+}
+
+// Separate from the setup debounce so a short press still opens setup at once; the
+// hold only counts after a release since boot, so a stuck-low pin never resets.
+void CaptureController::checkLocalResetButton(uint32_t currentTime) {
+  if (digitalRead(FirmwareConfig::kBootPin) != LOW) {
+    localResetArmed_ = true;
+    localResetHeld_ = false;
+    return;
+  }
+  if (!localResetArmed_) return;
+  if (!localResetHeld_) {
+    localResetHeld_ = true;
+    localResetHeldSince_ = currentTime;
+    return;
+  }
+  if (currentTime - localResetHeldSince_ < FirmwareConfig::kLocalResetHoldMS) return;
+  localResetArmed_ = false;
+  localReset(currentTime);
+}
+
+// The operator at the machine has removed the fruit; this is the only local way out of the NVS interlock.
+void CaptureController::localReset(uint32_t currentTime) {
+  if (api_.setupPending()) api_.cancelSetup();
+  setupAwaitingGrant_ = false;
+  stopAllMotion();
+  pendingReport_ = PendingReport();
+  executingCommandId_ = 0;
+  if (!saveInterlock(0)) {
+    lockNetwork("recovery_persist_failed");
+    return;
+  }
+  // The generation is kept: a server at the same generation never re-locks an unlocked idle board.
+  networkInterlocked_ = false;
+  endSequenceAtHome();
+  classifier_.home(currentTime);
+  phaseDeadlineAt_ = currentTime + ClassificationSequence::kJointHomeSettleMS;
+  Serial.println("BOOT held 10 s: interlock cleared, homing, feeder stopped.");
 }
 
 void CaptureController::checkSetupButton(uint32_t currentTime) {

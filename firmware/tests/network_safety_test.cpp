@@ -1,4 +1,5 @@
 #include "CaptureController.h"
+#include <cstring>
 #include <functional>
 #include <iostream>
 
@@ -337,6 +338,39 @@ static void rebootRestoresCalibratedStopAndNoHome() {
   assert(Fake::outputs.size() == 1);
   assert(Fake::outputs[0].pin == 23 && Fake::outputs[0].value == 1525);
 }
+static void heldBootClearsPersistedInterlock() {
+  struct Record { uint32_t schema, generation; int command; uint32_t stop; uint8_t phase; };
+  const Record locked{1, 7, 9, 1525, 2};
+  const auto stored = [] { Record r{}; std::memcpy(&r, Fake::nvs.data(), sizeof(r)); return r; };
+  // Held since power-on (stuck pin or download-mode strap) never clears the lock.
+  reset();
+  Fake::nvs.assign(reinterpret_cast<const uint8_t*>(&locked), reinterpret_cast<const uint8_t*>(&locked) + sizeof(locked));
+  Fake::bootLow = true;
+  {
+    CaptureController controller;
+    controller.begin();
+    for (int i = 0; i < 150; ++i) tick(controller, millis() + 100);
+    assert(stored().phase == 2);
+  }
+  Fake::bootLow = false;
+  reset();
+  Fake::nvs.assign(reinterpret_cast<const uint8_t*>(&locked), reinterpret_cast<const uint8_t*>(&locked) + sizeof(locked));
+  CaptureController controller;
+  controller.begin();
+  tick(controller, millis() + 10);
+  Fake::bootLow = true;
+  const uint32_t pressed = millis() + 10;
+  tick(controller, pressed);
+  tick(controller, pressed + 9990);
+  assert(stored().phase == 2);
+  const auto before = Fake::outputs.size();
+  tick(controller, pressed + 10000);
+  assert(stored().phase == 0 && stored().generation == 7 && stored().stop == 1525);
+  assert(Fake::outputs.size() > before);  // gates and classifier are sent HOME
+  Fake::bootLow = false;
+  for (int i = 0; i < 50; ++i) tick(controller, millis() + 10);
+  assert(outputs(23, 1300) == 0);  // clearing the lock never drives the feeder
+}
 int main() {
   assert(DjangoApiClient::controlValue("{\"control_allowed\": true, \"boot_id\": \"board\"}", "control_allowed") == "1");
   assert(DjangoApiClient::controlValue("{\"recovery_generation\": 7, \"boot_id\": \"board\"}", "recovery_generation") == "7");
@@ -356,6 +390,7 @@ int main() {
   idleDeviceAdoptsServerRecoveryGeneration();
   timingProfileAppliesServoAngles();
   droppedRoundReturnsBoardToIdle();
+  heldBootClearsPersistedInterlock();
   for (auto& worker : Fake::workers) worker.join();
   std::cout << "Firmware network safety contracts passed.\n";
 }
