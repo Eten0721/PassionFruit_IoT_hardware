@@ -12,10 +12,13 @@ concurrency:
 jobs:
   django:
     name: Django 測試
-    runs-on: ubuntu-latest
+    # Deployment and tests are Windows-only (msjh.ttc font, os.startfile, CREATE_NO_WINDOW).
+    runs-on: windows-latest
     steps:
-      # Tests use temp fake weights, so LFS models are not downloaded (saves LFS bandwidth).
       - uses: actions/checkout@v4
+      # YOLO tests use fake weights; only the ~1 MB XGBoost files are pulled to save LFS bandwidth.
+      - name: 下載 XGBoost 模型
+        run: git lfs pull --include "Django_Server/models/Grade*.json"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
