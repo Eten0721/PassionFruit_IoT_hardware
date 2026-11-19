@@ -30,6 +30,10 @@ jobs:
           pip install -r Django_Server/requirements.txt
       - name: 執行測試
         working-directory: Django_Server
+        # Runner TEMP is an 8.3 short path (RUNNER~1); resolved paths in tests would not match it.
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: python -s manage.py test fruit_app
 
   firmware-compile:
