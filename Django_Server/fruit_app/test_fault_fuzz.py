@@ -130,6 +130,8 @@ class FaultFuzzTests(SimpleTestCase):
             self.check_response(self.client.post('/api/runtime/reset/'))
             self.check_response(self.select())
         elif action == 'boot_hold':
+            board.poll()  # The 10 s hold spans dozens of polls: the first may only sync the generation,
+            board.poll()  # the next reports the board locked at it.
             board.interlocked = False  # ADR-0025: NVS lock cleared, generation kept.
 
     def confirm_recovery(self, board, phone):

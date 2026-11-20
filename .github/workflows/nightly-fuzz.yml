@@ -39,4 +39,4 @@ jobs:
           FAULT_FUZZ_RUNS: ${{ inputs.runs || '3000' }}
           FAULT_FUZZ_STEPS: '20'
           FAULT_FUZZ_SEED: ${{ inputs.seed || github.run_id }}
-        run: python -s manage.py test fruit_app.test_fault_fuzz
+        run: python -s manage.py test fruit_app.test_fault_fuzz fruit_app.test_operation_fuzz

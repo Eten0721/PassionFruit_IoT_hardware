@@ -29,5 +29,6 @@ ADR 記錄長期有效、跨模組或涉及安全與資料一致性的決策。�
 | [0023](0023-file-based-hardware-params.md) | Accepted | 硬體參數改由 `hardware_params.toml` 設定、重新啟動生效，取消送料校正確認 |
 | [0024](0024-explicit-feeder-wait-finish.md) | Accepted | 明確結束送料逾時等待，雙端閒置後開放模式與網路設定 |
 | [0025](0025-esp32-held-boot-local-reset.md) | Accepted | ESP32 長按 BOOT 10 秒清除失聯鎖，搭配 runtime reset 完成雙端重置 |
+| [0026](0026-confirm-after-local-reset.md) | Accepted | 長按 BOOT 後「確認安全復原」直接完成，不再等待 ESP32 會忽略的歸位交握 |
 
 完成項目的實作過程、版本進度與 commit 歷史不另建 ADR，由 Git、tag 與 release 保存。
