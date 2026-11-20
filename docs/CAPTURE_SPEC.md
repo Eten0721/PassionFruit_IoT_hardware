@@ -595,6 +595,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 
 - Django：`C:\Users\qoqoo\anaconda3\envs\PF\python.exe -s manage.py test fruit_app`
 - Firmware：以 `esp32:esp32:esp32` 與 `ESP32Servo 3.2.1` 編譯正式 sketch。
+- 情境：先執行 `firmware/tests/run_host_tests.ps1`，`test_network_firmware.py` 才以真實 C++ controller 對接 Django，否則 skip；CI 在 Django 測試前執行它。`test_recovery_scenarios.py` 以假 ESP32／手機窮舉 ESP32 重開機、Django 重啟與回應遺失出現在上鎖、確認、歸位完成任一步的單一與兩兩組合，要求人工復原 3 次內雙端解鎖，且鎖定期間不建立送料或分槽命令。
 - Repository：`git diff --check`
 - GitHub Actions：`.github/workflows/ci.yml` 在每個 PR 與 push 到 `main` 時自動執行上述三項與 `firmware/tests/run_host_tests.ps1`；Django 測試在 Windows runner 執行，LFS 只下載 `Grade*.json`。
 

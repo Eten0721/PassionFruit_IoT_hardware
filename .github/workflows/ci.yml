@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   django:
-    name: Django 測試
+    name: Django 與 Firmware host 測試
     # Deployment and tests are Windows-only (msjh.ttc font, os.startfile, CREATE_NO_WINDOW).
     runs-on: windows-latest
     steps:
@@ -28,6 +28,10 @@ jobs:
         run: |
           pip install -r Django_Server/requirements-torch.txt --index-url https://download.pytorch.org/whl/cpu
           pip install -r Django_Server/requirements.txt
+      # Builds firmware/tests/build/network_http_test.exe, so test_network_firmware drives the real C++ controller.
+      - name: Firmware host 測試
+        shell: pwsh
+        run: ./firmware/tests/run_host_tests.ps1
       - name: 執行測試
         working-directory: Django_Server
         # Runner TEMP is an 8.3 short path (RUNNER~1); resolved paths in tests would not match it.
@@ -52,15 +56,6 @@ jobs:
         run: echo 'const char* setupApPassword = "ci-build-only";' > setup.local.h
       - name: 編譯正式 sketch
         run: arduino-cli compile --fqbn esp32:esp32:esp32 firmware/Three_Gate_Data_Collection
-
-  firmware-host:
-    name: Firmware host 測試
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: 執行 host harness
-        shell: pwsh
-        run: ./firmware/tests/run_host_tests.ps1
 
   diff-check:
     name: git diff --check
