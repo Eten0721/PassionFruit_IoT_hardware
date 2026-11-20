@@ -36,7 +36,8 @@ from . import (
     trend_alerts,
     webrtc_signaling,
 )
-from .dataset_store import DatasetFileBusyError, write_recovery_payload as _write_recovery_payload
+from .dataset_store import DatasetFileBusyError
+from .dataset_store import write_recovery_payload as _write_recovery_payload  # noqa: F401 -- modules and tests reach it through views.
 from .runtime_state import RuntimeState
 from .reason_text import REASON_TEXT, STATUS_TEXT, describe as describe_reason
 from . import local_network
@@ -688,9 +689,9 @@ def set_counter_api(request):
     try:
         next_id = int(raw_value)
     except (TypeError, ValueError):
-        return _json_error('請輸入有效的起始 ID。', status=400)
+        return _json_error('請輸入有效的起始 ID。', status=400, reason='invalid_start_id')
     if next_id < 1:
-        return _json_error('起始 ID 必須大於 0。', status=400)
+        return _json_error('起始 ID 必須大於 0。', status=400, reason='invalid_start_id')
 
     with STATE_LOCK:
         mode_error = _request_dataset_mode_error(request)
@@ -701,7 +702,7 @@ def set_counter_api(request):
             return local_network.network_error(reason)
         fruit_id = dataset_store.format_fruit_id(next_id)
         if _fruit_id_exists(fruit_id):
-            return _json_error(f'{fruit_id} 已有有效資料，請先重置 dataset 或改用其他起始 ID。', status=409)
+            return _json_error(f'{fruit_id} 已有有效資料，請先重置 dataset 或改用其他起始 ID。', status=409, reason='fruit_id_exists')
         dataset_store.write_counter(_dataset_root(), next_id)
         APP_STATE['message'] = f'下一筆資料將從 {fruit_id} 開始。'
     return JsonResponse({'status': 'success', 'next_fruit_id': fruit_id})
@@ -728,7 +729,7 @@ def feeder_test_api(request):
                 reason=reason,
             )
         try:
-            command = _set_motor_command('feed_one', feed_context='calibration')
+            _set_motor_command('feed_one', feed_context='calibration')
         except CaptureCommandError as exc:
             return _json_error(exc.message, status=exc.status, reason=exc.reason)
         APP_STATE['last_error_reason'] = None
@@ -1442,7 +1443,7 @@ def recapture_api(request):
                 reason='classifier_busy',
             )
         if APP_STATE['status'] == 'uploading':
-            return _json_error('照片正在上傳中，請等待上傳完成後再重新拍攝。', status=409)
+            return _json_error('照片正在上傳中，請等待上傳完成後再重新拍攝。', status=409, reason='upload_in_progress')
         if _gate3_manual_removal_required():
             _disable_auto_run()
             return _json_error(
@@ -1458,7 +1459,7 @@ def recapture_api(request):
             )
         fruit_id = APP_STATE['active_fruit_id']
         if not fruit_id:
-            return _json_error('目前沒有可重新拍攝的資料。', status=409)
+            return _json_error('目前沒有可重新拍攝的資料。', status=409, reason='no_active_fruit')
 
         if _photo_only_session():
             return _json_error('請刪除本輪後重新開始純拍攝。', status=409, reason='photo_only_discard_required')
@@ -1472,12 +1473,12 @@ def recapture_api(request):
             )
         fruit_dir = _temp_dir() / fruit_id
         if not fruit_dir.exists():
-            return _json_error('暫存資料夾不存在，請重新建立拍攝。', status=404)
+            return _json_error('暫存資料夾不存在，請重新建立拍攝。', status=404, reason='temp_folder_missing')
 
         try:
             dataset_store.clear_temp_images(fruit_dir, clear_image_cache=_load_image_list.cache_clear)
         except DatasetFileBusyError as exc:
-            return _json_error(str(exc), status=409)
+            return _json_error(str(exc), status=409, reason='dataset_file_busy')
 
         _start_new_capture_session(
             fruit_id,
@@ -2315,19 +2316,19 @@ def upload_images_api(request):
             return options_error
         active_fruit_id = APP_STATE['active_fruit_id']
         if not active_fruit_id:
-            return _json_error('目前沒有等待上傳的 fruit 資料夾。', status=409)
+            return _json_error('目前沒有等待上傳的 fruit 資料夾。', status=409, reason='no_active_fruit')
         request_fruit_id = request.POST.get('fruit_id')
         request_capture_token = _safe_int(request.POST.get('capture_token'))
         station_index = _safe_int(request.POST.get('station_index'))
         if request_fruit_id != active_fruit_id or request_capture_token != APP_STATE['capture_token']:
-            return _json_error('上傳命令已過期，請重新拍攝。', status=409)
+            return _json_error('上傳命令已過期，請重新拍攝。', status=409, reason='stale_capture')
         if station_index != APP_STATE.get('active_station_index'):
             return _json_error('上傳站點與目前拍攝請求不符。', status=409, reason='station_mismatch')
         if APP_STATE['status'] != 'waiting_camera' or not APP_STATE['pending_capture']:
             return _json_error('目前沒有開放手機上傳照片。', status=409, reason='capture_not_requested')
         fruit_dir = _temp_dir() / active_fruit_id
         if not fruit_dir.exists():
-            return _json_error('暫存資料夾不存在，請重新拍攝。', status=404)
+            return _json_error('暫存資料夾不存在，請重新拍攝。', status=404, reason='temp_folder_missing')
         target_filename = IMAGE_FILENAMES[station_index - 1]
         if (fruit_dir / target_filename).exists():
             return _json_error(f'第 {station_index} 站照片已存在，請勿重複上傳。', status=409, reason='duplicate_station_image')
@@ -2366,7 +2367,7 @@ def upload_images_api(request):
 
     with STATE_LOCK:
         if active_fruit_id != APP_STATE['active_fruit_id'] or request_capture_token != APP_STATE['capture_token']:
-            return _json_error('上傳完成時拍攝命令已過期，請重新拍攝。', status=409)
+            return _json_error('上傳完成時拍攝命令已過期，請重新拍攝。', status=409, reason='stale_capture')
         if APP_STATE.get('status') != 'uploading' or (not photo_only and APP_STATE.get('esp32_boot_id') != upload_boot_id):
             if not photo_only and APP_STATE.get('esp32_boot_id') != upload_boot_id:
                 _set_capture_restart_recovery(active_fruit_id, photo_saved=True)
@@ -2494,13 +2495,13 @@ def classify_api(request):
             if data.get('fruit_id') != fruit_id or _safe_int(data.get('capture_token')) != APP_STATE['capture_token']:
                 return _json_error('本輪資料已變更，請重新確認照片。', status=409, reason='stale_capture')
         if not fruit_id:
-            return _json_error('目前沒有可分類的暫存資料。', status=409)
+            return _json_error('目前沒有可分類的暫存資料。', status=409, reason='no_active_fruit')
 
         src_dir = _temp_dir() / fruit_id
         if not src_dir.exists():
-            return _json_error('暫存資料夾不存在，請重新拍攝。', status=404)
+            return _json_error('暫存資料夾不存在，請重新拍攝。', status=404, reason='temp_folder_missing')
         if APP_STATE['status'] != 'uploaded' or dataset_store.temp_image_count(src_dir) != IMAGE_COUNT:
-            return _json_error(f'{fruit_id} 尚未完成 {IMAGE_COUNT} 張照片上傳。', status=409)
+            return _json_error(f'{fruit_id} 尚未完成 {IMAGE_COUNT} 張照片上傳。', status=409, reason='capture_incomplete')
         photo_only = _photo_only_session()
         if not photo_only:
             reason = _sorter_start_disabled_reason()
@@ -2517,11 +2518,11 @@ def classify_api(request):
                 if not dest_dir.exists():
                     dataset_store.remove_ignored_reset_path(_dataset_root(), dest_dir)
                 else:
-                    return _json_error(moved_warning, status=409)
+                    return _json_error(moved_warning, status=409, reason='dataset_destination_exists')
             else:
-                return _json_error(f'{label}/{fruit_id} 已存在，請調整 counter 或先整理資料夾。', status=409)
+                return _json_error(f'{label}/{fruit_id} 已存在，請調整 counter 或先整理資料夾。', status=409, reason='dataset_destination_exists')
         if dest_dir.exists():
-            return _json_error(f'{label}/{fruit_id} 已存在，請調整 counter 或先整理資料夾。', status=409)
+            return _json_error(f'{label}/{fruit_id} 已存在，請調整 counter 或先整理資料夾。', status=409, reason='dataset_destination_exists')
         relative_path = f'{label}/{fruit_id}'
         capture_time = APP_STATE['capture_time'] or _now_string()
         classification_code = CLASSIFICATION_CODES[label]
@@ -2644,7 +2645,7 @@ def discard_api(request):
         if APP_STATE.get('dataset_operation'):
             return _json_error('已有 dataset 檔案操作進行中，請稍後再試。', status=409, reason='dataset_busy')
         if APP_STATE['status'] == 'uploading':
-            return _json_error('照片正在上傳中，請等待上傳完成後再刪除。', status=409)
+            return _json_error('照片正在上傳中，請等待上傳完成後再刪除。', status=409, reason='upload_in_progress')
         active_fruit_id = APP_STATE['active_fruit_id']
         fruit_id = _discardable_fruit_id()
         data = _request_data(request)
@@ -2661,7 +2662,7 @@ def discard_api(request):
             if data.get('fruit_id') != fruit_id or stale_capture:
                 return _json_error('本輪資料已變更，請重新確認照片。', status=409, reason='stale_capture')
         if not fruit_id:
-            return _json_error('目前沒有可刪除的暫存資料。', status=409)
+            return _json_error('目前沒有可刪除的暫存資料。', status=409, reason='no_active_fruit')
 
         gate3_waiting = _gate3_manual_removal_required()
         if gate3_waiting:
@@ -2771,7 +2772,7 @@ def reset_dataset_api(request):
         if APP_STATE.get('dataset_operation'):
             return _json_error('已有 dataset 檔案操作進行中，請稍後再試。', status=409, reason='dataset_busy')
         if APP_STATE['status'] == 'uploading':
-            return _json_error('照片正在上傳中，請等待上傳完成後再重置 dataset。', status=409)
+            return _json_error('照片正在上傳中，請等待上傳完成後再重置 dataset。', status=409, reason='upload_in_progress')
         if _gate3_manual_removal_required():
             _disable_auto_run()
             return _json_error(
@@ -2911,7 +2912,7 @@ def export_detection_api(request):
             return _json_error('已有 dataset 檔案操作進行中，請稍後再試。', status=409,
                                reason='dataset_busy')
         detection_root = _dataset_root()
-    stream = tempfile.TemporaryFile()  # Deleted when FileResponse closes it.
+    stream = tempfile.TemporaryFile()  # noqa: SIM115 -- FileResponse closes and deletes it.
     try:
         exported = detection_report.write_export(
             detection_root, stream, include_results=include_results == '1')
@@ -2930,7 +2931,7 @@ def webrtc_offer_api(request):
     data = _request_data(request)
     offer = data.get('offer') or data.get('description') or data
     if not _is_session_description(offer, 'offer'):
-        return _json_error('WebRTC offer 格式不正確。', status=400)
+        return _json_error('WebRTC offer 格式不正確。', status=400, reason='invalid_webrtc_offer')
 
     with STATE_LOCK:
         reason = local_network.NETWORK.request_reason(request)
@@ -2947,7 +2948,7 @@ def webrtc_answer_api(request):
     data = _request_data(request)
     answer = data.get('answer') or data.get('description') or data
     if not _is_session_description(answer, 'answer'):
-        return _json_error('WebRTC answer 格式不正確。', status=400)
+        return _json_error('WebRTC answer 格式不正確。', status=400, reason='invalid_webrtc_answer')
 
     with STATE_LOCK:
         reason = local_network.NETWORK.request_reason(request)
@@ -2965,7 +2966,7 @@ def webrtc_ice_api(request):
     role = data.get('role')
     candidate = data.get('candidate')
     if role not in ('dashboard', 'camera'):
-        return _json_error('role 必須是 dashboard 或 camera。', status=400)
+        return _json_error('role 必須是 dashboard 或 camera。', status=400, reason='invalid_webrtc_role')
     if not candidate:
         return JsonResponse({'status': 'success', 'ignored': True})
 

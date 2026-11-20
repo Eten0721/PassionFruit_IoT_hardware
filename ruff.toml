@@ -1,0 +1,14 @@
+# Lint rules enforced by CI; see docs/CAPTURE_SPEC.md#自動化.
+target-version = "py314"
+line-length = 120
+extend-exclude = ["firmware/tests/build"]
+
+[lint]
+# E9/F: syntax and pyflakes; B: likely bugs; E722/S110: no silently swallowed errors; SIM115: files are closed.
+select = ["E9", "F", "B", "E722", "S110", "SIM115"]
+# zip() lengths are checked by callers; strict= would turn report drawing into crashes.
+ignore = ["B905"]
+
+[lint.per-file-ignores]
+# Test closures run inside the same loop iteration.
+"**/test_*.py" = ["B023"]

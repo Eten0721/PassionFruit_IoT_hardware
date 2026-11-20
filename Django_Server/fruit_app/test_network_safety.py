@@ -4,7 +4,7 @@ from unittest import mock
 
 from django.test import SimpleTestCase
 from . import dataset_store
-from . import views, local_network
+from . import views
 from . import test_network as onboarding
 
 

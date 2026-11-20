@@ -9,7 +9,6 @@ from unittest import mock
 
 from django.test import RequestFactory, SimpleTestCase
 
-from . import dataset_store
 from . import views
 from .test_assistant import FakeGemini, _candidate
 
