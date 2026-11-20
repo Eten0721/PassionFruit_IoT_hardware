@@ -283,6 +283,8 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 
 `POST /api/runtime/reset/` 只接受本機 Dashboard（否則 `409 network_local_dashboard_required`），用於狀態卡死時的開發者逃生：清空記憶體中的 capture、command、資料鎖、自動運轉與 ESP32 裝置狀態，取消已選網路、解除失聯鎖並刪除 `sorter_recovery.json` 與 `gate3_recovery.json`，操作前須人工確認 Gate 3 與分類器沒有果實；recovery generation 不歸零，`network_recovery.json` 改寫為 `phase: clear` 並保留原 generation（從未上鎖過則刪除），因為 ESP32 的 generation 存於 NVS 且拒絕較小的值；照片、Dataset、檢測結果與 counter 保留，並如同 Django 啟動般從檔案恢復。不送出任何 motor command；ESP32 的 NVS 失聯鎖不受影響，仍鎖定時下一次回報會讓 Django 重新上鎖。刪除復原紀錄失敗回 `503 recovery_persist_failed`。
 
+`GET /api/diagnostics/export/` 只接受本機 Dashboard（否則 `409 network_local_dashboard_required`），下載 `diagnostics_YYYYMMDD_HHMMSS.zip`：`state.json`（`/api/state/` 內容）、`runtime_config/` 白名單檔（`motor_command_sequence.json`、`network_recovery.json`、`sorter_recovery.json`、`gate3_recovery.json`、`dataset_options.json`、`hardware_sync.json`）與 `diagnostic_events.jsonl`、各分區 `temp/*/` 的 `.capture-session.json`／`.detection-terminal` 及檔名清單；不含照片、金鑰檔與通知內容。`diagnostic_events.jsonl` 存每筆 transition 與每段連續相同的 4xx／5xx 拒絕（status、reason、message），重啟與 runtime reset 後保留，超過 `1 MB` 時捨棄較舊的一半。寫檔失敗只記 log，不影響流程；匯出失敗回 `500 diagnostics_export_failed`。Dashboard 入口在開發者模式「診斷與流程紀錄」。
+
 `/api/camera/state/` 禁止快取且只讀記憶體狀態與套用 session timeout，不得掃描 Dataset 或同步 metadata／counter。手機 polling 必須 single in-flight；頁面進入背景時停止，回到前景才重啟。只有相機 stream 存在、video track 為 live、已有可擷取影格與有效尺寸時，手機才在 polling query 回報 `camera_ready=1`；Django 只在記憶體保存最後 ready 時間。每次 upload 必須帶 `fruit_id`、`capture_token` 與 `station_index`。
 
 `POST /api/camera/diagnostics/` 接受最多 `4096 bytes` 的 JSON object，網路身分檢查沿用相機 state API；不符回 `409` 與原網路原因碼，不保存。成功回 `200 {"ok": true}`。白名單如下，除 `event` 必填外皆選填，省略或 `null` 均保存為 `null`：

@@ -399,6 +399,8 @@
                         <div><dt>馬達命令</dt><dd id="motor-command">none</dd></div>
                         <div><dt>原因代碼</dt><dd id="reason-codes" class="reason-codes">無</dd></div>
                     </dl>
+                    <p class="control-guidance">卡住時先按「匯出診斷包」再重置：ZIP 含目前狀態、復原紀錄與重啟後仍保留的事件紀錄，不含照片與金鑰。</p>
+                    <a id="btn-diagnostics-export" class="button secondary" href="{% url 'diagnostics_export_api' %}" download>匯出診斷包</a>
                 <dl class="sorter-summary">
                     <div><dt>硬體分類器</dt><dd id="sorter-status">閒置</dd></div>
                     <div><dt>分類器資料</dt><dd id="sorter-fruit">無</dd></div>
