@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import csv
 import json
+import logging
 import shutil
 import threading
 import uuid
@@ -17,6 +18,8 @@ import cv2
 import numpy as np
 
 from . import dataset_store, grading, wide_angle
+
+logger = logging.getLogger(__name__)
 
 
 ARTIFACT_NAMES = (
@@ -272,8 +275,8 @@ def _summarise_role(role, ready_indices, results, elapsed_ms, reports, artifacts
         if role == 'defect':
             try:
                 artifacts_list[index]['defect_marked'] = render_defect_marked(result)
-            except Exception:
-                pass  # Optional farmer preview falls back to the original image.
+            except Exception:  # Optional farmer preview falls back to the original image.
+                logger.warning('Defect preview render failed', exc_info=True)
 
 
 def execute_model_batch(
@@ -548,7 +551,7 @@ def _finalise(
         try:
             upsert_summary(summary_path, result, replace=replace)
         except Exception:
-            pass
+            logger.exception('detection_summary.csv update failed for %s', summary_path)
         return result
     try:
         upsert_summary(summary_path, result, replace=replace)
@@ -754,8 +757,8 @@ def run_and_save(
             return
         try:
             progress(stage, copy.deepcopy(images))
-        except Exception:
-            pass  # Progress is display-only; it must not change the result.
+        except Exception:  # Progress is display-only; it must not change the result.
+            logger.warning('Detection progress callback failed', exc_info=True)
 
     def on_stage(stage, reports, artifacts_list):
         apply_reports(

@@ -596,7 +596,8 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 - Django：`C:\Users\qoqoo\anaconda3\envs\PF\python.exe -s manage.py test fruit_app`
 - Firmware：以 `esp32:esp32:esp32` 與 `ESP32Servo 3.2.1` 編譯正式 sketch。
 - Repository：`git diff --check`
-- GitHub Actions：`.github/workflows/ci.yml` 在每個 PR 與 push 到 `main` 時自動執行上述三項與 `firmware/tests/run_host_tests.ps1`；Django 測試在 Windows runner 執行，LFS 只下載 `Grade*.json`。
+- Lint：`ruff check .`，規則在 `ruff.toml`；專案專用規則寫成 `fruit_app/test_project_rules.py`（4xx／5xx JSON 回應必帶 `reason`），隨 Django 測試執行。
+- GitHub Actions：`.github/workflows/ci.yml` 在每個 PR 與 push 到 `main` 時自動執行上述各項與 `firmware/tests/run_host_tests.ps1`；Django 測試在 Windows runner 執行，LFS 只下載 `Grade*.json`。
 
 ### 實機
 

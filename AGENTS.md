@@ -60,7 +60,7 @@ cd Django_Server
 C:\Users\qoqoo\anaconda3\envs\PF\python.exe -s manage.py test fruit_app
 ```
 
-另需編譯目前 ESP32 板型並執行 `git diff --check`。不要用系統預設 Python 執行 Django 測試。
+另需編譯目前 ESP32 板型並執行 `ruff check .` 與 `git diff --check`。修 bug 時，能以 AST 檢查防止再犯的規則加到 `fruit_app/test_project_rules.py`。不要用系統預設 Python 執行 Django 測試。
 
 只修改文件時，驗證行數、相對連結、唯一來源與 `git diff --check`；不必執行 Django 測試或 Firmware 編譯。
 
