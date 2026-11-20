@@ -1,6 +1,6 @@
 # 目前狀態
 
-更新日期：2026-11-17
+更新日期：2026-11-20
 
 本文件是可覆寫的目前快照。完成歷史由 Git、tag 與 release 保存；未完成工作的詳細規格與討論以 GitHub Issues 為準。
 
@@ -28,6 +28,7 @@
 - 每次 HTTPS 服務啟動須在 Dashboard 確認網路介面，產生本機相機 QR；同介面換 IP 會撤銷舊工作並更新位址，介面消失須人工重選。
 - ESP32 以 `local_network_v1` 動態探索控制端，雙端依 lease／keepalive 與相機 readiness 停止後續動作；失聯後保存跨重啟安全鎖，經人工確認與雙端歸位提交才可重新開始。
 - 安全閒置時按 BOOT 進入配網頁，Wi-Fi 保存於 NVS。
+- 開機後長按 BOOT `10 s` 清除 ESP32 失聯鎖並歸位，再以 Dashboard runtime reset 完成雙端重置；步驟在開發者模式「停穩設定與送料校正」欄位。2026-11-20 通過 host harness 與 Django 測試，未實機驗證。
 
 ### 資料分區
 

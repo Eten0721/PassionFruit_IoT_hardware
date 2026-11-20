@@ -57,6 +57,15 @@ jobs:
       - name: 編譯正式 sketch
         run: arduino-cli compile --fqbn esp32:esp32:esp32 firmware/Three_Gate_Data_Collection
 
+  ruff:
+    name: ruff lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/ruff-action@v3
+        with:
+          version: "0.17.6"
+
   diff-check:
     name: git diff --check
     runs-on: ubuntu-latest

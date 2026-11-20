@@ -82,7 +82,7 @@ def measure(model, image: np.ndarray, focal_ratio: float) -> dict | None:
 
 def evaluate(model, fruits, images, focal_ratio):
     stretch_gaps, area_gaps, areas = [], [], []
-    for folder, views in fruits.items():
+    for views in fruits.values():
         measured = [
             m for m in (measure(model, images[path], focal_ratio)
                         for path in views.values()) if m is not None

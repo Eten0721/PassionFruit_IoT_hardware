@@ -10,6 +10,8 @@ constexpr uint8_t kUltrasonicTrigPin = 26;
 constexpr uint8_t kUltrasonicEchoPin = 27;
 constexpr uint8_t kClassifierPin = 25;
 constexpr uint8_t kFeederPin = 23;
+// Holding BOOT this long while running clears the persisted interlock (on-site escape hatch).
+constexpr uint32_t kLocalResetHoldMS = 10000UL;
 constexpr uint8_t kBootPin = 0;  // Candidate for this FQBN; physical board verification is pending.
 
 constexpr int kHomeAngle = 0;
