@@ -146,5 +146,56 @@ class RecoveryScenarioTests(SimpleTestCase):
         pairs = itertools.combinations(itertools.product(STEPS, FAULTS), 2)
         self.scenarios([{a[0]: a[1], b[0]: b[1]} for a, b in pairs if a[0] != b[0]])
 
+    def lab_incident(self):
+        self.assertEqual(self.select().status_code, 200)
+        board, phone = FakeESP32(self), FakePhone(self)
+        board.poll()
+        phone.ready()
+        views.APP_STATE.update(sorter_command_id=6, sorter_fruit_id='fruit_001', sorter_label='加工',
+                               sorter_classification_code=views.CLASSIFICATION_CODES['加工'])
+        views._write_sorter_recovery_marker(phase='running')
+        board.interlocked = True  # Its command poll failed mid-operation.
+        return board, phone
+
+    def test_lab_incident_confirm_recovery_also_recovers(self):
+        """The Dashboard 確認安全復原 handshake, not 開始拍攝, is the normal way out of the same state."""
+        board, phone = self.lab_incident()
+        self.restart_django()
+        for _ in range(MAX_MANUAL_ATTEMPTS):
+            self.manual_recovery(board, phone, {})
+            if not views.APP_STATE.get('network_recovery') and not board.interlocked:
+                break
+        self.assertIsNone(views.APP_STATE.get('network_recovery'))
+        self.assertFalse(board.interlocked)
+        self.assertTrue(board.poll()['control_allowed'])
+        self.assertFalse(views.APP_STATE['sorter_recovery_required'])
+        # Only the ordinary boot handshake (timing ack) may remain; FakeESP32 does not send it.
+        self.assertIn(self.client.get('/api/state/').json()['auto_run_disabled_reason'], (None, 'feeder_timing_not_applied'))
+
+    def test_lab_incident_sorter_pending_when_django_network_dropped(self):
+        """2026-11-18: graded 加工 at Gate 3, Django's interface selection dropped before the
+        board fetched classify_fruit, the board locked itself, and neither a Django restart nor
+        runtime reset helped. Holding BOOT 10 s (ADR-0025) then runtime reset must recover."""
+        board, _phone = self.lab_incident()
+        for _ in range(2):  # Every restart reloads the same fruit and blocks the start.
+            self.restart_django()
+            board.poll()
+            state = self.client.get('/api/state/').json()
+            self.assertTrue(views.APP_STATE['sorter_recovery_required'])
+            self.assertIsNotNone(state['auto_run_disabled_reason'])
+
+        self.assertEqual(self.client.post('/api/runtime/reset/').status_code, 200)
+        self.assertEqual(self.select().status_code, 200)
+        board.poll()
+        self.assertFalse(views.APP_STATE['sorter_recovery_required'])
+        self.assertIsNotNone(views.APP_STATE.get('network_recovery'), 'A still-locked board relocks Django')
+
+        board.interlocked = False  # BOOT held 10 s: NVS lock cleared, generation kept.
+        self.assertEqual(self.client.post('/api/runtime/reset/').status_code, 200)
+        self.assertEqual(self.select().status_code, 200)
+        self.assertTrue(board.poll()['control_allowed'])
+        self.assertIsNone(views.APP_STATE.get('network_recovery'))
+        self.assertFalse(views.APP_STATE['sorter_recovery_required'])
+
     def test_lost_final_reply_is_recoverable(self):
         self.scenarios([{'reply': 'reply_lost'}, {'reply': 'reply_lost', 'completed': 'django_restart'}])
