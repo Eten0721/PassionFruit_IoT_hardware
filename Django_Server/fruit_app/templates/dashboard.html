@@ -338,6 +338,17 @@
                 </span>
             </summary>
             <div class="disclosure-content settings-content">
+                <section class="escape-hatch" aria-labelledby="escape-hatch-title">
+                    <h4 id="escape-hatch-title">系統卡死時的雙端完全重置</h4>
+                    <p>「確認安全復原」一直無法使用、ESP32 重開機後仍鎖定時，依序執行：</p>
+                    <ol class="setup-steps">
+                        <li>關閉送料馬達與伺服電源，取出軌道、閘門與分類器上的所有果實，手離開機構。</li>
+                        <li>恢復供電，等 ESP32 正常開機（開機時不要按住 BOOT，否則會進入燒錄模式）。</li>
+                        <li>長按 ESP32 的 BOOT 鍵 10 秒後放開：ESP32 清除失聯鎖、閘門與分類器歸位，不會送料。</li>
+                        <li>按上方「完全重置Django狀態以及ESP32網路設定」，再重新選擇網路。</li>
+                        <li>若仍顯示鎖定，重複第 3、4 步一次。</li>
+                    </ol>
+                </section>
                 <div class="timing-config-grid">
                     <label class="timing-config-field" for="timing-first-station">
                         <span>第 1 站停穩時間（ms）</span>

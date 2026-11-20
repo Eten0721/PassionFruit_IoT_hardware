@@ -1083,6 +1083,15 @@ textarea {
     gap: 14px;
 }
 
+.escape-hatch {
+    padding: 14px;
+    border: 1px solid #e8bbb7;
+    border-radius: var(--radius-small);
+}
+
+.escape-hatch h4 { margin: 0 0 6px; }
+.escape-hatch p { margin: 0 0 6px; color: var(--text-soft); }
+
 .timing-config-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));

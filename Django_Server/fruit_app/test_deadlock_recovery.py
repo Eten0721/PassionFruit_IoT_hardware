@@ -224,6 +224,23 @@ class DeviceDeadlockTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()['control_allowed'])
 
+    def test_held_boot_then_runtime_reset_leaves_both_sides_unlocked(self):
+        self.prepare()
+        self.client.get('/api/esp32/heartbeat/', self.device(network_interlocked='1'))
+        self.assertIsNotNone(views.APP_STATE['network_recovery'])
+        generation = views.APP_STATE['recovery_generation']
+
+        # BOOT held 10 s clears the board's NVS lock and keeps its generation.
+        response = self.client.get('/api/esp32/heartbeat/', self.device(recovery_generation=generation))
+        self.assertFalse(response.json()['control_allowed'])
+        self.assertEqual(response.json()['recovery_generation'], generation)  # Same value: the board stays unlocked.
+
+        self.assertEqual(self.client.post('/api/runtime/reset/').status_code, 200)
+        self.assertEqual(self.select().status_code, 200)
+        response = self.client.get('/api/esp32/heartbeat/', self.device(recovery_generation=generation))
+        self.assertTrue(response.json()['control_allowed'])
+        self.assertIsNone(views.APP_STATE.get('network_recovery'))
+
     def test_runtime_reset_without_any_recovery_leaves_no_marker(self):
         self.prepare()
         self.assertEqual(self.client.post('/api/runtime/reset/').status_code, 200)
