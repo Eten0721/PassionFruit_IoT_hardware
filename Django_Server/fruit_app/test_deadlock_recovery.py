@@ -241,6 +241,43 @@ class DeviceDeadlockTests(SimpleTestCase):
         self.assertTrue(response.json()['control_allowed'])
         self.assertIsNone(views.APP_STATE.get('network_recovery'))
 
+    def _locked_then_boot_held(self, **board):
+        self.prepare()
+        self.client.get('/api/esp32/heartbeat/', self.device(network_interlocked='1'))
+        generation = views.APP_STATE['recovery_generation']
+        self.client.get('/api/esp32/command/', self.device(recovery_generation=generation, **board))
+        return generation
+
+    def test_confirm_after_held_boot_finishes_without_a_handshake(self):
+        generation = self._locked_then_boot_held()
+        response = self.post('/api/auto_run/', {'enabled': True, 'recovery_confirmed': True})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.json()['recovery_committed'])
+        self.assertIsNone(views.APP_STATE.get('network_recovery'))
+        self.assertNotEqual((views.APP_STATE.get('motor_command') or {}).get('command'), 'recover_network')
+        self.assertEqual(self._marker()['phase'], 'clear')
+        poll = self.client.get('/api/esp32/command/', self.device(recovery_generation=generation)).json()
+        self.assertTrue(poll['control_allowed'])
+
+    def test_board_unlocked_by_boot_during_the_handshake_finishes_it(self):
+        generation = self._locked_then_boot_held(network_interlocked='1')  # Confirmed before the board's next poll.
+        self.assertTrue(self.post('/api/auto_run/', {'enabled': True, 'recovery_confirmed': True}).json()['recovery_pending'])
+        poll = self.client.get('/api/esp32/command/', self.device(recovery_generation=generation)).json()
+        self.assertIsNone(views.APP_STATE.get('network_recovery'))
+        self.assertNotEqual(poll.get('command'), 'recover_network')
+        self.assertTrue(self.client.get('/api/esp32/command/', self.device(recovery_generation=generation)).json()['control_allowed'])
+
+    def test_confirm_with_a_busy_or_still_locked_board_keeps_the_handshake(self):
+        for board in ({'motion': 'capture'}, {'network_interlocked': '1'}):
+            with self.subTest(**board):
+                self.tearDown()
+                self.setUp()
+                self._locked_then_boot_held(**board)
+                response = self.post('/api/auto_run/', {'enabled': True, 'recovery_confirmed': True})
+                self.assertEqual(response.status_code, 200, response.content)
+                self.assertTrue(response.json().get('recovery_pending'))
+                self.assertEqual(views.APP_STATE['motor_command']['command'], 'recover_network')
+
     def test_runtime_reset_without_any_recovery_leaves_no_marker(self):
         self.prepare()
         self.assertEqual(self.client.post('/api/runtime/reset/').status_code, 200)

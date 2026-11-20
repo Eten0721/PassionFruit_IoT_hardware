@@ -240,6 +240,13 @@ class Policy:
         if (self.state['esp32_interlocked'] and not completing_receipt and not self.kinds()['motor_locked']
                 and (self.locked or self.state.get('hardware_mode') != 'photo_only')):
             self.lock('esp32_network_interlocked', force=True)
+        recovery = self.state.get('network_recovery')
+        if (recovery and self.state['esp32_interlocked'] and not recovery.get('board_lock_seen')
+                and recovery.get('generation') == self.state.get('recovery_generation')):
+            recovery['board_lock_seen'] = True  # Lets a later unlocked report prove a BOOT hold (ADR-0026).
+            self.persist()
+        if recovery and recovery.get('phase') == 'homing' and self._board_reset_locally():
+            self._finish_without_handshake()  # Confirmed already; the board will ignore recover_network.
         return 'network_recovery_required' if restarted else None
 
     def _adopt_device_generation(self, reported_generation):
@@ -327,6 +334,8 @@ class Policy:
             if response is not None or self.state.get('hardware_mode') == 'photo_only':
                 return response
             return JsonResponse(self.runtime._state_payload(extra={'ok': True}))
+        if self._board_reset_locally():
+            return self._finish_without_handshake()
         try:
             command = self.runtime._set_motor_command('recover_network')
         except self.runtime.CaptureCommandError as exc:
@@ -338,6 +347,42 @@ class Policy:
             recovery['phase'] = 'locked'
             return local_network.network_error('recovery_persist_failed', status=503)
         return JsonResponse(self.runtime._state_payload(extra={'ok': True, 'recovery_pending': True}))
+
+    def _board_reset_locally(self):
+        """ADR-0026: the board polls unlocked and idle at this lock's generation.
+
+        The board was seen locked at this lock's generation and now reports unlocked at the
+        same generation: only a 10 s BOOT hold does that, and it homed the board. The firmware
+        ignores recover_network when unlocked, so a handshake would hang.
+        """
+        recovery = self.state['network_recovery']
+        return (recovery.get('phase') in ('locked', 'homing') and recovery.get('board_lock_seen')
+                and self.state.get('esp32_interlocked') is False
+                and self.state.get('esp32_motion') == 'idle'
+                and self.runtime._esp32_is_online()
+                and self.state.get('recovery_generation') == recovery.get('generation'))
+
+    def _finish_without_handshake(self):
+        recovery = self.state['network_recovery']
+        response = self.finish()
+        if response is not None:
+            return response
+        self.runtime._record_transition('network_recovery_finished_locally',
+                                        details={'generation': recovery.get('generation'),
+                                                 'reason': recovery.get('reason')})
+        self._resume_after_recovery(recovery)
+        return JsonResponse(self.runtime._state_payload(extra={'ok': True, 'recovery_committed': True}))
+
+    def _resume_after_recovery(self, recovery):
+        if (recovery.get('resume_auto_run', True)
+                and recovery.get('reason') != 'gate3_manual_removal_required'
+                and self.runtime._auto_run_disabled_reason() is None):
+            self.state['auto_run_enabled'] = True
+            self.runtime._queue_production_feed()
+        elif recovery.get('reason') == 'gate3_manual_removal_required':
+            self.state['message'] = '本輪已跳過，ESP32 已完成歸位交握；請按「開始拍攝」開始下一顆。'
+        elif not recovery.get('resume_auto_run', True):
+            self.state['message'] = '送料等待已結束，可切換模式或網路；需要送料時請再按「開始拍攝」。'
 
     def finish(self, receipt=None, *, data_only=False):
         retained = None
@@ -396,15 +441,7 @@ class Policy:
         response = self.finish(receipt)
         if response is not None:
             return response
-        if (recovery.get('resume_auto_run', True)
-                and recovery.get('reason') != 'gate3_manual_removal_required'
-                and self.runtime._auto_run_disabled_reason() is None):
-            self.state['auto_run_enabled'] = True
-            self.runtime._queue_production_feed()
-        elif recovery.get('reason') == 'gate3_manual_removal_required':
-            self.state['message'] = '本輪已跳過，ESP32 已完成歸位交握；請按「開始拍攝」開始下一顆。'
-        elif not recovery.get('resume_auto_run', True):
-            self.state['message'] = '送料等待已結束，可切換模式或網路；需要送料時請再按「開始拍攝」。'
+        self._resume_after_recovery(recovery)
         return JsonResponse({'ok': True, 'recovery_committed': True})
 
     def restore(self):

@@ -1,0 +1,42 @@
+name: Nightly fault fuzz
+
+on:
+  schedule:
+    - cron: '0 18 * * *'  # 02:00 Asia/Taipei
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: 隨機序列數
+        default: '3000'
+      seed:
+        description: 種子（留空用執行編號）
+        default: ''
+
+jobs:
+  fuzz:
+    name: 隨機故障復原
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: 下載 XGBoost 模型
+        run: git lfs pull --include "Django_Server/models/Grade*.json"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: Django_Server/requirements*.txt
+      - name: 安裝依賴
+        run: |
+          pip install -r Django_Server/requirements-torch.txt --index-url https://download.pytorch.org/whl/cpu
+          pip install -r Django_Server/requirements.txt
+      # A new seed every night; a failure prints the seed and the shrunk steps to reproduce locally.
+      - name: 執行
+        working-directory: Django_Server
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          FAULT_FUZZ_RUNS: ${{ inputs.runs || '3000' }}
+          FAULT_FUZZ_STEPS: '20'
+          FAULT_FUZZ_SEED: ${{ inputs.seed || github.run_id }}
+        run: python -s manage.py test fruit_app.test_fault_fuzz fruit_app.test_operation_fuzz
