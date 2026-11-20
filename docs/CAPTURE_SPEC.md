@@ -599,6 +599,7 @@ fruit_id,label,capture_time,path,capture_count,station_01_ok,station_02_ok,stati
 - Django：`C:\Users\qoqoo\anaconda3\envs\PF\python.exe -s manage.py test fruit_app`
 - Firmware：以 `esp32:esp32:esp32` 與 `ESP32Servo 3.2.1` 編譯正式 sketch。
 - 情境：先執行 `firmware/tests/run_host_tests.ps1`，`test_network_firmware.py` 才以真實 C++ controller 對接 Django，否則 skip；CI 在 Django 測試前執行它。`test_recovery_scenarios.py` 以假 ESP32／手機窮舉 ESP32 重開機、Django 重啟與回應遺失出現在上鎖、確認、歸位完成任一步的單一與兩兩組合，要求人工復原 3 次內雙端解鎖，且鎖定期間不建立送料或分槽命令。
+- 隨機故障：`test_fault_fuzz.py` 以固定種子產生 `150` 組、每組最多 `10` 步的隨機序列（輪詢與回覆遺失、ESP32 重開機、Django 重啟、換 IP、heartbeat 逾時、確認復原、交握與回覆遺失、重送、runtime reset、長按 BOOT），逐步檢查失聯鎖期間不建立 `feed_one`／`classify_fruit`、沒有 5xx，最後「確認安全復原」3 次內雙端解鎖；失敗時自動縮成最短步驟並印出種子。`FAULT_FUZZ_RUNS`／`FAULT_FUZZ_STEPS`／`FAULT_FUZZ_SEED` 可加大；`.github/workflows/nightly-fuzz.yml` 每日 02:00（台北）以新種子跑 `3000` 組、每組最多 `20` 步。目前只涵蓋失聯鎖之後的復原，不含送料、拍攝與分槽進行中的故障。
 - Repository：`git diff --check`
 - Lint：`ruff check .`，規則在 `ruff.toml`；專案專用規則寫成 `fruit_app/test_project_rules.py`（4xx／5xx JSON 回應必帶 `reason`），隨 Django 測試執行。
 - GitHub Actions：`.github/workflows/ci.yml` 在每個 PR 與 push 到 `main` 時自動執行上述各項與 `firmware/tests/run_host_tests.ps1`；Django 測試在 Windows runner 執行，LFS 只下載 `Grade*.json`。

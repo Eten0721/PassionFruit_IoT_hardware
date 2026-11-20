@@ -2902,7 +2902,7 @@ def diagnostics_export_api(request):
         return local_network.network_error(reason)
     with STATE_LOCK:
         state = _state_payload()
-    stream = tempfile.TemporaryFile()  # FileResponse closes and deletes it.
+    stream = tempfile.TemporaryFile()  # noqa: SIM115 -- FileResponse closes and deletes it.
     try:
         filename = diagnostics.write_export(stream, state=state, runtime_root=diagnostics.runtime_root(),
                                             dataset_root=Path(settings.DATASET_ROOT))
