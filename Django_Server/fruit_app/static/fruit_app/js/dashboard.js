@@ -598,6 +598,7 @@ const remoteVideo = document.getElementById('remote-video');
             last_error: data.last_error_reason,
             alert: data.operator_alert && data.operator_alert.reason,
             detection: data.detection_error,
+            network_lock: data.network_recovery && data.network_recovery.reason,
             network: network.reason,
             discovery: network.discovery && network.discovery.reason,
             esp32: network.esp32 && network.esp32.reason,
@@ -605,7 +606,7 @@ const remoteVideo = document.getElementById('remote-video');
         };
         setTextIfChanged(reasonCodesEl, Object.entries(rawReasons)
             .filter(([, code]) => code)
-            .map(([key, code]) => `${key}=${code}`)
+            .map(([key, code]) => `${key}=${code}（${reasonText(code)}）`)
             .join('\n') || '無');
         const feederResult = data.feeder_test_result;
         setTextIfChanged(feederTestResultEl, feederResult

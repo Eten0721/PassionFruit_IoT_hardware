@@ -9,6 +9,7 @@ from functools import partial, wraps
 
 from django.http import JsonResponse
 
+from . import diagnostics
 from .reason_text import describe as describe_reason
 
 
@@ -367,6 +368,8 @@ def network_required(view=None, *, cleanup=False, operation='capture'):
 
 
 def network_error(reason, status=409):
-    response = JsonResponse({'ok': False, 'reason': reason, 'message': f'網路操作被阻擋：{describe_reason(reason)}'}, status=status)
+    message = f'網路操作被阻擋：{describe_reason(reason)}'
+    diagnostics.record_rejection(status, reason, message)
+    response = JsonResponse({'ok': False, 'reason': reason, 'message': message}, status=status)
     response['Cache-Control'] = 'no-store'
     return response

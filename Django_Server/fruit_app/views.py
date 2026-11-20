@@ -29,6 +29,7 @@ from . import (
     detection,
     detection_report,
     detection_stats,
+    diagnostics,
     grading,
     motor_commands,
     notification_delivery,
@@ -307,7 +308,7 @@ def _record_transition(
     details=None,
 ):
     """Record one bounded state transition while ``STATE_LOCK`` is held."""
-    return capture_session.append_transition_trace(
+    entry = capture_session.append_transition_trace(
         APP_STATE,
         event=event,
         now_string=_now_string,
@@ -318,6 +319,8 @@ def _record_transition(
         trigger_id=trigger_id,
         details=details,
     )
+    diagnostics.append_event(diagnostics.runtime_root(), entry)  # Survives restarts and runtime reset.
+    return entry
 
 
 def home_view(request):
@@ -2889,6 +2892,26 @@ def open_dataset_folder_api(request):
             return JsonResponse({'status': 'success', 'path': str(dataset_root), 'opened': True})
         return JsonResponse({'status': 'success', 'path': str(dataset_root), 'opened': False})
 
+
+
+@require_GET
+def diagnostics_export_api(request):
+    """Download state, recovery markers and the durable event log; local Dashboard only."""
+    reason = local_network.NETWORK.request_reason(request, local_only=True)
+    if reason:
+        return local_network.network_error(reason)
+    with STATE_LOCK:
+        state = _state_payload()
+    stream = tempfile.TemporaryFile()  # FileResponse closes and deletes it.
+    try:
+        filename = diagnostics.write_export(stream, state=state, runtime_root=diagnostics.runtime_root(),
+                                            dataset_root=Path(settings.DATASET_ROOT))
+    except OSError as exc:
+        stream.close()
+        logger.warning('Diagnostics export failed: %s', exc)
+        return _json_error(f'診斷包匯出失敗：{exc}', status=500, reason='diagnostics_export_failed')
+    stream.seek(0)
+    return FileResponse(stream, as_attachment=True, filename=filename, content_type='application/zip')
 
 
 @require_GET
@@ -5477,4 +5500,5 @@ def _json_error(message, status=400, reason=None, extra=None):
         payload['reason'] = reason
     if extra:
         payload.update(extra)
+    diagnostics.record_rejection(status, reason, message)
     return JsonResponse(payload, status=status)

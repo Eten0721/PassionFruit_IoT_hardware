@@ -41,6 +41,7 @@
 - 每顆保存原圖、處理圖與 `result.json`，`detection_summary.csv` 每顆一列；硬體模式保存後經 `classify_fruit` 分槽。
 - 加工果經 Cloudinary／LINE 發送圖文通知；檢測統計、三層趨勢提醒（預設關閉）與檢測報告 ZIP 匯出可用。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#檢測資料與-line-通知)。
 - 奶蛋博士唯讀 Gemini 助手可查詢統計與系統狀態。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#奶蛋博士)。
+- 開發者模式「診斷與流程紀錄」可匯出診斷包 ZIP，事件紀錄跨重啟與 runtime reset 保留；2026-11-20 通過 Django 測試，未實機驗證。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#api)。
 
 ### 環境與模型資產
 
