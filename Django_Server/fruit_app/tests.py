@@ -1168,7 +1168,7 @@ class DataCollectionFlowTests(SimpleTestCase):
         self.assertEqual(command['sorter_low_angle'], '105')
         self.assertEqual(command['sorter_home_angle'], '45')
         self.assertEqual(command['gate_step_angle'], '30')
-        self.assertEqual(command['gate_step_interval_ms'], '100')
+        self.assertEqual(command['gate_step_interval_ms'], '80')
 
         acknowledged = self._report('timing_config_applied', timing_revision=revision)
         self.assertEqual(acknowledged.status_code, 200)

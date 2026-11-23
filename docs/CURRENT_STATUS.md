@@ -20,7 +20,7 @@
 - Capture 與 sorter 共用單一 motor command slot，command ID 跨 Django 重啟遞增；ESP32／Django 重啟或 terminal report retry 不重送實體動作，結果不確定時須於 Dashboard 確認人工安全復原。
 - 第 3 張保存後 Gate 3 保持 Home；分類先提交資料，再以 `classify_fruit` 依序完成分類器就位、Gate 3 放行與共同歸位，硬體失敗不回滾資料。
 - 送料由 HC-SR04 回授停止，另有 ESP32 本機逾時與感測失效保護；分類完成後才送下一顆，並支援優雅暫停。送料逾時可按「結束等待」結束本輪，雙端歸位後開放模式與網路設定；果實若仍經過感測器，照常觸發三站拍攝。契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#安全逾時感測異常與延遲抵達)。
-- 三站閘門放行與歸位分段慢轉，預設每步 `10°`、間隔 `100 ms`，停穩與歸位等待皆為 `1000 ms` 且從閘門到位後才計時；開機第一次歸位與分類器不分段。參數在 `hardware_params.toml`，契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#硬體參數)。
+- 三站閘門放行與歸位分段慢轉，預設每步 `10°`、間隔 `80 ms`（實機驗證），停穩與歸位等待皆為 `1000 ms` 且從閘門到位後才計時；開機第一次歸位與分類器不分段。參數在 `hardware_params.toml`，契約見 [CAPTURE_SPEC.md](CAPTURE_SPEC.md#硬體參數)。
 - 純拍攝完全隔離 ESP32：一次手動觸發自動拍三張，不建立 motor command。
 
 ### 裝置網路

@@ -206,7 +206,7 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 | 設定 | 推薦值 | 允許範圍 | 間距 |
 |---|---:|---:|---:|
 | `gate_step_angle` | `10°` | `10～90°` | `10°` |
-| `gate_step_interval_ms` | `100 ms` | `20～200 ms` | `10 ms` |
+| `gate_step_interval_ms` | `80 ms` | `20～200 ms` | `10 ms` |
 
 - 三站閘門放行與歸位都每隔 `gate_step_interval_ms` 轉 `gate_step_angle`，最後一步補足剩餘角度；同時移動的閘門同步前進。`90°` 一次到位，等同不分段，也是 Firmware 預設。
 - `servo_settle_ms`、分類流程的落果保持與共同歸位等待，都從閘門到達目標角度後才開始計時。
