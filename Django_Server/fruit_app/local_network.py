@@ -12,6 +12,13 @@ from django.http import JsonResponse
 from . import diagnostics
 from .reason_text import describe as describe_reason
 
+# Starting powershell.exe and loading NetAdapter takes about 5 s on some laptops, longer
+# while GPU inference saturates the machine; a tighter bound fails healthy networks.
+INVENTORY_TIMEOUT_SECONDS = 15
+# A failed query says nothing about the network. Only this many failures in a row count as
+# losing it; a successful read that lacks the selection still invalidates it at once.
+INVENTORY_FAILURE_LIMIT = 3
+
 
 def publish_mdns(selection, port, run_id, revision):
     from zeroconf import IPVersion, ServiceInfo, Zeroconf
@@ -60,7 +67,7 @@ ConvertTo-Json -InputObject $rows -Compress
     try:
         result = subprocess.run(
             ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-            capture_output=True, timeout=5, check=True,
+            capture_output=True, timeout=INVENTORY_TIMEOUT_SECONDS, check=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         rows = json.loads(result.stdout.decode('utf-8-sig'))
@@ -104,6 +111,8 @@ class LocalNetwork:
             self.revision = 0
             self.selection = None
             self._interfaces = []
+            self._last_good_rows = None
+            self._inventory_failures = 0
             self._checked_at = None
             self._reason = 'network_selection_required'
             self._discovery = {'status': 'waiting', 'reason': 'network_selection_required'}
@@ -165,10 +174,19 @@ class LocalNetwork:
             publisher.close()
 
     def _read_inventory(self):
+        # The query runs outside the lock so HTTP never waits on PowerShell.
         try:
-            return self._inventory(), None
+            rows = self._inventory()
         except NetworkError as exc:
-            return [], exc.reason
+            with self._lock:
+                self._inventory_failures += 1
+                if self._last_good_rows is None or self._inventory_failures >= INVENTORY_FAILURE_LIMIT:
+                    return [], exc.reason
+                return [row.copy() for row in self._last_good_rows], None
+        with self._lock:
+            self._inventory_failures = 0
+            self._last_good_rows = [row.copy() for row in rows]
+        return rows, None
 
     def _apply_inventory(self, rows, reason):
         self._interfaces = rows
