@@ -199,6 +199,50 @@ class NetworkOnboardingTests(SimpleTestCase):
         with mock.patch('fruit_app.local_network.subprocess.run', side_effect=subprocess.TimeoutExpired('powershell', 5)):
             self.assertEqual(self.client.get('/api/network/').json()['reason'], 'network_inventory_failed')
 
+    def test_windows_inventory_allows_slow_powershell(self):
+        from types import SimpleNamespace
+        result = SimpleNamespace(stdout=json.dumps(self.interfaces).encode('utf-8'))
+        with mock.patch('fruit_app.local_network.subprocess.run', return_value=result) as run:
+            local_network.read_windows_interfaces()
+        self.assertEqual(run.call_args.kwargs['timeout'], local_network.INVENTORY_TIMEOUT_SECONDS)
+        self.assertGreaterEqual(local_network.INVENTORY_TIMEOUT_SECONDS, 15)
+
+    def test_transient_inventory_failure_keeps_selection(self):
+        self.select()
+        failure = local_network.NetworkError('network_inventory_failed')
+        for _ in range(local_network.INVENTORY_FAILURE_LIMIT - 1):
+            self.inventory.side_effect = failure
+            self.network._refresh(force=True)
+            info = self.network.snapshot()
+            self.assertTrue(info['selected'])
+            self.assertEqual(info['network_revision'], 1)
+            self.assertIsNone(info['reason'])
+        # One good read restarts the count, so scattered slow queries never add up.
+        self.inventory.side_effect = lambda: self.interfaces.copy()
+        self.network._refresh(force=True)
+        self.inventory.side_effect = failure
+        for _ in range(local_network.INVENTORY_FAILURE_LIMIT - 1):
+            self.network._refresh(force=True)
+        self.assertTrue(self.network.snapshot()['selected'])
+
+    def test_repeated_inventory_failure_clears_selection(self):
+        self.select()
+        self.inventory.side_effect = local_network.NetworkError('network_inventory_failed')
+        for _ in range(local_network.INVENTORY_FAILURE_LIMIT):
+            self.network._refresh(force=True)
+        info = self.network.snapshot()
+        self.assertFalse(info['selected'])
+        self.assertEqual(info['reason'], 'network_inventory_failed')
+        self.assertEqual(self.post('/api/photo_capture/').json()['reason'], 'network_inventory_failed')
+
+    def test_transient_failure_does_not_hide_a_lost_interface(self):
+        self.select()
+        self.inventory.side_effect = local_network.NetworkError('network_inventory_failed')
+        self.network._refresh(force=True)
+        self.inventory.side_effect = lambda: []
+        self.network._refresh(force=True)
+        self.assertFalse(self.network.snapshot()['selected'])
+
     def test_serving_process_resets_selection_and_cleans_up_monitor(self):
         from django.core.management import get_commands, call_command
         from .management.commands.runsslserver import Command, SSLCommand

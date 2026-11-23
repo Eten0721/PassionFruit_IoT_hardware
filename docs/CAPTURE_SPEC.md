@@ -96,7 +96,7 @@
 #### Django 網路選擇與探索
 
 - 維持 Windows、單一 Django 程序與 `runsslserver 0.0.0.0:8000`；從本機 Dashboard 完成選擇。優先以 `--noreload` 執行 Demo；若保留 autoreload，只有實際 serving process 可以持有探索／監測資源，reload 後必須重新確認。測試、migration、import 不啟動網路執行緒。
-- 用標準函式庫以有界 subprocess 讀取 Windows PowerShell 網路介面 JSON，列出 Up、具有效 IPv4 的 Wi-Fi／Ethernet 介面名稱、介面 ID、位址與 prefix；排除 loopback、未連線與不可用位址。保留介面 ID 與所選位址，不猜測固定熱點或以連外 DNS 判定網路。讀取失敗回 `network_inventory_failed`，無候選回 `no_connected_network`，不能偷偷使用預設介面。
+- 用標準函式庫以有界 subprocess 讀取 Windows PowerShell 網路介面 JSON，列出 Up、具有效 IPv4 的 Wi-Fi／Ethernet 介面名稱、介面 ID、位址與 prefix；排除 loopback、未連線與不可用位址。保留介面 ID 與所選位址，不猜測固定熱點或以連外 DNS 判定網路。查詢逾時 15 s（部分筆電啟動 PowerShell 就要約 5 s，推論時更久）。讀取失敗本身不代表網路改變：已有成功結果時沿用上次介面清單，連續 3 次失敗才回 `network_inventory_failed` 並取消選擇；只要有一次成功讀取且所選介面不在清單中，仍立即失效。無候選回 `no_connected_network`，不能偷偷使用預設介面。
 - `GET /api/network/` 回候選介面、選擇狀態、`server_run_id`、`network_revision`、`server_url`、`camera_url`、`qr_url`、探索狀態與配網可用原因；`POST /api/network/` 只接受已列出的介面 ID／IPv4，重讀並確認仍可用。未選定時，設備／拍攝操作回 `409 network_selection_required`，允許狀態讀取、網路設定、既有資料檢查與必要清理；UI disabled 不取代後端檢查。
 - 選定後以 `python-zeroconf` 僅在所選 IPv4 註冊 `_pf-iot._tcp.local.`，SRV port 使用實際 HTTPS port，A record 為所選位址；TXT 含 `api_version=1`、`scheme=https`、`server_run_id`、`network_revision`、`info_path=/api/network/info/`。`GET /api/network/info/` 回同一份身分、選擇狀態與目前 URL，供 ESP32 確認目標；mDNS 結果只是探索線索，不能授權實體動作。設備請求須使用所選 origin 且來源在所選 IPv4 subnet；本機 Dashboard 可由 loopback 操作。這是網路範圍限制，不是裝置身分驗證。
 - 新增 `zeroconf` 與支援 SVG 的 `qrcode` 兩項必要套件，實作時核對並固定 PF／Python 相容版本。`GET /api/network/qr.svg` 的 QR Code 在 Django 本機產生且禁止快取，內容為所選 IPv4／HTTPS port 的 `/camera/`，不使用 localhost、Dashboard request host、外部 QR API 或要求手機能解析 `.local`。
@@ -206,7 +206,7 @@ HC-SR04 觸發距離為 `6.0 cm`，重新待命距離為 `8.0 cm`，讀取間隔
 | 設定 | 推薦值 | 允許範圍 | 間距 |
 |---|---:|---:|---:|
 | `gate_step_angle` | `10°` | `10～90°` | `10°` |
-| `gate_step_interval_ms` | `100 ms` | `20～200 ms` | `10 ms` |
+| `gate_step_interval_ms` | `80 ms` | `20～200 ms` | `10 ms` |
 
 - 三站閘門放行與歸位都每隔 `gate_step_interval_ms` 轉 `gate_step_angle`，最後一步補足剩餘角度；同時移動的閘門同步前進。`90°` 一次到位，等同不分段，也是 Firmware 預設。
 - `servo_settle_ms`、分類流程的落果保持與共同歸位等待，都從閘門到達目標角度後才開始計時。

@@ -89,7 +89,7 @@ SERVO_ANGLE_RECOMMENDED = {
 # 90° equals the release travel, so the default moves each gate in one write.
 GATE_STEP_RECOMMENDED = {
     'gate_step_angle': RELEASE_ANGLE,
-    'gate_step_interval_ms': 100,
+    'gate_step_interval_ms': 80,
 }
 GATE_HOME_ANGLE_FIELDS = ('gate1_home_angle', 'gate2_home_angle', 'gate3_home_angle')
 CAPTURE_TIMING_RECOMMENDED = {
